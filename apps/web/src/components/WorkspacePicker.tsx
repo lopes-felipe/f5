@@ -553,29 +553,36 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         return;
       case "restoreWorktree":
         close();
-        void ensureNativeApi()
-          .worktrees.recover({ threadId, action: "restore" })
-          .then(async (status) => {
-            // The workspace card says what is needed when the restore has to ask.
-            useNextTurnQueueStore
-              .getState()
-              .applySnapshot(await ensureNativeApi().nextTurnQueue.list({ threadId }));
-            await queryClient.invalidateQueries({ queryKey: ["worktrees"] });
-            await queryClient.invalidateQueries({ queryKey: ["git"] });
-            if (status.kind === "attention")
-              toastManager.add({
-                type: "warning",
-                title: "Worktree not restored",
-                description: status.message,
-              });
-          })
-          .catch((error) =>
+        void (async () => {
+          const api = ensureNativeApi();
+          let status: Awaited<ReturnType<typeof api.worktrees.recover>>;
+          try {
+            status = await api.worktrees.recover({ threadId, action: "restore" });
+          } catch (error) {
+            // Only the restore itself failing is a failed restore.
             toastManager.add({
               type: "error",
               title: "Could not restore the worktree",
               description: errorMessage(error),
-            }),
-          );
+            });
+            return;
+          }
+          // The folder is back whatever the queue read below does: refresh what shows it.
+          void queryClient.invalidateQueries({ queryKey: ["worktrees"] });
+          void queryClient.invalidateQueries({ queryKey: ["git"] });
+          if (status.kind === "attention")
+            toastManager.add({
+              type: "warning",
+              title: "Worktree not restored",
+              description: status.message,
+            });
+          // The workspace card says what is needed when the restore has to ask.
+          // If this read fails, the queue's next update brings the card up to date.
+          await api.nextTurnQueue
+            .list({ threadId })
+            .then((snapshot) => useNextTurnQueueStore.getState().applySnapshot(snapshot))
+            .catch(() => undefined);
+        })();
         return;
       case "removeWorktree":
         close();

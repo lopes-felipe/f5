@@ -553,6 +553,42 @@ describe("started threads and managing worktrees", () => {
       .toEqual([[{ threadId, action: "restore" }]]);
   });
 
+  it("does not call a restore failed because the queue could not be read afterwards", async () => {
+    api.git.listBranches.mockResolvedValue({
+      isRepo: false,
+      hasOriginRemote: false,
+      branches: [],
+      worktreeMissing: true,
+    });
+    api.git.status.mockRejectedValue(new Error("missing"));
+    api.worktrees.recover.mockResolvedValue({
+      kind: "ready",
+      location: "worktree",
+      path: "/wt/gone",
+      branch: "gone",
+    });
+    api.nextTurnQueue.list.mockRejectedValue(new Error("offline"));
+    await open(
+      {
+        isDraft: false,
+        activeWorktreePath: "/wt/gone",
+        activeThreadBranch: "gone",
+        branchCwd: "/wt/gone",
+        effectiveEnvMode: "worktree",
+      },
+      "gone · restores on send",
+    );
+    const refreshed = vi.spyOn(client, "invalidateQueries");
+    await option("Restore worktree now").click();
+    await expect.poll(() => api.nextTurnQueue.list.mock.calls.length).toBeGreaterThan(0);
+    // The worktree is back, so what shows it refreshes and nothing reports a failure.
+    await expect
+      .poll(() => refreshed.mock.calls.map(([filters]) => filters?.queryKey))
+      .toEqual(expect.arrayContaining([["worktrees"], ["git"]]));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mocks.toast).not.toHaveBeenCalled();
+  });
+
   it("names the worktree being created instead of the branch it starts from", async () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     screen = await render(

@@ -43,9 +43,10 @@ describe("worktrees of deleted threads", () => {
     mocks.inspect.mockResolvedValue(inspection());
     mocks.remove.mockResolvedValue(removed);
     await offerWorktreeRemovalAfterDeletion([row("/wt/a"), row("/wt/b")]);
+    // `silent` has the server check again, under its locks, that nobody would be asked.
     expect(mocks.remove.mock.calls).toEqual([
-      [{ ...row("/wt/a"), deleteBranch: false, expectedHead: "abc", disposableIgnoredOnly: true }],
-      [{ ...row("/wt/b"), deleteBranch: false, expectedHead: "abc", disposableIgnoredOnly: true }],
+      [{ ...row("/wt/a"), deleteBranch: false, expectedHead: "abc", silent: true }],
+      [{ ...row("/wt/b"), deleteBranch: false, expectedHead: "abc", silent: true }],
     ]);
     expect(dialogRows()).toEqual([]);
     expect(mocks.toast.mock.calls).toEqual([
@@ -93,6 +94,30 @@ describe("worktrees of deleted threads", () => {
     expect(mocks.remove).toHaveBeenCalledTimes(1);
     expect(dialogRows()).toEqual([]);
     expect(mocks.toast).not.toHaveBeenCalled();
+    // Nothing to announce, but the registration is gone: open lists refresh.
+    expect(useWorktreeRemovalDialogStore.getState().silentRemovals).toBe(1);
+  });
+
+  it("checks several worktrees at once, and asks about the rest in their order", async () => {
+    const paths = Array.from({ length: 9 }, (_, index) => `/wt/${index}`);
+    let running = 0;
+    let most = 0;
+    mocks.inspect.mockImplementation(async ({ path }: { path: string }) => {
+      most = Math.max(most, ++running);
+      // Later rows answer first, so order cannot come from timing.
+      await new Promise((resolve) => setTimeout(resolve, 20 - Number(path.slice(4)) * 2));
+      running--;
+      return inspection({ safeToRemoveSilently: Number(path.slice(4)) % 3 === 0 });
+    });
+    mocks.remove.mockResolvedValue(removed);
+    void offerWorktreeRemovalAfterDeletion(paths.map(row));
+    const kept = paths.filter((_, index) => index % 3 !== 0).map(row);
+    await vi.waitFor(() => expect(dialogRows()).toEqual([kept]));
+    expect(most).toBeGreaterThan(1);
+    expect(most).toBeLessThanOrEqual(4);
+    expect(mocks.toast.mock.calls).toEqual([
+      [{ type: "success", title: "Removed 3 worktrees · branches kept" }],
+    ]);
   });
 });
 

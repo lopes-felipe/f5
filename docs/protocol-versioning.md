@@ -44,7 +44,9 @@ other `worktreeSetup` actions and returns the setup snapshot.
 Version 53 lets a client remove a worktree without a confirmation dialog when that is safe.
 `worktrees.inspect` returns `safeToRemoveSilently` and, in `ignoredFiles`, `disposableOnly` (every
 ignored entry is build or cache output). `worktrees.remove` takes `disposableIgnoredOnly`, which
-removes such entries without naming them and refuses the removal if anything else is ignored.
+removes such entries without naming them and refuses the removal if anything else is ignored, and
+`silent`, for a removal nobody confirmed: the server then also refuses, under its locks, a
+worktree that any thread still uses and a group of worktrees.
 
 Version 50 makes workspace switches settle themselves. `worktrees.previewTransitionRecovery`
 and `worktrees.resolveTransition` are removed, the `workspace_switch_failed` queue reason is

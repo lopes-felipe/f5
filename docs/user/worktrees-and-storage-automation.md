@@ -67,13 +67,16 @@ a toast says "Removed N worktrees · branches kept". A worktree is removed this 
 of this holds:
 
 - Its tree is clean: no uncommitted or untracked files.
-- No thread that still exists uses it, and nothing else blocks removal (a running turn, an open
-  terminal, initialized submodules, a detached HEAD, a worktree group).
+- No thread that still exists uses it, archived ones included, and nothing else blocks removal
+  (a running turn, an open terminal, initialized submodules, a detached HEAD, a worktree group).
 - Its only ignored files are build and cache output that a build brings back, such as
-  `node_modules/`, `dist/` or `.turbo/`. This is the same list automatic cleanup uses.
+  `node_modules/`, `dist/` or `.turbo/`. This is the same list automatic cleanup uses. F5 looks
+  inside those folders first: a `dist/` that holds a `.env` file, a database, a key or a
+  credentials file is not build output, and neither is a folder too large to check.
 
-The server checks all of it again under its locks immediately before removing, and it never
-deletes the branch, so nothing committed is lost.
+The server checks all of it again under its locks immediately before removing, including that
+no thread started using the worktree in the meantime, and it never deletes the branch, so
+nothing committed is lost.
 
 Every other worktree is shown in one removal dialog. Unsafe rows are disabled, and **Keep all**
 leaves every worktree in place. Branch deletion is optional and preselected only for merged
@@ -130,12 +133,13 @@ Restoring a backup takes effect on restart.
 > [!NOTE]
 > F5 never removes a worktree that has uncommitted or untracked files, initialized submodules,
 > an open terminal or provider session, queued turns,
-> or an active turn in another conversation using it. Automatic cleanup, and the removal that
-> follows deleting a thread, always keep the branch, so the next message recreates the worktree.
-> Both remove ignored files only when they are well-known build or cache output such as
-> `node_modules/`, `dist/` or `.turbo/`. Any other ignored file, such as `.env`, `.envrc`, a
-> private key or a local database, keeps the worktree; deleting it requires confirmation in the
-> removal dialog.
+> or an active turn in another conversation using it. Automatic cleanup, and the silent removal
+> after deleting a thread, always keep the branch, so the next message recreates the worktree.
+> (In the removal dialog you can choose to delete the branch too.) Both remove ignored files only
+> when they are well-known build or cache output such as `node_modules/`, `dist/` or `.turbo/`,
+> and only after looking inside those folders. Any other ignored file, such as `.env`, `.envrc`,
+> a private key or a local database, keeps the worktree, also when it sits inside a build folder;
+> deleting it requires confirmation in the removal dialog.
 
 - Cleanup and auto-pull can be set per project, but never from a checked-in `f5.json`.
 - If F5 restarts mid-setup, the setup shows as failed and nothing is removed.

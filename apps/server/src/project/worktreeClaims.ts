@@ -522,6 +522,13 @@ export type WorktreeRemovalPolicy = WorktreeRemovalContext &
          * output, as in automatic cleanup. Anything else refuses the removal.
          */
         readonly disposableIgnoredOnly?: boolean | undefined;
+        /**
+         * Nobody confirmed the removal. A worktree that any thread still uses,
+         * or a group of worktrees, is then refused, and ignored files are
+         * treated as with `disposableIgnoredOnly`. Being part of the policy,
+         * it is checked again under the locks like everything else.
+         */
+        readonly silent?: boolean | undefined;
       }
     | { readonly kind: "autoCleanup" | "legacyCleanup" | "ownedRollback" }
     | {
@@ -592,10 +599,12 @@ const worktreeHasUsageLimitRecovery = Effect.fn("worktreeHasUsageLimitRecovery")
 });
 
 const USAGE_LIMIT_CLEANUP_BLOCK = "a thread is waiting to resume after a usage limit";
+/** Why a removal nobody confirmed is refused while a thread, archived or not, uses the folder. */
+const SILENT_REMOVAL_IN_USE = "a thread uses this worktree";
 
 const ignoredRemovalPolicy = (policy: WorktreeRemovalPolicy): IgnoredFilesRemovalPolicy =>
   policy.kind === "manual"
-    ? policy.disposableIgnoredOnly
+    ? policy.disposableIgnoredOnly || policy.silent
       ? { kind: "rebuildable" }
       : { kind: "manual", approvedEntries: policy.approvedIgnoredEntries }
     : // Automatic cleanup may run unattended on rules users enabled long ago, so
@@ -706,6 +715,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       blockedReasons,
       linkedThreads: [] as ThreadId[],
       deletedThreadClaims: [] as ThreadId[],
+      grouped: false,
       ignoredEntries,
       branch,
       headSha,
@@ -825,6 +835,13 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       blockedReasons.push("it contains a project checkout");
   }
   const claims = yield* readWorktreeClaims(input.path);
+  // A removal nobody confirmed leaves alone whatever a person would be asked
+  // about. This runs again under the locks, so a thread that attached after
+  // the client looked still keeps its folder.
+  if (input.policy.kind === "manual" && input.policy.silent) {
+    if (claims.threadIds.length > 0) blockedReasons.push(SILENT_REMOVAL_IN_USE);
+    if (manifest) blockedReasons.push("it is a group of worktrees");
+  }
   const archiveableThreadIds =
     isStorageCleanupPolicy(input.policy) && input.policy.archiveIdleThreads
       ? (yield* engine.getReadModel()).threads
@@ -1087,11 +1104,12 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
   }
   if (exists && (group || registration)) {
     ignoredEntries = [...new Set([...ignoredEntries, ...childIgnoredEntries])];
+    const ignoredPolicy = ignoredRemovalPolicy(input.policy);
     ignoredReason = yield* ignoredFilesBlockRemoval(
       git,
       input.path,
       { entries: ignoredEntries, truncated: childIgnoredTruncated },
-      ignoredRemovalPolicy(input.policy),
+      ignoredPolicy,
     );
     const entries = ignoredEntries;
     ignoredFiles = {
@@ -1099,13 +1117,18 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       truncated: childIgnoredTruncated,
       requiresApproval:
         input.policy.kind === "manual" && !childIgnoredTruncated && ignoredReason !== null,
-      // The same rule automatic cleanup applies, so a person is asked only about the rest.
+      // The same rule automatic cleanup applies, so a person is asked only
+      // about the rest. Only a manual removal reads it, and when its policy is
+      // that rule already, the check above has answered it.
       disposableOnly:
+        input.policy.kind === "manual" &&
         !childIgnoredTruncated &&
         entries.length > 0 &&
-        (yield* Effect.promise(() =>
-          blockingIgnoredEntriesOnDisk(input.path, entries, { kind: "rebuildable" }),
-        )).length === 0,
+        (ignoredPolicy.kind === "rebuildable"
+          ? ignoredReason === null
+          : (yield* Effect.promise(() =>
+              blockingIgnoredEntriesOnDisk(input.path, entries, { kind: "rebuildable" }),
+            )).length === 0),
     };
   }
   return {
@@ -1114,6 +1137,8 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
     blockedReasons: [...new Set([...blockedReasons, ...(ignoredReason ? [ignoredReason] : [])])],
     linkedThreads: claims.threadIds,
     deletedThreadClaims: claims.deletedThreadIds,
+    /** The folder is a group of worktrees, with or without a checkout of its own. */
+    grouped: manifest !== null,
     ignoredEntries,
     branch,
     headSha,
@@ -1265,6 +1290,15 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
               "HEAD changed since inspection. Review the checkout again.",
             );
           if (claims.unknown) checked.blockedReasons.push("workspace usage could not be verified");
+          // The claims were just read again, as the last thing before Git
+          // runs: a thread that attached during the checks above keeps its folder.
+          if (
+            input.policy.kind === "manual" &&
+            input.policy.silent &&
+            claims.threadIds.length > 0 &&
+            !checked.blockedReasons.includes(SILENT_REMOVAL_IN_USE)
+          )
+            checked.blockedReasons.push(SILENT_REMOVAL_IN_USE);
           if (
             isStorageCleanupPolicy(input.policy) &&
             !sameDiscardableChanges(checked.discardChanges, input.expectedDiscardChanges)

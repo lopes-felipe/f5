@@ -190,7 +190,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
     input: WorktreesInspectInput,
     /** How removal will treat ignored files; a plain inspection names none. */
     ignored: Partial<
-      Pick<WorktreesRemoveInput, "approvedIgnoredEntries" | "disposableIgnoredOnly">
+      Pick<WorktreesRemoveInput, "approvedIgnoredEntries" | "disposableIgnoredOnly" | "silent">
     > = {},
   ) =>
     Effect.gen(function* () {
@@ -203,6 +203,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
           ownThreadId: null,
           approvedIgnoredEntries: ignored.approvedIgnoredEntries,
           disposableIgnoredOnly: ignored.disposableIgnoredOnly,
+          silent: ignored.silent,
         },
       }).pipe(Effect.provideServices(services));
       const branch = gate.registration?.branch ?? null;
@@ -217,9 +218,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
         }));
       const facts = yield* inspectBranch(project, input.path, branch, headSha);
       // A worktree group is several checkouts; removing one always asks.
-      const grouped = git.readWorktreeGroup
-        ? (yield* git.readWorktreeGroup(input.path)) !== null
-        : false;
+      const grouped = gate.grouped;
       // The gate already refuses a dirty tree, a live turn, an open terminal
       // and the rest. What is left to decide is whether a person has anything
       // to look at: another thread that would lose the folder, or ignored
@@ -261,6 +260,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
           ownThreadId: null,
           approvedIgnoredEntries: input.approvedIgnoredEntries,
           disposableIgnoredOnly: input.disposableIgnoredOnly,
+          silent: input.silent,
         },
         expectedHead: input.expectedHead,
         afterRemoval: (registration) =>

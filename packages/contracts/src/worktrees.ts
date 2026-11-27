@@ -31,6 +31,13 @@ export const WorktreesRemoveInput = Schema.Struct({
    * server checks that under its locks and refuses otherwise.
    */
   disposableIgnoredOnly: Schema.optional(Schema.Boolean),
+  /**
+   * Nobody confirmed this removal. Under its locks the server then also refuses
+   * a worktree any thread still uses, archived ones included, and a group of
+   * worktrees, and it treats ignored files as `disposableIgnoredOnly` does. It
+   * is everything `safeToRemoveSilently` promised, checked again.
+   */
+  silent: Schema.optional(Schema.Boolean),
 });
 export type WorktreesRemoveInput = typeof WorktreesRemoveInput.Type;
 
