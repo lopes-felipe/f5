@@ -25,6 +25,7 @@ matrices finish every shard, and all jobs have timeouts.
 | CI result           | Every run               | Aggregate verdict                                                                                        | 5 min   |
 | main-status         | Current main only       | Reconcile the `ci-main-red` issue                                                                        | 5 min   |
 | runner retry        | Current main only       | Rerun jobs GitHub never assigned to a runner (`ci-runner-retry.yml`)                                     | 5 min   |
+| Windows unit opt-in | Dispatch only           | The three Windows unit shards alone, on any branch (`windows-server-unit.yml`)                           | 20 min  |
 
 A docs-only PR (only Markdown or `docs/**`) skips the heavy checks. Static checks
 and workspace/Git/integration tests still run, including environment documentation
@@ -43,20 +44,36 @@ Anything else runs every PR job: a change under `packages/`, `scripts/`,
 `apps/server/src/assetHttp.ts` for the real asset headers, so a change to that file
 runs `browser` too. `static`, `test`, `desktop` and `windows-build` never skip for
 this reason, so the bundled web client and the server are still built and exercised
-together on every PR. `scripts/ci-change-scopes.test.ts` fails when code run by a
-skipped job starts importing the app it skips for; a coupling that is not an import
-(for example a test reading another app's files) would surface on main instead.
+together on every PR. A PR with 3,000 or more changed files runs every job, because
+GitHub's file listing stops there and could hide a path outside the app.
+
+`scripts/ci-change-scopes.test.ts` fails when code run by a skipped job starts
+referring to the app it skips for. It reads import and `require` specifiers, Vitest
+mock helpers and every relative path literal, which covers
+`new URL("../x", import.meta.url)` and `import.meta.glob`, and it follows the web
+app's references through `scripts/` into the server. References that are known to
+be harmless are listed in that test with a reason. A path built at run time from
+separate segments is not seen and would surface on main instead.
+
+A skipped job still waits for a runner before it classifies the change, so these
+skips save runner-minutes and free the runner sooner; they do not shorten the wait
+for `CI result` while runners are scarce.
 
 The three Windows server-unit shards were 39% of a PR run's runner time (200 runs
-on 25–26 November 2026) and run only on main pushes, nightly and dispatch. PRs keep Windows coverage through
-`windows-build`. A Windows-only unit regression therefore fails main, not the PR.
-Before merging a change that is sensitive to Windows process, path or filesystem
-behaviour, dispatch the full workflow on its branch, which also runs the macOS
-suites:
+on 25–26 November 2026) and run only on main pushes, nightly and dispatch. PRs keep
+Windows coverage through `windows-build`, which does not run the server's unit
+tests. A Windows-only unit regression therefore fails main, not the PR, and that
+red run can cover several merged PRs. Before merging a change that is sensitive to
+Windows process, path or filesystem behaviour, run only those shards on its branch:
 
 ```sh
-gh workflow run ci.yml --ref <branch>
+gh workflow run windows-server-unit.yml --ref <branch>
 ```
+
+The run shows on the PR as `windows-server-unit (1)` to `(3)` and has no
+`CI result` job, so it cannot satisfy the required check. Its job is a copy of
+`ci.yml`'s, held identical by the policy test. To run every job, including the
+macOS suites, dispatch `ci.yml` the same way.
 
 `changelog.yml` reports a separate `Changelog` check on every PR. It requires a new
 changelog fragment, `changes/<category>/<slug>.md`, unless the PR has the
@@ -86,7 +103,8 @@ Heavy jobs classify their own changes after checkout and before setup through
 Docs-only heavy jobs succeed with their install/check steps skipped; a filter
 failure fails the job. A job names the app it cannot read through the action's
 `unaffected_by` input (`web` or `server`); an empty or unknown value runs the job
-for every code change. The full macOS suite and the Windows unit shards have a
+for every code change. GitHub compares these strings without regard to case, so
+`Web` is the same as `web`. The full macOS suite and the Windows unit shards have a
 non-PR job condition instead and do not classify changes.
 This trades the serial dependency for runner allocation on docs-only PRs: every
 heavy matrix job still checks out and filters on its normal hosted OS before
@@ -115,8 +133,10 @@ does not need to have passed: if it later fails, unpublished betas may wait unti
 newer eligible source passes rather than falling back to an intermediate commit.
 Cleanup leaves older runs alone when the newest eligible run has already completed
 without success.
-After cancelling a queued CI run it also cancels that commit's unfinished release
-candidate (`release.yml`), which could no longer publish; see [release.md](release.md).
+Once GitHub accepts the cancellation of a queued CI run, cleanup also cancels that
+commit's unfinished release candidates (`release.yml`), which could no longer
+publish. A candidate that cannot be cancelled does not stop the sweep; the workflow
+fails afterwards and names it. See [release.md](release.md).
 It preserves commits touching `release-intent.json`
 (including additions, removals and renames), so stable requests retain their exact-SHA
 qualification. True merge commits and truncated file lists are preserved because
@@ -128,7 +148,9 @@ GitHub has no atomic queued-only cancellation API, so a run can still start in t
 short interval between the final status check and the cancellation request.
 The API check is necessary because Actions push payloads omit changed-file lists.
 Windows release checks also cancel superseded runs by PR number; release callers
-and manual rehearsals have independent concurrency groups and are never cancelled.
+and manual rehearsals have independent concurrency groups, which never cancel
+them. A beta candidate can still be cancelled by the queue cleanup above or by the
+Release coordinator.
 Release publication joins the exact SHA's successful main push run and candidate
 validation. Required jobs and matrix variants are checked individually; a generic
 green badge does not qualify a release. See [release.md](release.md).

@@ -1,6 +1,7 @@
 import { McpArgumentFields } from "./McpArgumentFields";
 import { readMcpKeyValueRows, mcpDuplicateKeys } from "./mcpEditorValues";
 import { McpKeyValueFields } from "./McpKeyValueFields";
+import { McpSecretReference } from "./McpSecretReference";
 import { McpTestConnection } from "./McpTestConnection";
 import { decodeDraftServer } from "./mcpDraft";
 import { MCP_SERVER_DESCRIPTION_MAX_LENGTH } from "@t3tools/contracts";
@@ -132,6 +133,7 @@ export function McpServerEditor({
             />
           </label>
           <McpArgumentFields draft={draft} onChange={onDraftChange} />
+          <McpSecretReference />
           <div className="grid gap-3 sm:grid-cols-2">
             <McpKeyValueFields
               key={`${editingServerName}:${draft.original?.name}:env`}
@@ -165,6 +167,7 @@ export function McpServerEditor({
               placeholder="https://example.com/mcp"
             />
           </label>
+          <McpSecretReference />
           <McpKeyValueFields
             key={`${editingServerName}:${draft.original?.name}:headers`}
             label="Headers"

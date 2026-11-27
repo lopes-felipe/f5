@@ -4,7 +4,6 @@ import { userFacingCauseMessage } from "../../causeMessage.ts";
 import {
   CommandId,
   InvestigationWorkflowId,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   MessageId,
   ThreadId,
@@ -100,6 +99,20 @@ import {
   STARTUP_DISPATCH_RECHECK_TIMEOUT,
   stageDispatchAllowsTurn,
 } from "../workflowStageDispatch.ts";
+import {
+  isStageAlreadyCompletedWith,
+  transitionStageCompleted,
+  transitionStageError,
+  transitionStagePendingStart,
+  transitionStageRunning,
+} from "../workflowEngine/WorkflowStageStateMachine.ts";
+import {
+  createWorkflowStageThread,
+  dispatchWorkflowDeleteCompensationCommand,
+  liveThreadById,
+  readActiveInvestigationWorkflow as readInvestigationWorkflow,
+  upsertInvestigationWorkflowRecord as upsertWorkflow,
+} from "../workflowEngine/WorkflowThreadCoordinator.ts";
 
 type InvestigationWorkflowTitleGenerationWorkItem = {
   readonly workflowId: InvestigationWorkflowId;
@@ -151,22 +164,6 @@ function allInvestigationsCompleted(workflow: InvestigationWorkflow): boolean {
 
 function investigatorLabel(workflow: InvestigationWorkflow, id: WorkflowParticipantId): string {
   return requireInvestigator(workflow, id).label;
-}
-
-function readInvestigationWorkflow(
-  orchestrationEngine: OrchestrationEngineShape,
-  workflowId: InvestigationWorkflowId,
-) {
-  return orchestrationEngine
-    .getReadModel()
-    .pipe(
-      Effect.map(
-        (snapshot) =>
-          snapshot.investigationWorkflows.find(
-            (workflow) => workflow.id === workflowId && workflow.deletedAt === null,
-          ) ?? null,
-      ),
-    );
 }
 
 function investigationMatch(
@@ -465,12 +462,11 @@ function withSynthesisPendingStart(
   }
   return {
     ...workflow,
-    synthesis: {
-      ...workflow.synthesis,
-      status: "pending_start",
-      error: null,
+    synthesis: transitionStagePendingStart(
+      workflow.synthesis,
+      workflow.synthesis.threadId,
       updatedAt,
-    },
+    ),
     updatedAt,
   };
 }
@@ -483,14 +479,9 @@ function withSynthesisRunning(
 ): InvestigationWorkflow {
   return {
     ...workflow,
-    synthesis: {
-      ...workflow.synthesis,
+    synthesis: transitionStageRunning(workflow.synthesis, updatedAt, dispatchCommandId, {
       threadId,
-      status: "running",
-      dispatchCommandId,
-      error: null,
-      updatedAt,
-    },
+    }),
     updatedAt,
   };
 }
@@ -521,23 +512,16 @@ function withSynthesisCompleted(input: {
   readonly updatedAt: string;
 }): InvestigationWorkflow {
   const current = input.workflow.synthesis;
-  if (
-    current.status === "completed" &&
-    current.pinnedTurnId === input.turnId &&
-    current.pinnedAssistantMessageId === input.assistantMessageId
-  ) {
+  if (isStageAlreadyCompletedWith(current, input.turnId, input.assistantMessageId)) {
     return input.workflow;
   }
   return {
     ...input.workflow,
-    synthesis: {
-      ...current,
-      status: "completed",
-      pinnedTurnId: input.turnId,
-      pinnedAssistantMessageId: input.assistantMessageId,
-      error: null,
+    synthesis: transitionStageCompleted(current, {
+      turnId: input.turnId,
+      assistantMessageId: input.assistantMessageId,
       updatedAt: input.updatedAt,
-    },
+    }),
     updatedAt: input.updatedAt,
   };
 }
@@ -549,12 +533,7 @@ function withSynthesisError(
 ): InvestigationWorkflow {
   return {
     ...workflow,
-    synthesis: {
-      ...workflow.synthesis,
-      status: "error",
-      error,
-      updatedAt,
-    },
+    synthesis: transitionStageError(workflow.synthesis, error, updatedAt),
     updatedAt,
   };
 }
@@ -635,33 +614,13 @@ function resetSynthesis(
   };
 }
 
-function upsertWorkflow(
-  orchestrationEngine: OrchestrationEngineShape,
-  workflow: InvestigationWorkflow,
-  updatedAt: string,
-) {
-  return orchestrationEngine.dispatch({
-    type: "project.investigation-workflow.upsert",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-    projectId: workflow.projectId,
-    workflow,
-    updatedAt,
-  });
-}
-
 function dispatchWorkflowDeleteCompensation(input: {
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly workflowId: InvestigationWorkflowId;
   readonly projectId: InvestigationWorkflow["projectId"];
   readonly createdAt: string;
 }) {
-  return input.orchestrationEngine.dispatch({
-    type: "project.investigation-workflow.delete",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-    workflowId: input.workflowId,
-    projectId: input.projectId,
-    createdAt: input.createdAt,
-  });
+  return dispatchWorkflowDeleteCompensationCommand({ kind: "investigation", ...input });
 }
 
 /** Creates a phase thread on the investigator's model (investigation and both review kinds). */
@@ -673,17 +632,13 @@ function createInvestigatorThread(input: {
   readonly title: string;
   readonly createdAt: string;
 }) {
-  return input.orchestrationEngine.dispatch({
-    type: "thread.create",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+  return createWorkflowStageThread({
+    orchestrationEngine: input.orchestrationEngine,
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: input.title,
     model: input.investigator.slot.model,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: input.workflow.branch,
-    worktreePath: null,
     createdAt: input.createdAt,
   });
 }
@@ -855,17 +810,13 @@ function createSynthesisThread(input: {
   readonly threadId: ThreadId;
   readonly createdAt: string;
 }) {
-  return input.orchestrationEngine.dispatch({
-    type: "thread.create",
-    commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+  return createWorkflowStageThread({
+    orchestrationEngine: input.orchestrationEngine,
     threadId: input.threadId,
     projectId: input.workflow.projectId,
     title: "RCA Synthesis",
     model: input.workflow.synthesis.slot.model,
-    runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: input.workflow.branch,
-    worktreePath: null,
     createdAt: input.createdAt,
   });
 }
@@ -1026,12 +977,6 @@ function synthesisContributionsMissing(
       contribution.crossReviews.length === 0 ||
       contribution.crossReviews.some((review) => isBlank(review.text)) ||
       (workflow.selfReviewEnabled && isBlank(contribution.selfReview)),
-  );
-}
-
-function liveThreadById(snapshot: OrchestrationReadModel, threadId: ThreadId) {
-  return (
-    snapshot.threads.find((thread) => thread.id === threadId && thread.deletedAt === null) ?? null
   );
 }
 

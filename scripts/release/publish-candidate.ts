@@ -24,7 +24,7 @@ import {
   assertReleaseProfileAllowed,
 } from "../lib/release-profile.ts";
 import { CLI_TARGETS } from "@t3tools/shared/cliRelease";
-import { promotionProblems, remoteTagCommit } from "../lib/release-promotion.ts";
+import { draftSourceCommit, promotionProblems, remoteTagCommit } from "../lib/release-promotion.ts";
 import { parseDesktopUpdateManifest } from "../desktop-update-manifest.ts";
 import {
   validatePublicationQualification,
@@ -186,19 +186,21 @@ export async function publishCandidate(
         sha256: await hashFile(join(directory, name)),
       })),
   );
-  // Certification can require source changes. Do not reserve an immutable tag
-  // (or mutate a draft) until this exact candidate has passed the complete policy.
+  // Certification can require source changes. Do not create a draft (or mutate
+  // one) until this exact candidate has passed the complete policy.
   if (!listed || listed.draft) await verifyCandidateCertification(candidate);
   let release = listed;
   if (release) {
     validateRemoteRelease(release, tag, candidate.kind === "beta");
-    git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
-    const remote = remoteTagCommit(tag, {
-      local: (name) => git(["rev-list", "-n", "1", name]),
-      remote: (name) =>
-        git(["ls-remote", "--tags", "origin", "refs/tags/" + name, "refs/tags/" + name + "^{}"]),
-    });
-    if (remote !== candidate.sourceSha || release.prerelease !== (candidate.kind === "beta"))
+    // Drafts carry their source in target_commitish and get a tag only right before
+    // promotion. Drafts reserved by older publishers already have a tag; trust only
+    // the remote tag for those.
+    let source: string | undefined;
+    if (remoteTagExists(tag)) {
+      git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
+      source = remoteSource(tag);
+    } else source = draftSourceCommit(release);
+    if (source !== candidate.sourceSha || release.prerelease !== (candidate.kind === "beta"))
       throw new Error("Existing release/tag has a different identity");
     if (release.draft && release.assets.some((a) => a.state === "starter")) {
       // Only failed uploads in this matching draft may be removed. Validate every
@@ -246,23 +248,10 @@ export async function publishCandidate(
       .map((r) => r.tag_name.slice(1)),
   );
   beforePublish();
-  const ref = optionalApi<{ object: { sha: string } }>("git/ref/tags/" + tag);
-  if (ref && ref.object.sha !== candidate.sourceSha)
-    throw new Error("Tag already points at a different commit");
-  if (!ref)
-    gh([
-      "api",
-      "--method",
-      "POST",
-      "repos/" + repository + "/git/refs",
-      "-f",
-      "ref=refs/tags/" + tag,
-      "-f",
-      "sha=" + candidate.sourceSha,
-    ]);
-  // Needed by the unchanged integration certification policy.
-  git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
   if (!release) {
+    // A leftover tag at another commit can never be published under this version.
+    // Refuse before writing the draft and uploading; reserveTag rechecks for races.
+    assertTagAvailable(tag, candidate.sourceSha);
     const notes = join(directory, "..", "notes.md");
     writeFileSync(
       notes,
@@ -277,7 +266,7 @@ export async function publishCandidate(
       }),
     );
     release = await releasePhase("draftCreation", () =>
-      createDraft(tag, candidate.kind === "beta", notes),
+      createDraft(tag, candidate.kind === "beta", notes, candidate.sourceSha),
     );
   }
   const releaseId = release.id;
@@ -309,7 +298,45 @@ export async function publishCandidate(
       .filter((r) => !r.draft && /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(r.tag_name))
       .map((r) => r.tag_name.slice(1)),
   );
+  // The tag becomes public in releases.atom the moment it exists, and only repository
+  // admins can delete `v*` tags. Create it only after every gate has passed, so an
+  // abandoned draft never becomes the newest entry beta updaters resolve.
+  // Nothing between the ref POST and the PATCH may fail for avoidable reasons: a tag left
+  // on a draft is exactly what breaks beta update checks.
+  reserveTag(tag, candidate.sourceSha);
   promoteRelease(release.id, candidate.kind === "beta");
+  // Public verification and later reconciliations resolve the release through this tag.
+  git(["fetch", "origin", "refs/tags/" + tag + ":refs/tags/" + tag]);
+}
+function remoteTagExists(tag: string): boolean {
+  return git(["ls-remote", "--tags", "origin", "refs/tags/" + tag]).trim() !== "";
+}
+function remoteSource(tag: string): string {
+  return remoteTagCommit(tag, {
+    local: (name) => git(["rev-list", "-n", "1", name]),
+    remote: (name) =>
+      git(["ls-remote", "--tags", "origin", "refs/tags/" + name, "refs/tags/" + name + "^{}"]),
+  });
+}
+/** Read-only: throws when the tag exists at another commit; returns whether it exists. */
+function assertTagAvailable(tag: string, sourceSha: string): boolean {
+  const ref = optionalApi<{ object: { sha: string } }>("git/ref/tags/" + tag);
+  if (ref && ref.object.sha !== sourceSha)
+    throw new Error("Tag already points at a different commit");
+  return ref !== undefined;
+}
+function reserveTag(tag: string, sourceSha: string): void {
+  if (!assertTagAvailable(tag, sourceSha))
+    gh([
+      "api",
+      "--method",
+      "POST",
+      "repos/" + repository + "/git/refs",
+      "-f",
+      "ref=refs/tags/" + tag,
+      "-f",
+      "sha=" + sourceSha,
+    ]);
 }
 async function publicFetch(url: string, method = "GET"): Promise<Response> {
   for (let attempt = 0; ; attempt++) {

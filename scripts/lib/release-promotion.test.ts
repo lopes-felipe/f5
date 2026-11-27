@@ -5,7 +5,13 @@ import {
   PROVIDER_INTEGRATION_RECORDS,
   type CodexChromeRecord,
 } from "@t3tools/shared/providerIntegrationCertification";
-import { promotionProblems, remoteTagCommit, type PromotionIo } from "./release-promotion.ts";
+import {
+  draftSourceCommit,
+  promotionProblems,
+  promotionSource,
+  remoteTagCommit,
+  type PromotionIo,
+} from "./release-promotion.ts";
 
 const TAG = "v1.2.3";
 const TAG_COMMIT = "1".repeat(40);
@@ -75,5 +81,44 @@ describe("remote tag commit", () => {
     expect(remoteTagCommit(TAG, git(`${sha("c")}\trefs/tags/${TAG}\n`, sha("c")))).toBe(sha("c"));
     expect(() => remoteTagCommit(TAG, git(annotated, sha("d")))).toThrow("differs from origin");
     expect(() => remoteTagCommit(TAG, git("", sha("b")))).toThrow(`origin has no tag ${TAG}`);
+  });
+});
+
+describe("draft source commit", () => {
+  it("reads only a full SHA from a draft", () => {
+    expect(draftSourceCommit({ draft: true, target_commitish: "a".repeat(40) })).toBe(
+      "a".repeat(40),
+    );
+    // Legacy drafts name a branch; published releases are identified by their tag.
+    expect(draftSourceCommit({ draft: true, target_commitish: "main" })).toBeUndefined();
+    expect(draftSourceCommit({ draft: true, target_commitish: "A".repeat(40) })).toBeUndefined();
+    expect(draftSourceCommit({ draft: true })).toBeUndefined();
+    expect(draftSourceCommit({ draft: false, target_commitish: "a".repeat(40) })).toBeUndefined();
+  });
+});
+
+describe("promotion source", () => {
+  const io = (tag: boolean, release: { draft: boolean; target_commitish?: string }) => ({
+    tagExists: () => tag,
+    remoteTagCommit: () => "b".repeat(40),
+    release: () => release,
+  });
+  it("trusts an existing remote tag over the draft's target", () => {
+    expect(
+      promotionSource(TAG, io(true, { draft: true, target_commitish: "a".repeat(40) })),
+    ).toEqual({ commit: "b".repeat(40), needsTag: false });
+  });
+  it("promotes a tagless draft from its target and asks for the tag", () => {
+    expect(
+      promotionSource(TAG, io(false, { draft: true, target_commitish: "a".repeat(40) })),
+    ).toEqual({ commit: "a".repeat(40), needsTag: true });
+  });
+  it("refuses a tagless release without a full source SHA", () => {
+    expect(() =>
+      promotionSource(TAG, io(false, { draft: true, target_commitish: "main" })),
+    ).toThrow(`origin has no tag ${TAG}`);
+    expect(() =>
+      promotionSource(TAG, io(false, { draft: false, target_commitish: "a".repeat(40) })),
+    ).toThrow(`origin has no tag ${TAG}`);
   });
 });

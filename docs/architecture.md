@@ -165,7 +165,7 @@ sequenceDiagram
 [8]: ../apps/server/src/provider/Layers/ProviderService.ts
 [9]: ../apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts
 [10]: ../apps/server/src/orchestration/Layers/OrchestrationEngine.ts
-[11]: ../packages/contracts/src/orchestration.ts
+[11]: ../packages/contracts/src/orchestration/readModel.ts
 [12]: ../apps/web/src/nativeApi.ts
 [13]: ../apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
 [14]: ../apps/server/src/orchestration/Layers/CheckpointReactor.ts
