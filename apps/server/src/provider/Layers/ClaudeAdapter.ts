@@ -15,7 +15,15 @@ import {
   rememberClaudeSubagentLaunch,
   resolveClaudeSubagentEffort,
 } from "../claudeSubagentSelection.ts";
-import { isF5ThreadReadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
+import type { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
+import {
+  describeMcpHubOmissions,
+  withMcpHubOmissions,
+  type McpHubAttachment,
+  type McpHubAttachmentUpdate,
+} from "../../mcp/hub/McpHub.ts";
+import { hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
+import { isF5ReadOnlyThreadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
   makeClaudeAssistantText,
   extractAssistantTextBlocks,
@@ -245,6 +253,12 @@ import {
   ProviderAdapterValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
+import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
+import {
+  assertReadOnlyProjectConfig,
+  claudeGlobalConfigFile,
+  findClaudeProjectConfigConflict,
+} from "../readOnlyProjectConfig.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import type {
   ProviderConversationCompactionResult,
@@ -658,10 +672,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (evictKey !== undefined) resumeRecoveryState.delete(evictKey);
       }
     };
-    const recordResumeFailure = (threadId: ThreadId): number => {
+    const recordResumeFailure = (threadId: ThreadId, generation: unknown): number => {
       const existing = resumeRecoveryState.get(threadId);
-      const failures = (existing?.failures ?? 0) + 1;
-      setResumeRecoveryState(threadId, { generation: existing?.generation, failures });
+      const failures = existing && existing.generation === generation ? existing.failures + 1 : 1;
+      setResumeRecoveryState(threadId, { generation, failures });
       return failures;
     };
     const clearResumeFailures = (threadId: ThreadId): void => {
@@ -789,6 +803,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           },
           providerRefs: nativeProviderRefs(context),
         });
+        const omissions =
+          context.mcpHubAttachment && !context.mcpHubOmissionsReported
+            ? describeMcpHubOmissions("Claude", context.mcpHubAttachment.omitted)
+            : undefined;
+        context.mcpHubOmissionsReported = true;
+        if (omissions) {
+          const warningStamp = yield* makeEventStamp(context);
+          yield* offerRuntimeEvent({
+            type: "config.warning",
+            ...warningStamp,
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            payload: omissions,
+          });
+        }
       });
 
     const refreshModelContextWindowTokens = (context: ClaudeSessionContext): Effect.Effect<void> =>
@@ -4806,7 +4835,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (context.lastAssistantUuid)
             context.recoveryMetadata.missingResumePoint ??= requested ?? context.lastAssistantUuid;
           yield* updateResumeCursor(context);
-          const failures = recordResumeFailure(threadId);
+          const failures = recordResumeFailure(
+            threadId,
+            context.recoveryMetadata.resumeRecoveryGeneration,
+          );
           // Resuming from an older boundary would drop turns the user saw.
           if (forked) return yield* Effect.fail(new Error(CLAUDE_TRANSCRIPT_FORKED_MESSAGE));
           if (failures >= 3 || attempt > 0 || !context.resumeSessionId) {
@@ -5092,6 +5124,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         context.stopped = true;
         context.chromeActivity?.dispose();
+        // Revokes this session's hub credentials; shared connections stay up for others.
+        void context.mcpHubAttachment?.dispose();
         if (context.mcpStatusFiber) yield* Fiber.interrupt(context.mcpStatusFiber);
         if (context.forkCheckFiber) yield* Fiber.interrupt(context.forkCheckFiber);
         // Stop input immediately; retain provenance until final tool events are queued safely.
@@ -5476,8 +5510,33 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ),
       );
 
+    /**
+     * Refuses a read-only stage whose committed Claude settings would run commands, or allow
+     * writes or commands, past F5's read-only checks (readOnlyProjectConfig.ts). Project hooks are
+     * switched off with `disableAllHooks` instead.
+     */
+    const assertClaudeReadOnlyWorkspace = (
+      cwd: string | undefined,
+      environment: NodeJS.ProcessEnv,
+      operation: "startSession" | "sendTurn",
+    ) => {
+      const homeDir = environment.HOME?.trim() || NodeOS.homedir();
+      const stageCwd = cwd ?? process.cwd();
+      return assertReadOnlyProjectConfig({
+        provider: PROVIDER,
+        providerName: "Claude",
+        operation,
+        find: () =>
+          findClaudeProjectConfigConflict(stageCwd, {
+            homeDir,
+            configFile: claudeGlobalConfigFile(environment, homeDir, stageCwd),
+          }),
+      });
+    };
+
     const startSessionUnlocked: ClaudeAdapterShape["startSession"] = (input) => {
       let disposeComputer: (() => void) | undefined;
+      let mcpHubAttachment: McpHubAttachment | undefined;
       return Effect.gen(function* () {
         if (input.provider !== undefined && input.provider !== PROVIDER) {
           return yield* new ProviderAdapterValidationError({
@@ -5524,6 +5583,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ),
           threadId,
         );
+        if (input.workflowExecutionProfile)
+          yield* assertClaudeReadOnlyWorkspace(input.cwd, queryEnvironment, "startSession");
         const plansDirectory = NodePath.join(
           resolveClaudeConfigDir(queryEnvironment, input.cwd),
           "plans",
@@ -5640,7 +5701,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     ? selection.target
                     : undefined;
               if (!selected) {
-                recordResumeFailure(threadId);
+                recordResumeFailure(
+                  threadId,
+                  readClaudeRecoveryMetadata(input.resumeCursor).resumeRecoveryGeneration,
+                );
                 return yield* new ProviderAdapterProcessError({
                   provider: PROVIDER,
                   threadId,
@@ -6015,7 +6079,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // Set once the thread server is built below; only permission callbacks read it.
         let threadServerName: string | undefined;
         // Host MCP tools a read-only workflow stage may call: F5 preview observation and F5's
-        // own thread_read, each identified by exact server provenance.
+        // read-only thread tools (thread_read, forge reads), each identified by exact server
+        // provenance.
         const allowReadOnlyMcpTool = (
           toolName: string,
           mcpServer?: McpToolProvenance,
@@ -6024,7 +6089,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           (classifyF5PreviewTool(toolName, agentBrowserState, mcpServer) === "observe" &&
             !writesPreviewArtifact(toolName, toolInput)) ||
           (threadServerName !== undefined &&
-            isF5ThreadReadTool(toolName, mcpServer, threadServerName));
+            isF5ReadOnlyThreadTool(toolName, mcpServer, threadServerName));
         const canUseTool: CanUseTool = (toolName, toolInput, callbackOptions) =>
           Effect.runPromise(
             Effect.gen(function* () {
@@ -6535,7 +6600,29 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // provider options may tune one-off prompts, but must never override a
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
-        const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
+        const configuredMcpServers = input.providerOptions?.mcpServers;
+        const passthrough = options?.mcpNativePassthrough
+          ? yield* options.mcpNativePassthrough.pipe(Effect.orElseSucceed(() => false))
+          : false;
+        if (options?.mcpHub?.available && !passthrough) {
+          // Claude connects to F5's hub endpoints; the hub runs the servers in the
+          // conversation's directory and holds their secrets and sign-ins. Attached
+          // even with no servers, so servers added mid-session also use the hub.
+          mcpHubAttachment = options.mcpHub.attach({
+            threadId,
+            projectId: input.projectId,
+            provider: PROVIDER,
+            accountKey: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
+            servers: configuredMcpServers,
+            environment: queryEnvironment,
+            cwd: input.cwd ?? process.cwd(),
+          });
+        }
+        const translatedMcpServers = mcpHubAttachment
+          ? translateMcpForClaudeAgent(
+              hubEndpointsForClaude(mcpHubAttachment.endpoints, configuredMcpServers),
+            )
+          : translateMcpForClaudeAgent(configuredMcpServers, { environment: queryEnvironment });
         const mcpToolFilters = buildMcpToolFilters(input.providerOptions?.mcpServers);
         // Preview tools are installed in every interactive desktop session; each
         // call checks live policy. Launch-flag capabilities read policy here.
@@ -6680,6 +6767,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(typeof thinking === "boolean" ? { thinking } : {}),
           }),
           ...(showThinkingSummaries !== undefined ? { showThinkingSummaries } : {}),
+          // A repository's hooks run unsandboxed and without asking, even in a folder Claude Code
+          // doesn't trust. Flag settings can only switch off every hook, the user's included; F5's
+          // own hooks are SDK callbacks and keep working.
+          ...(input.workflowExecutionProfile ? { disableAllHooks: true } : {}),
         };
         const configuredBase = {
           ...(selectedModel ? { model: selectedModel } : {}),
@@ -6792,6 +6883,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...sdkExecutableOptions,
           // Recovery launches reuse these options, so they take the same delivery path.
           mcpServersDelivery,
+          // Read-only stages start only the MCP servers F5 passes, so a repository's `.mcp.json`
+          // can't start a server. A managed `managed-mcp.json` already ignores it, and Claude
+          // refuses the flag then.
+          ...(input.workflowExecutionProfile && !hasClaudeManagedMcpConfig()
+            ? { strictMcpConfig: true }
+            : {}),
           settingSources: [...CLAUDE_SETTING_SOURCES],
           ...(effectiveEffort ? { effort: effectiveEffort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
@@ -6878,10 +6975,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           planModeInstructions,
         } satisfies ClaudeQueryOptions;
         const mandatoryDisallowedTools = queryOptions.disallowedTools ?? [];
+        // The hub already hides turned-off tools, so a fixed deny list would only keep a
+        // re-enabled tool blocked until restart.
         queryOptions.disallowedTools = [
           ...new Set([
             ...mandatoryDisallowedTools,
-            ...claudeDisallowedMcpToolNames(mcpToolFilters),
+            ...(mcpHubAttachment ? [] : claudeDisallowedMcpToolNames(mcpToolFilters)),
           ]),
         ];
         const threadServer = options?.threadMcpBroker
@@ -7210,6 +7309,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ownedMcpServerNames: new Set(Object.keys(translatedMcpServers ?? {})),
           mcpToolFilters,
           internalMcpServers,
+          ...(mcpHubAttachment ? { mcpHubAttachment } : {}),
           turns: (resumeState?.turnBoundaries ?? []).map((boundary) => ({
             id: TurnId.makeUnsafe(boundary.turnId),
             items: [],
@@ -7424,7 +7524,14 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         return {
           ...session,
         };
-      }).pipe(Effect.onError(() => Effect.sync(() => disposeComputer?.())));
+      }).pipe(
+        Effect.onError(() =>
+          Effect.sync(() => {
+            disposeComputer?.();
+            void mcpHubAttachment?.dispose();
+          }),
+        ),
+      );
     };
 
     const startSession: ClaudeAdapterShape["startSession"] = (input) =>
@@ -7851,7 +7958,23 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
-        const queued = yield* withThreadLock(input.threadId, queueTurnUnlocked(input)).pipe(
+        // Committed settings the workspace gained since the stage started would apply from now on.
+        // Checked under the thread lock, which `startSession` also takes, so the session checked
+        // is the one the turn is queued into.
+        const checkThenQueue = Effect.gen(function* () {
+          const readOnlyContext = sessions.get(input.threadId);
+          if (readOnlyContext?.workflowExecutionProfile)
+            yield* assertClaudeReadOnlyWorkspace(
+              readOnlyContext.startInput.cwd,
+              buildClaudeQueryEnv(
+                readOnlyContext.startInput.providerOptions?.claudeAgent,
+                options?.processEnvironment ?? process.env,
+              ),
+              "sendTurn",
+            );
+          return yield* queueTurnUnlocked(input);
+        });
+        const queued = yield* withThreadLock(input.threadId, checkThenQueue).pipe(
           Effect.catchIf(
             (error): error is ClaudeQueryEndedBeforePrompt =>
               error instanceof ClaudeQueryEndedBeforePrompt,
@@ -8088,10 +8211,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
         const context = yield* requireSession(threadId);
-        const desired = (translateMcpForClaudeAgent(mcpServers) ?? {}) as Record<
-          string,
-          McpServerConfig
-        >;
+        let desired = (translateMcpForClaudeAgent(mcpServers, {
+          environment: context.processEnvironment,
+        }) ?? {}) as Record<string, McpServerConfig>;
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(
@@ -8112,6 +8234,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        let hubOmitted: McpHubAttachmentUpdate["omitted"] = [];
+        if (context.mcpHubAttachment) {
+          // Edits and removals re-bind this session's hub endpoints; new servers get
+          // new endpoints. Unchanged entries keep their URL, so Claude keeps them connected.
+          const update = context.mcpHubAttachment.update(mcpServers, { addEndpoints: true });
+          hubOmitted = update.omitted;
+          desired = (translateMcpForClaudeAgent(
+            hubEndpointsForClaude(update.endpoints, mcpServers),
+          ) ?? {}) as Record<string, McpServerConfig>;
+        }
         const owned = context.ownedMcpServerNames;
         context.mcpObservationEpoch = (context.mcpObservationEpoch ?? 0) + 1;
         // Restrict existing and lingering servers before any provider I/O.
@@ -8119,7 +8251,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         context.queryOptions.disallowedTools = [
           ...new Set([
             ...context.mandatoryDisallowedTools,
-            ...claudeDisallowedMcpToolNames(context.mcpToolFilters),
+            ...(context.mcpHubAttachment
+              ? []
+              : claudeDisallowedMcpToolNames(context.mcpToolFilters)),
           ]),
         ];
         const outcome = yield* Effect.tryPromise({
@@ -8142,6 +8276,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
         context.ownedMcpServerNames = outcome.owned;
+        // A name Claude kept for its own settings or plugin server never reaches F5's
+        // server, neither through the endpoint nor through MCP Apps.
+        context.mcpHubAttachment?.decline(
+          Object.keys(desired).filter((name) => !outcome.owned.has(name)),
+        );
         if (outcome.applied) {
           // Keep in-process recovery (which re-creates the query) on the new set.
           const recoveryServers = { ...outcome.applied, ...context.internalMcpServers };
@@ -8153,20 +8292,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const denyListChanged =
           stableMcpConfigKey([...context.activeDisallowedTools].sort()) !==
           stableMcpConfigKey([...context.queryOptions.disallowedTools].sort());
+        const result = withMcpHubOmissions(outcome.result, hubOmitted);
         return denyListChanged
           ? {
-              ...outcome.result,
+              ...result,
               converged: false,
               restartRequired: true,
               errors: [
-                ...outcome.result.errors,
+                ...result.errors,
                 {
                   message:
                     "Claude must restart to update its MCP tool deny list. The live F5 MCP filters already enforce the saved settings.",
                 },
               ],
             }
-          : outcome.result;
+          : result;
       });
 
     const respondToUserInput: ClaudeAdapterShape["respondToUserInput"] = (

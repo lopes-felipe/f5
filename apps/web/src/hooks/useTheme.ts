@@ -73,10 +73,11 @@ function subscribe(listener: () => void): () => void {
   };
   mq.addEventListener("change", handleChange);
 
-  // Listen for storage changes from other tabs
+  // Listen for storage changes from other tabs. Keep an unpersisted local
+  // selection (`fallbackTheme !== null`) intact until a subsequent local write
+  // succeeds, so queued storage events cannot overwrite it.
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === THEME_MODE_STORAGE_KEY) {
-      fallbackTheme = null;
+    if (e.key === THEME_MODE_STORAGE_KEY && fallbackTheme === null) {
       applyTheme(readStoredThemeMode(), true);
       emitChange();
     }
@@ -90,6 +91,13 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+export function setThemeMode(next: ThemeMode): void {
+  const persisted = safeLocalStorageSetItem(THEME_MODE_STORAGE_KEY, next);
+  fallbackTheme = persisted ? null : next;
+  applyTheme(next, true);
+  emitChange();
+}
+
 export function useTheme() {
   const snapshot = useSyncExternalStore(subscribe, getSnapshot);
   const theme = snapshot.theme;
@@ -97,10 +105,7 @@ export function useTheme() {
   const resolvedTheme = resolveThemeMode(theme);
 
   const setTheme = useCallback((next: ThemeMode) => {
-    const persisted = safeLocalStorageSetItem(THEME_MODE_STORAGE_KEY, next);
-    fallbackTheme = persisted ? null : next;
-    applyTheme(next, true);
-    emitChange();
+    setThemeMode(next);
   }, []);
 
   // Keep DOM in sync on mount/change
@@ -109,6 +114,14 @@ export function useTheme() {
   }, [theme]);
 
   return { theme, setTheme, resolvedTheme } as const;
+}
+
+export function getThemeSnapshotForTests(): ThemeSnapshot {
+  return getSnapshot();
+}
+
+export function subscribeThemeForTests(listener: () => void): () => void {
+  return subscribe(listener);
 }
 
 export function resetThemeStateForTests(): void {

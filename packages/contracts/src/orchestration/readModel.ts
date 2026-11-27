@@ -171,6 +171,14 @@ export const WorkflowTurnExecutionProfile = Schema.Literals([
   "unattended-readonly",
 ]);
 export type WorkflowTurnExecutionProfile = typeof WorkflowTurnExecutionProfile.Type;
+/**
+ * How a read-only workflow stage is kept read-only. `sandbox`: the provider runs commands in an
+ * OS sandbox that cannot write the workspace or reach the network. `policy`: F5 or the provider
+ * decides each operation (plan mode, F5's command allowlist). `f5-sandbox` is reserved for an
+ * F5-owned wrapper around the provider process; nothing resolves to it yet.
+ */
+export const ReadOnlyEnforcement = Schema.Literals(["sandbox", "policy", "f5-sandbox"]);
+export type ReadOnlyEnforcement = typeof ReadOnlyEnforcement.Type;
 export const ProviderRequestKind = Schema.Literals([
   "command",
   "file-read",

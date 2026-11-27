@@ -1,1 +1,0 @@
-- GitLab pull request watches now react when a comment is edited in place. Resolving a discussion no longer counts as a comment edit.

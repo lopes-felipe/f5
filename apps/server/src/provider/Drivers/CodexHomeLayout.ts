@@ -28,7 +28,7 @@ export function codexResetCreditIdentity(home: string): string {
   return `codex-home:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
-const KNOWN_SHARED_DIRECTORIES = [
+export const KNOWN_SHARED_DIRECTORIES = [
   "sessions",
   "archived_sessions",
   "sqlite",
@@ -53,7 +53,7 @@ const REPLACEABLE_SHARED_RUNTIME_ENTRIES = new Set([
 ]);
 export const CODEX_SHADOW_MANAGED_FILES_MANIFEST = ".f5-managed-codex-files.json";
 // Finder maintains .DS_Store separately for each directory, including shadow homes.
-const SHADOW_LOCAL_ENTRY_NAMES = new Set([
+export const SHADOW_LOCAL_ENTRY_NAMES: ReadonlySet<string> = new Set([
   "log",
   "memories",
   "tmp",

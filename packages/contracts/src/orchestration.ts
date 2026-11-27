@@ -80,6 +80,7 @@ export {
   ProviderSandboxMode,
   ProviderUserInputAnswers,
   RUNTIME_MODE_VALUES,
+  ReadOnlyEnforcement,
   RewindDraft,
   RewindDraftState,
   RuntimeAgentBrowserCapabilities,

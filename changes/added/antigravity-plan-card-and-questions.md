@@ -1,3 +1,0 @@
-- In Plan mode, Antigravity's plan appears as F5's plan card, with Implement and refine, as it does for Claude, Codex and Cursor.
-- Antigravity asks its questions in F5's question card instead of in its reply. The card stays open, and Antigravity keeps waiting, until you answer or its turn ends.
-- Antigravity's own plan, task and walkthrough files show as "Updated artifact" entries, not as changed files in F5's profile folder.

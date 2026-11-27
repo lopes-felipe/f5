@@ -12,6 +12,17 @@ import {
   readCursorMcpConfigNames,
   resolveCursorMcpServers,
 } from "./cursorMcpServers.ts";
+import type { McpHubAttachmentUpdate } from "../../mcp/hub/McpHub.ts";
+
+const noUpdate = (): McpHubAttachmentUpdate => ({
+  changed: [],
+  removed: [],
+  added: [],
+  addedEndpoints: [],
+  endpoints: [],
+  timeoutRaised: [],
+  omitted: [],
+});
 
 const project = {
   docs: { type: "http", url: "https://docs.example/mcp", headers: { "X-Team": "a" } },
@@ -172,6 +183,100 @@ describe("resolveCursorMcpServers", () => {
       }
     },
   );
+
+  it("routes every eligible server, stdio included, through the hub", () => {
+    const attached: string[][] = [];
+    let disposed = false;
+    const resolved = resolveCursorMcpServers({
+      automationServers: [
+        { type: "http", name: "f5_thread_abc", url: "http://127.0.0.1/x", headers: [] },
+      ],
+      projectServers: project,
+      cursorConfigNames: new Set(["shared"]),
+      capabilities: { http: true, sse: false },
+      attachHub: (servers) => {
+        attached.push(Object.keys(servers));
+        return {
+          endpoints: Object.keys(servers)
+            .filter((name) => name !== "events")
+            .map((name) => ({
+              serverName: name,
+              url: `http://127.0.0.1:9/mcp/user/${name}`,
+              token: `token-${name}`,
+              transport: servers[name]!.type,
+              toolTimeoutMs: 600_000,
+              startupTimeoutMs: 30_000,
+            })),
+          omitted: [{ serverName: "events", reason: "could not start" }],
+          credentials: [],
+          update: noUpdate,
+          decline: () => undefined,
+          dispose: async () => {
+            disposed = true;
+          },
+        };
+      },
+    });
+    expect(attached).toEqual([["docs", "events", "local", "token"]]);
+    expect(resolved.servers.map((server) => server.name)).toEqual([
+      "f5_thread_abc",
+      "docs",
+      "local",
+      "token",
+    ]);
+    expect(resolved.servers[2]).toEqual({
+      type: "http",
+      name: "local",
+      url: "http://127.0.0.1:9/mcp/user/local",
+      headers: [{ name: "Authorization", value: "Bearer token-local" }],
+    });
+    expect(resolved.ownedNames).toEqual(["docs", "local", "token"]);
+    expect(resolved.omitted.map((entry) => entry.name).toSorted()).toEqual([
+      "events",
+      "f5_preview",
+      "shared",
+    ]);
+    void resolved.dispose?.();
+    expect(disposed).toBe(true);
+  });
+
+  it("uses the stdio shim when Cursor offers no HTTP MCP", () => {
+    const resolved = resolveCursorMcpServers({
+      automationServers: [],
+      projectServers: { local: { type: "stdio", command: "node" } } as McpProjectServersConfig,
+      cursorConfigNames: new Set(),
+      capabilities: { http: false, sse: false },
+      stdioLaunch: { command: "/bin/t3", args: ["mcp-session-stdio"], env: {} },
+      attachHub: () => ({
+        endpoints: [
+          {
+            serverName: "local",
+            url: "http://127.0.0.1:9/mcp/user/a",
+            token: "secret-token",
+            transport: "stdio",
+            toolTimeoutMs: 600_000,
+            startupTimeoutMs: 30_000,
+          },
+        ],
+        omitted: [],
+        credentials: [],
+        update: noUpdate,
+        decline: () => undefined,
+        dispose: async () => undefined,
+      }),
+    });
+    expect(resolved.servers).toEqual([
+      expect.objectContaining({
+        name: "local",
+        command: "/bin/t3",
+        args: ["mcp-session-stdio"],
+        env: expect.arrayContaining([
+          { name: "F5_MCP_URL", value: "http://127.0.0.1:9/mcp/user/a" },
+          { name: "F5_MCP_TOKEN", value: "secret-token" },
+        ]),
+      }),
+    ]);
+  });
 
   it("reports nothing when every server is forwarded", () => {
     const resolved = resolveCursorMcpServers({

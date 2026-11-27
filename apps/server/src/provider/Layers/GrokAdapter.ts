@@ -1,3 +1,4 @@
+import * as NodeOs from "node:os";
 import { acpPdfDocuments } from "../pdfDocuments.ts";
 import {
   driverSupportsReadOnlyWorkflowTurns,
@@ -40,7 +41,13 @@ import {
   isAntigravityInteractionToolCall,
 } from "../acp/AntigravityInteraction.ts";
 import type { InteractionOutcome, InteractionSession } from "../../mcp/interactionMcpTools.ts";
-import type { McpSessionStdioLaunch } from "../../mcp/sessionStdioShim.ts";
+import { mcpSessionStdioLaunch, type McpSessionStdioLaunch } from "../../mcp/sessionStdioShim.ts";
+import {
+  describeMcpHubOmissions,
+  type McpHubOmission,
+  type McpHubShape,
+} from "../../mcp/hub/McpHub.ts";
+import { hubEndpointsToAcpServers } from "../../mcp/hub/acpHubServers.ts";
 import {
   type AntigravityTurnFailure,
   type AntigravityTurnNotice,
@@ -117,6 +124,10 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
+import {
+  assertReadOnlyProjectConfig,
+  findAntigravityProjectHooksConflict,
+} from "../readOnlyProjectConfig.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import {
   type AcpSessionRuntimeShape,
@@ -206,6 +217,8 @@ export interface GrokAdapterLiveOptions {
   /** Test seam: how the stdio MCP relay starts; null offers no stdio catalogs. */
   readonly mcpSessionStdioLaunch?: McpSessionStdioLaunch | null;
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
+  /** Serves the project's MCP servers through loopback endpoints. */
+  readonly mcpHub?: McpHubShape;
   readonly computerAutomationBroker?: ComputerAutomationBrokerRuntime;
   readonly provider?: ProviderKind;
   readonly nativeCompaction?: boolean;
@@ -455,6 +468,23 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
     const providerLabel =
       PROVIDER === "acp" ? "Custom ACP agent" : PROVIDER === "antigravity" ? "Antigravity" : "Grok";
     const normalizeModel = options?.normalizeModel ?? resolveGrokAcpBaseModelId;
+    /**
+     * Refuses a read-only Antigravity stage in a workspace whose `.agents/hooks.json` defines
+     * hooks: Antigravity runs them as shell commands once the folder is trusted.
+     */
+    const assertAntigravityReadOnlyWorkspace = (
+      cwd: string,
+      operation: "startSession" | "sendTurn",
+    ) =>
+      assertReadOnlyProjectConfig({
+        provider: PROVIDER,
+        providerName: providerLabel,
+        operation,
+        find: () =>
+          findAntigravityProjectHooksConflict(cwd, {
+            homeDir: (options?.environment ?? process.env).HOME?.trim() || NodeOs.homedir(),
+          }),
+      });
     /** Unavailable models and modes fail as validation errors before anything is sent. */
     const antigravityErrorMapper =
       (threadId: ThreadId, operation: "startSession" | "sendTurn") =>
@@ -890,6 +920,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             });
 
           const cwd = nodePath.resolve(input.cwd);
+          if (PROVIDER === "antigravity" && input.workflowExecutionProfile)
+            yield* assertAntigravityReadOnlyWorkspace(cwd, "startSession");
           // Read-only workflow sessions never start with native auto-approval.
           const startRuntimeMode: RuntimeMode =
             PROVIDER === "antigravity"
@@ -1083,10 +1115,70 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             threadId: input.threadId,
             redactForLog: catalogs.redactForLog,
           });
+          // The project's MCP servers reach the agent through F5's hub; read-only
+          // workflow turns never get them.
+          const projectMcpServers = input.workflowExecutionProfile
+            ? undefined
+            : input.providerOptions?.mcpServers;
+          // Servers the agent did not get, reported once the session is ready.
+          let hubOmissions: ReadonlyArray<McpHubOmission> = [];
+          const withHubServers =
+            (automation: typeof catalogs.mcpServers) =>
+            (
+              init: EffectAcpSchema.InitializeResponse,
+            ): ReadonlyArray<EffectAcpSchema.McpServer> => {
+              const base = automation(init);
+              const hub = options?.mcpHub;
+              if (!projectMcpServers || Object.keys(projectMcpServers).length === 0) return base;
+              if (!hub) {
+                hubOmissions = Object.keys(projectMcpServers).map((serverName) => ({
+                  serverName,
+                  reason: "was skipped because F5's MCP hub is unavailable in this runtime",
+                }));
+                return base;
+              }
+              const attachment = hub.attach({
+                threadId: input.threadId,
+                projectId: input.projectId,
+                provider: PROVIDER,
+                accountKey: boundInstanceId,
+                servers: projectMcpServers,
+                environment: options?.environment ?? process.env,
+                cwd,
+                reservedNames: new Set(base.map((server) => server.name)),
+              });
+              Effect.runFork(
+                Scope.addFinalizer(
+                  sessionScope,
+                  Effect.promise(() => attachment.dispose()),
+                ),
+              );
+              catalogs.registerForwardedCredentials(attachment.credentials);
+              const stdioLaunch =
+                options?.mcpSessionStdioLaunch !== undefined
+                  ? (options.mcpSessionStdioLaunch ?? undefined)
+                  : mcpSessionStdioLaunch();
+              const translated = hubEndpointsToAcpServers(attachment.endpoints, {
+                http: init.agentCapabilities?.mcpCapabilities?.http === true,
+                stdioLaunch,
+              });
+              hubOmissions = [...attachment.omitted, ...translated.omitted];
+              return [...base, ...translated.servers];
+            };
 
           const acp = yield* (options?.makeRuntime ?? makeGrokAcpRuntime)({
             grokSettings,
             runtimeMode: startRuntimeMode,
+            // Only sessions started for read-only workflow turns may take workflow turns, so the
+            // sandbox is decided here, once, at launch. A policy-enforced stage runs without it:
+            // the sandbox can't start on this host (F5's macOS desktop backend already runs in
+            // one), and F5's command policy decides every command instead.
+            ...(PROVIDER === "antigravity" && input.workflowExecutionProfile
+              ? {
+                  readOnlyWorkflow: true,
+                  readOnlySandbox: input.readOnlyEnforcement !== "policy",
+                }
+              : {}),
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
@@ -1097,7 +1189,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               provider: PROVIDER,
             },
             ...acpNativeLoggers,
-            mcpServers: catalogs.mcpServers,
+            mcpServers: withHubServers(catalogs.mcpServers),
             // Runs after `mcpServers`, so the guidance is sent only with the tool it names.
             ...(PROVIDER === "antigravity"
               ? {
@@ -1133,6 +1225,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   "antigravity",
                   launchedVersion,
                   runtimeBuildTarget(),
+                  NodeOs.release(),
                 ));
             if (!certified)
               return yield* new ProviderAdapterValidationError({
@@ -1395,6 +1488,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                       antigravityReadOnlyWorkflowDecision({
                         toolCall: params.toolCall,
                         computerRequest: Boolean(computerRequest),
+                        f5ThreadServerName: catalogs.readOnlyThreadServerName(),
                       }) === "allow"
                         ? selectPermissionOptionId(params, "accept")
                         : undefined;
@@ -2086,6 +2180,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             threadId: input.threadId,
             payload: { state: "ready", reason: `${providerLabel} ACP session ready` },
           });
+          const mcpOmissions = describeMcpHubOmissions(providerLabel, hubOmissions);
+          if (mcpOmissions)
+            yield* offerRuntimeEvent({
+              type: "config.warning",
+              ...(yield* makeEventStamp(ctx)),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: mcpOmissions,
+            });
           yield* offerRuntimeEvent({
             type: "thread.started",
             ...(yield* makeEventStamp(ctx)),
@@ -2202,6 +2305,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     issue:
                       "This message needs a different workflow profile than the running Antigravity turn. Wait for the turn to finish before sending it.",
                   });
+                // Hooks the workspace gained since the stage started would run from now on.
+                if (ctx.session.cwd)
+                  yield* assertAntigravityReadOnlyWorkspace(ctx.session.cwd, "sendTurn");
               }
               if (PROVIDER === "antigravity" && steeringTurnId === undefined) {
                 // Steers stay inside the running turn: no mode, model or level writes.
@@ -2704,6 +2810,17 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     },
                   });
                 ctx.completedTurnId = prepared.turnId;
+                const usageLimit =
+                  nativeFailure?.class === "usage_limit"
+                    ? {
+                        windows: [],
+                        resetsAt: nativeFailure.resetAt ?? null,
+                        resetSource: nativeFailure.resetAt
+                          ? (nativeFailure.resetSource ?? ("provider" as const))
+                          : null,
+                        evidence: nativeFailure.evidence ?? ("typed" as const),
+                      }
+                    : undefined;
                 if (nativeFailure)
                   yield* offerRuntimeEvent({
                     type: "runtime.error",
@@ -2714,18 +2831,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     payload: {
                       class: "provider_error",
                       message: nativeFailure.message,
-                      ...(nativeFailure.class === "usage_limit"
-                        ? {
-                            usageLimit: {
-                              windows: [],
-                              resetsAt: nativeFailure.resetAt ?? null,
-                              resetSource: nativeFailure.resetAt
-                                ? (nativeFailure.resetSource ?? ("provider" as const))
-                                : null,
-                              evidence: nativeFailure.evidence ?? ("typed" as const),
-                            },
-                          }
-                        : {}),
+                      ...(usageLimit ? { usageLimit } : {}),
                     },
                   });
                 yield* offerRuntimeEvent({
@@ -2737,6 +2843,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   payload: {
                     state: turnState,
                     ...(nativeFailure ? { errorMessage: nativeFailure.message } : {}),
+                    // A failed turn's terminal sets the session's usage limit; without it the
+                    // limit the runtime error just recorded is cleared again.
+                    ...(usageLimit ? { usageLimit } : {}),
                     stopReason: result.stopReason ?? null,
                   },
                 });

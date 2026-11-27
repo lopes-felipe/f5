@@ -159,7 +159,6 @@ describe("RPC method policy", () => {
         "git.runStackedAction",
         "mcp.probeServer",
         "mcp.startLogin",
-        "mcp.startOAuthLogin",
         "prHub.analyzeAdvisories",
         "projects.importAgentSessions",
         "server.codexConfiguration",
@@ -185,9 +184,6 @@ describe("RPC method policy", () => {
       >[0]),
     ).toBe("stop");
     expect(rpcLongRunningTimeoutMs({ _tag: "mcp.probeServer" })).toBe(75_000);
-    expect(rpcLongRunningTimeoutMs({ _tag: "mcp.startOAuthLogin" })).toBe(
-      CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
-    );
     // Only Codex MCP login waits for the OAuth window; other providers use the default.
     expect(rpcLongRunningTimeoutMs({ _tag: "mcp.startLogin", provider: "codex" })).toBe(
       CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,

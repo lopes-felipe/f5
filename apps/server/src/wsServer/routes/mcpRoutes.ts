@@ -9,10 +9,10 @@ import { Effect, Schema, Struct } from "effect";
 
 import type { ServerSecretStoreShape } from "../../auth/Services/ServerSecretStore.ts";
 import type { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
-import type { CodexMcpSyncService } from "../../codex/CodexMcpSyncService.ts";
-import type { CodexOAuthManager } from "../../codex/CodexOAuthManager.ts";
 import type { makeMcpAccountExecutionResolver } from "../../mcp/accountExecution.ts";
 import { detectMcpImports } from "../../mcp/McpImportDetection.ts";
+import type { McpHub } from "../../mcp/hub/McpHub.ts";
+import type { McpHubAuth } from "../../mcp/hub/McpHubAuth.ts";
 import { probeMcpServer } from "../../mcp/McpProbe.ts";
 import type { McpRuntimeService } from "../../mcp/McpRuntimeService.ts";
 import { resolveMcpSecrets } from "../../mcp/McpSecretResolver.ts";
@@ -20,7 +20,6 @@ import type { makeMcpSecretWriter } from "../../mcp/McpSecretWriter.ts";
 import type { ProjectMcpConfigService } from "../../mcp/ProjectMcpConfigService.ts";
 import type { McpAppService } from "../../mcpApps/McpAppService.ts";
 import type { ProviderCommandReactorShape } from "../../orchestration/Services/ProviderCommandReactor.ts";
-import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions.ts";
 import type { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { RouteRequestError } from "../../turnSubmissionErrors.ts";
 import { routePromise, type RouteTable } from "./routeTable.ts";
@@ -40,11 +39,13 @@ type McpMethod =
   | typeof WS_METHODS.mcpReconnectServer
   | typeof WS_METHODS.mcpStartLogin
   | typeof WS_METHODS.mcpGetLoginStatus
-  | typeof WS_METHODS.mcpGetCodexStatus
-  | typeof WS_METHODS.mcpReloadProject
+  | typeof WS_METHODS.mcpGetHubStatus
+  | typeof WS_METHODS.mcpReconnectHubServer
+  | typeof WS_METHODS.mcpGetHubAuthStatus
+  | typeof WS_METHODS.mcpStartHubSignIn
+  | typeof WS_METHODS.mcpCompleteHubSignIn
+  | typeof WS_METHODS.mcpSignOutHubServer
   | typeof WS_METHODS.mcpApplyToLiveSessions
-  | typeof WS_METHODS.mcpStartOAuthLogin
-  | typeof WS_METHODS.mcpGetOAuthStatus
   | typeof MCP_APPS_WS_METHODS.toolInfo
   | typeof MCP_APPS_WS_METHODS.callTool
   | typeof MCP_APPS_WS_METHODS.readResource
@@ -53,9 +54,9 @@ type McpMethod =
 export interface McpRouteDependencies {
   readonly projectMcpConfigService: typeof ProjectMcpConfigService.Service;
   readonly mcpRuntimeService: typeof McpRuntimeService.Service;
+  readonly mcpHub: typeof McpHub.Service | undefined;
+  readonly mcpHubAuth: typeof McpHubAuth.Service | undefined;
   readonly codexMcpEventBus: typeof CodexMcpEventBus.Service;
-  readonly codexMcpSyncService: typeof CodexMcpSyncService.Service;
-  readonly codexOAuthManager: typeof CodexOAuthManager.Service;
   readonly providerService: typeof ProviderService.Service;
   readonly profileSecrets: ServerSecretStoreShape;
   readonly storeMcpSecret: Effect.Success<ReturnType<typeof makeMcpSecretWriter>>;
@@ -89,9 +90,9 @@ const withoutTag = <Body extends { readonly _tag: string }>(body: Body) =>
 export const mcpRoutes = ({
   projectMcpConfigService,
   mcpRuntimeService,
+  mcpHub,
+  mcpHubAuth,
   codexMcpEventBus,
-  codexMcpSyncService,
-  codexOAuthManager,
   providerService,
   profileSecrets,
   storeMcpSecret,
@@ -291,58 +292,48 @@ export const mcpRoutes = ({
       return yield* mcpRuntimeService.getLoginStatus(body);
     }),
 
-  [WS_METHODS.mcpGetCodexStatus]: (request) =>
+  [WS_METHODS.mcpGetHubStatus]: (request) =>
+    Effect.succeed({ servers: mcpHub ? [...mcpHub.status(request.projectId)] : [] }),
+
+  [WS_METHODS.mcpReconnectHubServer]: (request) =>
     Effect.gen(function* () {
-      const body = yield* routePromise(() => resolveMcpAccount(withoutTag(request)));
-      const providerOptions = toCodexProviderStartOptions({
-        binaryPath: body.binaryPath,
-        homePath: body.homePath,
-      });
-      return yield* codexMcpSyncService.getStatus({
-        projectId: body.projectId,
-        ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-        ...(providerOptions ? { providerOptions } : {}),
-      });
+      const reconnected = mcpHub
+        ? yield* Effect.promise(() => mcpHub.reconnect(request.serverName, request.projectId))
+        : 0;
+      return { reconnected };
     }),
 
-  [WS_METHODS.mcpReloadProject]: (request) =>
-    Effect.gen(function* () {
-      const body = yield* routePromise(() => resolveMcpAccount(withoutTag(request)));
-      const providerOptions = toCodexProviderStartOptions({
-        binaryPath: body.binaryPath,
-        homePath: body.homePath,
-      });
-      yield* providerService.reloadMcpConfigForProject({
-        provider: "codex",
-        projectId: body.projectId,
-        ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-        ...(providerOptions ? { providerOptions } : {}),
-      });
-      const status = yield* codexMcpSyncService.getStatus({
-        projectId: body.projectId,
-        ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-        ...(providerOptions ? { providerOptions } : {}),
-      });
-      yield* codexMcpEventBus.publishStatusUpdated({
-        provider: "codex",
-        scope: "project",
-        projectId: body.projectId,
-        ...(body.instanceId ? { instanceId: body.instanceId } : {}),
-        reason: "reloaded",
-        ...(status.configVersion ? { configVersion: status.configVersion } : {}),
-      });
-      return status;
-    }),
+  [WS_METHODS.mcpGetHubAuthStatus]: (request) =>
+    mcpHubAuth
+      ? mcpHubAuth
+          .status(request.projectId)
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+      : Effect.succeed({ servers: [] }),
+
+  [WS_METHODS.mcpStartHubSignIn]: (request) =>
+    mcpHubAuth
+      ? mcpHubAuth
+          .startSignIn(withoutTag(request))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+      : Effect.fail(new RouteRequestError({ message: "MCP sign-in is unavailable here." })),
+
+  [WS_METHODS.mcpCompleteHubSignIn]: (request) =>
+    mcpHubAuth
+      ? mcpHubAuth
+          .completeSignIn(withoutTag(request))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+      : Effect.fail(new RouteRequestError({ message: "MCP sign-in is unavailable here." })),
+
+  [WS_METHODS.mcpSignOutHubServer]: (request) =>
+    mcpHubAuth
+      ? mcpHubAuth
+          .signOut(withoutTag(request))
+          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
+      : Effect.succeed({ signedOut: false }),
 
   [WS_METHODS.mcpApplyToLiveSessions]: (request) =>
     Effect.gen(function* () {
       const body = withoutTag(request);
-      if (body.binaryPath !== undefined || body.homePath !== undefined) {
-        return yield* new RouteRequestError({
-          message:
-            "Client-supplied provider executable and home paths are not accepted. Select a provider instance.",
-        });
-      }
       const { providerCommandReactor } = yield* runtime;
       const result = yield* providerCommandReactor
         .applyMcpConfigToLiveSessions(body)
@@ -355,20 +346,6 @@ export const mcpRoutes = ({
         ...(result.configVersion ? { configVersion: result.configVersion } : {}),
       });
       return result;
-    }),
-
-  [WS_METHODS.mcpStartOAuthLogin]: (request) =>
-    Effect.gen(function* () {
-      const body = yield* routePromise(() => resolveMcpAccount(withoutTag(request)));
-      return yield* codexOAuthManager
-        .startLogin(body)
-        .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-    }),
-
-  [WS_METHODS.mcpGetOAuthStatus]: (request) =>
-    Effect.gen(function* () {
-      const body = yield* routePromise(() => resolveMcpAccount(withoutTag(request)));
-      return yield* codexOAuthManager.getStatus(body);
     }),
 
   [MCP_APPS_WS_METHODS.toolInfo]: (request) =>

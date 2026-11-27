@@ -50,6 +50,44 @@ describe("ACP catalogs and privacy", () => {
     await Effect.runPromise(Scope.close(scope, Exit.void));
     expect(dispose).toHaveBeenCalledOnce();
   });
+  it("offers a read-only workflow stage only the reading thread tools, under a generated name", async () => {
+    const createSessionConfig = vi.fn(({ serverName }: { serverName?: string }) => ({
+      serverName: serverName ?? "f5_thread",
+      env: { THREAD_TOKEN: "thread-private-token" },
+      serverDefinition: {
+        type: "http",
+        url: "http://127.0.0.1:1234/mcp/thread",
+        bearerTokenEnvVar: "THREAD_TOKEN",
+      },
+      dispose: vi.fn(),
+    }));
+    const scope = await Effect.runPromise(Scope.make());
+    const catalogs = await Effect.runPromise(
+      prepareAcpAutomationCatalogs({
+        threadId,
+        provider: "antigravity",
+        scope,
+        ordinarySession: false,
+        threadSession: false,
+        readOnlyWorkflow: true,
+        verification: { preview: true, computer: true },
+        interaction: {} as never,
+        preview: {
+          supportsThreadCatalog: true,
+          createSessionConfig,
+        } as unknown as PreviewMcpHttpServerShape,
+      }),
+    );
+    const offered = catalogs.mcpServers(init);
+    expect(offered).toHaveLength(1);
+    expect(createSessionConfig).toHaveBeenCalledTimes(1);
+    expect(createSessionConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ catalog: "thread", threadAccess: "read-only" }),
+    );
+    expect(catalogs.readOnlyThreadServerName()).toMatch(/^f5_thread_[a-f0-9]{8}$/);
+    expect(offered[0]).toMatchObject({ name: catalogs.readOnlyThreadServerName() });
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+  });
   it.each([true, false])(
     "offers thread tools only to an ordinary HTTP-capable agent (%s)",
     async (http) => {

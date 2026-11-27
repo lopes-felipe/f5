@@ -103,6 +103,8 @@ import {
   PreviewMcpHttpServerError,
   PreviewMcpHttpServerLive,
 } from "./mcp/PreviewMcpHttpServer";
+import { McpHub, McpHubLive } from "./mcp/hub/McpHub";
+import { McpHubAuth, McpHubAuthLive } from "./mcp/hub/McpHubAuth";
 import { StorageMaintenanceLive } from "./storage/StorageMaintenance";
 import { PrHubAdvisoryServiceLive } from "./prHub/Layers/PrHubAdvisoryService";
 import { PrHubFederationLive, PrHubFederatedServiceLive } from "./prHub/Layers/PrHubFederation";
@@ -172,6 +174,8 @@ export function makeServerProviderLayer(): Layer.Layer<
   | PreviewAutomationBroker
   | ComputerAutomationBroker
   | PreviewMcpHttpServer
+  | McpHub
+  | McpHubAuth
   | ThreadMcpBroker
   | ProviderRegistry
   | ProviderUpdateAdvisor
@@ -229,7 +233,21 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(computerAutomationBrokerLayer),
       Layer.provide(previewAutomationBrokerLayer),
     );
+    const codexMcpEventBusLayer = CodexMcpEventBusLive;
+    // Mounted on the same loopback listener; pushes status over the MCP event bus.
+    const mcpHubLayer = McpHubLive.pipe(
+      Layer.provide(previewMcpHttpServerLayer),
+      Layer.provide(codexMcpEventBusLayer),
+      Layer.provide(ServerSecretStoreLive),
+    );
+    // Sign-in shares the hub's token storage, so a new token reaches open connections.
+    const mcpHubAuthLayer = McpHubAuthLive.pipe(
+      Layer.provide(mcpHubLayer),
+      Layer.provide(codexMcpEventBusLayer),
+      Layer.provide(projectMcpConfigServiceLayer),
+    );
     const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe(
+      Layer.provide(mcpHubLayer),
       Layer.provide(ProviderContinuationRequestsLive),
       Layer.provide(ProviderNativeHistoryLive),
       Layer.provide(ThreadMcpBrokerLive),
@@ -247,14 +265,16 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(serverSettingsLayer),
       Layer.provide(providerInstanceRegistryLayer),
     );
-    const codexMcpEventBusLayer = CodexMcpEventBusLive;
     const codexControlClientRegistryLayer = CodexControlClientRegistryLive.pipe(
       Layer.provide(serverSettingsLayer),
       Layer.provide(ProjectionProjectRepositoryLive),
     );
+    // Codex admin clients carry no F5 servers while the hub serves Codex sessions.
     const codexMcpSyncServiceLayer = CodexMcpSyncServiceLive.pipe(
       Layer.provide(codexControlClientRegistryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provide(mcpHubLayer),
+      Layer.provide(serverSettingsLayer),
     );
     const providerServiceLayer = makeProviderServiceLive({
       ...(canonicalEventLogger ? { canonicalEventLogger } : {}),
@@ -290,6 +310,8 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexMcpSyncServiceLayer),
       Layer.provide(codexMcpEventBusLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provide(mcpHubLayer),
+      Layer.provide(serverSettingsLayer),
     );
     const mcpRuntimeServiceLayer = McpRuntimeServiceLive.pipe(
       Layer.provide(ProjectionProjectRepositoryLive),
@@ -301,6 +323,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexOAuthManagerLayer),
       Layer.provide(codexMcpEventBusLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provide(mcpHubLayer),
     );
     return Layer.mergeAll(
       ProviderContinuationRequestsLive,
@@ -324,6 +347,8 @@ export function makeServerProviderLayer(): Layer.Layer<
       previewAutomationBrokerLayer,
       computerAutomationBrokerLayer,
       previewMcpHttpServerLayer,
+      mcpHubLayer,
+      mcpHubAuthLayer,
       ThreadMcpBrokerLive,
     );
   }).pipe(Effect.provide(ProviderTerminalEventRepositoryLive), Layer.unwrap);

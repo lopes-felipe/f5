@@ -34,6 +34,9 @@ type Extensions = Pick<
   | "submitOperation"
 >;
 const failure = (message: string) => new ThreadToolError({ message });
+/** `repository_file_read` returns at most this much of a file's text. */
+export const REPOSITORY_FILE_BYTE_LIMIT = 100_000;
+const REPOSITORY_DIRECTORY_ENTRY_LIMIT = 1_000;
 const limitText = (text: string, max: number) => truncateUtf8(text, max).text;
 
 function logTail(excerpt: string, lines: number) {
@@ -109,7 +112,7 @@ function summarize(detail: SourceControlPullRequestSummary) {
 export function makePullRequestMcpHandler(deps: {
   readonly federation: Pick<PrHubFederationShape, "resolve" | "parseUrl">;
   readonly extensions: Extensions;
-  readonly git: Pick<GitManagerShape, "status" | "branchPullRequest">;
+  readonly git: Pick<GitManagerShape, "sourceControlIdentity" | "branchPullRequest">;
   readonly engine: Pick<OrchestrationEngineShape, "dispatch">;
 }) {
   return (
@@ -121,24 +124,42 @@ export function makePullRequestMcpHandler(deps: {
     Effect.gen(function* () {
       const { input, name } = request;
       const workspace = threadWorkspaceCwd(thread, project);
+      // From the remotes only (never `git status`, which can fetch and update refs), and looked
+      // up at most once per call. A lookup error fails the call: treating it as "no home
+      // repository" would skip the same-host check below.
+      const homeRepository = yield* Effect.cached(
+        Effect.gen(function* () {
+          if (!workspace) return undefined;
+          const identity = yield* deps.git.sourceControlIdentity(workspace);
+          if (!identity?.host || !identity.owner || !identity.repository) return undefined;
+          return {
+            provider: identity.kind,
+            host: identity.host,
+            repository: [identity.owner, identity.repository].join("/"),
+            number: 1,
+          } satisfies SourceControlPullRequestRef;
+        }),
+      );
+      /**
+       * The thread's repository when it has one. Read-only tools also work without it (a project
+       * root holding several repositories, say): the PR's forge host must then belong to a
+       * connected account, which `resolve` enforces.
+       */
+      const optionalHomeRepository = homeRepository;
       const repositoryRef = (repository?: string) =>
         Effect.gen(function* () {
           if (!workspace) return yield* failure("This thread has no repository workspace.");
-          const status = yield* deps.git.status({ cwd: workspace });
-          const identity = status.sourceControl;
-          if (!identity?.host || !identity.owner || !identity.repository)
-            return yield* failure("This thread's repository has no recognized forge.");
-          const path = repository ?? [identity.owner, identity.repository].join("/");
+          const home = yield* homeRepository;
+          if (!home) return yield* failure("This thread's repository has no recognized forge.");
+          const path = repository ?? home.repository;
           if (
             !/^[\w.-]+(?:\/[\w.-]+)+$/u.test(path) ||
             path.split("/").some((part) => part === "." || part === "..")
           )
             return yield* failure("Use a repository path such as owner/repository.");
           return {
-            provider: identity.kind,
-            host: identity.host,
+            ...home,
             repository: path,
-            number: 1,
           } satisfies SourceControlPullRequestRef;
         });
       const resolve = (ref: SourceControlPullRequestRef) =>
@@ -228,6 +249,79 @@ export function makePullRequestMcpHandler(deps: {
         return summarize(detail);
       }
 
+      if (name === "repository_file_read") {
+        const path = (input.path ?? "").replace(/^\/+|\/+$/gu, "");
+        if (
+          path &&
+          (path.includes("\\") ||
+            path.includes("\0") ||
+            path.split("/").some((part) => part === "" || part === "." || part === ".."))
+        )
+          return yield* failure("Use a path from the repository root, without . or .. segments.");
+        let target: SourceControlPullRequestRef;
+        if (input.pr) {
+          if (input.number !== undefined || input.repository !== undefined)
+            return yield* failure(
+              "Use a PR URL or key, or use a PR number with an optional repository.",
+            );
+          const parsed =
+            parseSourceControlPullRequestKey(input.pr) ??
+            (yield* deps.federation.parseUrl(input.pr));
+          if (!parsed) return yield* failure("Specify a pull request URL or key.");
+          target = parsed;
+        } else if (input.number !== undefined) {
+          target = { ...(yield* repositoryRef(input.repository)), number: input.number };
+        } else {
+          target = yield* repositoryRef(input.repository);
+        }
+        const home = yield* optionalHomeRepository;
+        if (
+          home &&
+          (target.provider !== home.provider ||
+            target.host.toLowerCase() !== home.host.toLowerCase())
+        )
+          return yield* failure("This repository is outside the thread's forge.");
+        const runtime = yield* resolve(target);
+        const read = runtime.provider.readRepositoryContent;
+        if (!read)
+          return yield* failure("Reading repository files is not supported for this forge.");
+        let revision = input.ref;
+        if (!revision && (input.pr !== undefined || input.number !== undefined)) {
+          revision = (yield* runtime.provider.getDetail(target)).headRefOid ?? undefined;
+          if (!revision)
+            return yield* failure("The forge did not return a current pull request head.");
+        }
+        const content = yield* read({ ref: target, path, revision });
+        const location = {
+          repository: target.repository,
+          revision: revision ?? null,
+          path,
+        };
+        if (content.kind === "directory")
+          return {
+            ...location,
+            kind: "directory",
+            entries: content.entries.slice(0, REPOSITORY_DIRECTORY_ENTRY_LIMIT),
+            truncated: content.entries.length > REPOSITORY_DIRECTORY_ENTRY_LIMIT,
+          };
+        const text =
+          content.text === null ? null : truncateUtf8(content.text, REPOSITORY_FILE_BYTE_LIMIT);
+        return {
+          ...location,
+          kind: "file",
+          size: content.size,
+          text: text?.text ?? null,
+          truncated: text?.truncated ?? false,
+          ...(content.binary
+            ? { note: "Binary file; its content is not shown." }
+            : text === null
+              ? {
+                  note: "The forge did not return this file's content; it may be too large.",
+                }
+              : {}),
+        };
+      }
+
       let ref: SourceControlPullRequestRef | null = null;
       if (input.pr) {
         if (input.number !== undefined || input.repository !== undefined)
@@ -250,20 +344,22 @@ export function makePullRequestMcpHandler(deps: {
         if (branchPr) ref = yield* deps.federation.parseUrl(branchPr.url);
       }
       if (!ref) return yield* failure("Specify a pull request URL or number.");
-      const home = yield* repositoryRef();
       const readOnly = name === "pull_request_read" || name === "ci_logs";
-      const sameRepository =
-        home.provider === "github"
-          ? ref.repository.toLowerCase() === home.repository.toLowerCase()
-          : ref.repository === home.repository;
-      if (
-        ref.provider !== home.provider ||
-        ref.host.toLowerCase() !== home.host.toLowerCase() ||
-        (!readOnly && !sameRepository)
-      )
-        return yield* failure(
-          "This pull request is outside the thread's forge or writable repository.",
-        );
+      const home = readOnly ? yield* optionalHomeRepository : yield* repositoryRef();
+      if (home) {
+        const sameRepository =
+          home.provider === "github"
+            ? ref.repository.toLowerCase() === home.repository.toLowerCase()
+            : ref.repository === home.repository;
+        if (
+          ref.provider !== home.provider ||
+          ref.host.toLowerCase() !== home.host.toLowerCase() ||
+          (!readOnly && !sameRepository)
+        )
+          return yield* failure(
+            "This pull request is outside the thread's forge or writable repository.",
+          );
+      }
       const key = PullRequestKey.makeUnsafe(formatSourceControlPullRequestKey(ref));
       const runtime = yield* resolve(ref);
       const provider = runtime.provider;
@@ -446,7 +542,11 @@ export function makePullRequestMcpHandler(deps: {
       const detail = yield* provider.getDetail(ref);
       const headSha = detail.headRefOid;
       if (!headSha) return yield* failure("The forge did not return a current pull request head.");
-      const operations: Array<{ id: string; status: string; warning?: string | undefined }> = [];
+      const operations: Array<{
+        id: string;
+        status: string;
+        warning?: string | undefined;
+      }> = [];
       const operationId = input.operationId ?? randomUUID();
       const operationKey = createHash("sha256")
         .update(JSON.stringify([thread.id, operationId]))

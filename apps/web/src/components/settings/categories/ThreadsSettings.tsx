@@ -16,6 +16,7 @@ import {
 import { useSettings, useUpdateSettings } from "../../../hooks/useSettings";
 import { serverConfigQueryOptions } from "../../../lib/serverReactQuery";
 import { resolveClaudeSubagentModel } from "../../ChatView.logic";
+import { RUNTIME_MODE_PRESENTATION } from "../../chat/runtimeModePresentation";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { SettingsCard, SettingsRow } from "../SettingsCard";
 import { SessionNotesSettings } from "../SessionNotesSettings";
@@ -31,10 +32,10 @@ import { useCommitOnBlur } from "../../../hooks/useCommitOnBlur";
 export { THREADS_SETTINGS_DESCRIPTORS } from "./ThreadsSettings.descriptors";
 
 export const RUNTIME_MODE_LABELS = {
-  "full-access": "Full access",
-  "approval-required": "Ask for approval",
-  "auto-accept-edits": "Accept edits",
-  auto: "Auto",
+  "full-access": RUNTIME_MODE_PRESENTATION["full-access"].label,
+  "approval-required": RUNTIME_MODE_PRESENTATION["approval-required"].label,
+  "auto-accept-edits": RUNTIME_MODE_PRESENTATION["auto-accept-edits"].label,
+  auto: RUNTIME_MODE_PRESENTATION.auto.label,
 } as const;
 type RuntimeModeOption = keyof typeof RUNTIME_MODE_LABELS;
 const RUNTIME_MODE_OPTIONS = Object.keys(RUNTIME_MODE_LABELS) as RuntimeModeOption[];

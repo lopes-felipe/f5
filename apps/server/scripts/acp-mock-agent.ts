@@ -1343,7 +1343,8 @@ const program = Effect.gen(function* () {
           .pipe(Effect.delay(`${postPromptWakeMs} millis`), Effect.ignore, Effect.forkDetach);
       }
 
-      return { stopReason: "end_turn" };
+      // Antigravity maps the SDK's QUOTA_EXHAUSTED stop reason to `refusal`.
+      return { stopReason: process.env.F5_ACP_STOP_REASON === "refusal" ? "refusal" : "end_turn" };
     }),
   );
 

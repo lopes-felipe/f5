@@ -15,6 +15,7 @@ import { makeProviderLimits } from "../../usage/providerLimits.ts";
  */
 import { OpenCodeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
 import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
+import { mcpHubAdapterOption } from "../../mcp/hub/McpHub.ts";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeOpenCodeTextGeneration } from "../../git/Layers/OpenCodeTextGeneration.ts";
@@ -98,6 +99,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
       const adapter = yield* makeOpenCodeAdapter(effectiveConfig, {
         instanceId,
         environment: processEnv,
+        ...(yield* mcpHubAdapterOption),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
       });
       const accountUsage = yield* makeProviderLimits({

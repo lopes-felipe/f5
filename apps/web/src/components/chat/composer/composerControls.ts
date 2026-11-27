@@ -90,6 +90,7 @@ export interface ComposerModelControls {
   selectedProviderModels: React.ComponentProps<typeof ClaudeTraitsPicker>["models"];
   selectedProviderModelOptions: React.ComponentProps<typeof ClaudeTraitsPicker>["modelOptions"];
   genericProviderTraitsPicker: React.ReactNode;
+  genericProviderTraitsMenuContent: React.ReactNode;
 }
 
 /** Interaction mode, runtime mode, plan sidebar and conversation compaction. */
