@@ -310,6 +310,186 @@ export const McpThreadServersResult = Schema.Struct({
 });
 export type McpThreadServersResult = typeof McpThreadServersResult.Type;
 
+/**
+ * A server from the project's `.mcp.json`. Only approved servers run; a changed
+ * definition needs approval again. `overridden` means a project server has its name.
+ */
+export const McpRepositoryServerState = Schema.Literals(["approved", "needs-approval", "changed"]);
+export type McpRepositoryServerState = typeof McpRepositoryServerState.Type;
+
+export const McpRepositoryServer = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  server: McpServerDefinition,
+  definitionHash: TrimmedNonEmptyString,
+  state: McpRepositoryServerState,
+  overridden: Schema.Boolean,
+  /** Turned off for this project by its opt-outs. */
+  disabled: Schema.Boolean,
+});
+export type McpRepositoryServer = typeof McpRepositoryServer.Type;
+
+export const McpRepositoryServersResult = Schema.Struct({
+  projectId: ProjectId,
+  /** The file read, when the project has a root folder. */
+  path: Schema.optional(Schema.String),
+  found: Schema.Boolean,
+  servers: Schema.Array(McpRepositoryServer),
+  /** Entries left out, and why (invalid, secret references, unreadable file). */
+  issues: Schema.Array(Schema.String),
+});
+export type McpRepositoryServersResult = typeof McpRepositoryServersResult.Type;
+
+/** An environment variable or header a catalog entry asks for. */
+export const McpCatalogInput = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.String),
+  required: Schema.Boolean,
+  secret: Schema.Boolean,
+  /** A fixed value the entry sets, which may contain `{placeholders}`. */
+  value: Schema.optional(Schema.String),
+  default: Schema.optional(Schema.String),
+});
+export type McpCatalogInput = typeof McpCatalogInput.Type;
+
+export const McpCatalogArgument = Schema.Struct({
+  type: Schema.Literals(["positional", "named"]),
+  name: Schema.optional(Schema.String),
+  value: Schema.optional(Schema.String),
+  default: Schema.optional(Schema.String),
+  valueHint: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  required: Schema.Boolean,
+  /** A flag that takes no value, such as `--read-only`. */
+  flag: Schema.Boolean,
+});
+export type McpCatalogArgument = typeof McpCatalogArgument.Type;
+
+export const McpCatalogRemote = Schema.Struct({
+  type: Schema.Literals(["http", "sse"]),
+  url: TrimmedNonEmptyString,
+  headers: Schema.Array(McpCatalogInput),
+});
+export type McpCatalogRemote = typeof McpCatalogRemote.Type;
+
+/** A package F5 can run over stdio. */
+export const McpCatalogPackage = Schema.Struct({
+  registryType: Schema.Literals(["npm", "pypi", "oci"]),
+  identifier: TrimmedNonEmptyString,
+  version: Schema.optional(Schema.String),
+  environmentVariables: Schema.Array(McpCatalogInput),
+  packageArguments: Schema.Array(McpCatalogArgument),
+  runtimeArguments: Schema.Array(McpCatalogArgument),
+});
+export type McpCatalogPackage = typeof McpCatalogPackage.Type;
+
+export const McpCatalogEntry = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.String),
+  websiteUrl: Schema.optional(Schema.String),
+  repositoryUrl: Schema.optional(Schema.String),
+  remotes: Schema.Array(McpCatalogRemote),
+  packages: Schema.Array(McpCatalogPackage),
+});
+export type McpCatalogEntry = typeof McpCatalogEntry.Type;
+
+export const McpSearchCatalogResult = Schema.Struct({
+  entries: Schema.Array(McpCatalogEntry),
+  nextCursor: Schema.optional(Schema.String),
+});
+export type McpSearchCatalogResult = typeof McpSearchCatalogResult.Type;
+
+export const McpComposerPromptArgument = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.String),
+  required: Schema.optional(Schema.Boolean),
+});
+export type McpComposerPromptArgument = typeof McpComposerPromptArgument.Type;
+
+export const McpComposerPrompt = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  arguments: Schema.Array(McpComposerPromptArgument),
+});
+export type McpComposerPrompt = typeof McpComposerPrompt.Type;
+
+/** One server's prompts, or why they could not be listed. */
+export const McpComposerServerPrompts = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  prompts: Schema.Array(McpComposerPrompt),
+  error: Schema.optional(Schema.String),
+});
+export type McpComposerServerPrompts = typeof McpComposerServerPrompts.Type;
+
+export const McpListComposerPromptsResult = Schema.Struct({
+  servers: Schema.Array(McpComposerServerPrompts),
+});
+export type McpListComposerPromptsResult = typeof McpListComposerPromptsResult.Type;
+
+export const McpGetComposerPromptResult = Schema.Struct({
+  /** The prompt's messages as text, for the user to review in the composer. */
+  text: Schema.String,
+  /** Images, audio and binary resources in the prompt, which the composer cannot hold. */
+  omitted: NonNegativeInt,
+});
+export type McpGetComposerPromptResult = typeof McpGetComposerPromptResult.Type;
+
+export const McpCompleteComposerPromptResult = Schema.Struct({
+  values: Schema.Array(Schema.String),
+});
+export type McpCompleteComposerPromptResult = typeof McpCompleteComposerPromptResult.Type;
+
+export const McpComposerResource = Schema.Struct({
+  uri: TrimmedNonEmptyString,
+  name: Schema.String,
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  mimeType: Schema.optional(Schema.String),
+});
+export type McpComposerResource = typeof McpComposerResource.Type;
+
+export const McpComposerServerResources = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  resources: Schema.Array(McpComposerResource),
+  /** True when the server has more than the composer lists. */
+  truncated: Schema.Boolean,
+  error: Schema.optional(Schema.String),
+});
+export type McpComposerServerResources = typeof McpComposerServerResources.Type;
+
+export const McpListComposerResourcesResult = Schema.Struct({
+  servers: Schema.Array(McpComposerServerResources),
+});
+export type McpListComposerResourcesResult = typeof McpListComposerResourcesResult.Type;
+
+export const McpComposerResourceContent = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("text"),
+    uri: Schema.String,
+    mimeType: Schema.optional(Schema.String),
+    text: Schema.String,
+    /** The text was cut to fit the message's resource budget. */
+    truncated: Schema.Boolean,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("image"),
+    uri: Schema.String,
+    mimeType: TrimmedNonEmptyString,
+    /** Base64, as the server sent it. */
+    data: Schema.String,
+  }),
+]);
+export type McpComposerResourceContent = typeof McpComposerResourceContent.Type;
+
+export const McpReadComposerResourceResult = Schema.Struct({
+  contents: Schema.Array(McpComposerResourceContent),
+  /** Binary parts other than images, which are left out. */
+  omitted: NonNegativeInt,
+});
+export type McpReadComposerResourceResult = typeof McpReadComposerResourceResult.Type;
+
 export const McpApplyToLiveSessionsResult = Schema.Struct({
   scope: McpConfigScope,
   projectId: Schema.optional(ProjectId),

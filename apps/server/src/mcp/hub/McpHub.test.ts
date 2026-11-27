@@ -51,6 +51,12 @@ import type {
 } from "./McpHubGovernance.ts";
 import { withoutProviderMeta } from "./McpHubEndpoint.ts";
 import { HUB_SHARED_IDLE_MS, reconnectDelayMs } from "./McpHubUpstream.ts";
+import {
+  flattenPrompt,
+  listComposerPrompts,
+  listComposerResources,
+  shapeResourceContents,
+} from "./mcpComposerContext.ts";
 import { memoryOAuthStorage, mcpOAuthKey } from "./McpOAuth.ts";
 
 const fixture = fileURLToPath(new URL("../fixtures/hub-server.mjs", import.meta.url));
@@ -526,6 +532,50 @@ describe("F5 MCP hub", () => {
     expect(hub.sessionServer!(ThreadId.makeUnsafe("apps-thread"), "fixture")).toBeUndefined();
   });
 
+  it("gives the composer a conversation's prompts and resources", async () => {
+    const attachment = attach(stdioServers(), "composer-thread");
+    try {
+      expect(hub.sessionServers!(ThreadId.makeUnsafe("other-thread")).size).toBe(0);
+      const servers = hub.sessionServers!(ThreadId.makeUnsafe("composer-thread"));
+      expect([...servers.keys()]).toEqual(["fixture"]);
+      expect(await listComposerPrompts(servers)).toEqual([
+        {
+          serverName: "fixture",
+          prompts: [{ name: "greet", arguments: [{ name: "who", required: true }] }],
+        },
+      ]);
+      expect(await listComposerResources(servers)).toEqual([
+        {
+          serverName: "fixture",
+          resources: [{ uri: "fixture://readme", name: "Readme", mimeType: "text/plain" }],
+          truncated: false,
+        },
+      ]);
+      const signal = new AbortController().signal;
+      const server = servers.get("fixture")!;
+      expect(
+        flattenPrompt(await server.getPrompt({ name: "greet", arguments: { who: "F5" } }, signal)),
+      ).toEqual({ text: "Hello F5", omitted: 0 });
+      expect(
+        shapeResourceContents(await server.readResource({ uri: "fixture://readme" }, signal)),
+      ).toEqual({
+        contents: [
+          {
+            kind: "text",
+            uri: "fixture://readme",
+            mimeType: "text/plain",
+            text: "fixture readme",
+            truncated: false,
+          },
+        ],
+        omitted: 0,
+      });
+    } finally {
+      await attachment.dispose();
+    }
+    expect(hub.sessionServers!(ThreadId.makeUnsafe("composer-thread")).size).toBe(0);
+  });
+
   it("forwards a server's question to the provider whose call is waiting", async () => {
     const attachment = attach(stdioServers());
     try {
@@ -671,6 +721,14 @@ describe("F5 MCP hub", () => {
       const refused = await client.callTool({ name: "echo", arguments: {} });
       expect(JSON.stringify(refused.content)).toContain("turned off for this conversation");
       expect(governance.calls.at(-1)).toMatchObject({ outcome: "turned-off" });
+      // Prompts and resources go with it, for the provider and the composer alike.
+      expect((await client.listPrompts()).prompts).toEqual([]);
+      expect((await client.listResources()).resources).toEqual([]);
+      await expect(client.readResource({ uri: "fixture://readme" })).rejects.toThrow(
+        /turned off for this conversation/,
+      );
+      const servers = governed.sessionServers!(ThreadId.makeUnsafe("toggle-thread"));
+      expect((await listComposerPrompts(servers))[0]?.prompts).toEqual([]);
     } finally {
       await attachment.dispose();
       await governed.close();
@@ -891,6 +949,44 @@ describe("F5 MCP hub", () => {
       expect(
         attachment.update({ fixture: { ...servers.fixture, toolTimeoutSec: 10 } }).timeoutRaised,
       ).toEqual([]);
+    } finally {
+      await attachment.dispose();
+    }
+  });
+
+  it("cuts a withdrawn repository server off from live sessions at once", async () => {
+    const attachment = attach(stdioServers(), "repository-thread");
+    const threadId = ThreadId.makeUnsafe("repository-thread");
+    try {
+      const endpoint = attachment.endpoints[0]!;
+      const client = await connect(endpoint.url, endpoint.token);
+      expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+      // A withdrawn name whose saved definition the slot is bound to (an applied project
+      // override) keeps serving; a settings-only change does not count as different.
+      hub.refreshToolPolicies!(projectId, withFixture({ toolPolicy: { echo: "allow" } }), [
+        "fixture",
+      ]);
+      expect(hub.sessionServers!(threadId).size).toBe(1);
+      // Without a withdrawn name, a missing server waits for Apply as before.
+      hub.refreshToolPolicies!(projectId, {}, []);
+      expect(hub.sessionServers!(threadId).size).toBe(1);
+
+      // The saved config has another definition under the name (an unapplied override, or
+      // a common server visible once the repository entry is gone): the slot is still on
+      // the withdrawn definition, so it is cut off.
+      const other = stdioServers("other-report");
+      hub.refreshToolPolicies!(projectId, other, ["FIXTURE"]);
+      expect(hub.sessionServers!(threadId).size).toBe(0);
+      expect(hub.sessionServer!(threadId, "fixture")).toBeUndefined();
+      expect((await client.listTools()).tools).toEqual([]);
+      const refused = await client.callTool({ name: "echo", arguments: { text: "x" } });
+      expect(refused.isError).toBe(true);
+      // Approving it again comes back through Apply.
+      expect(attachment.update(stdioServers()).changed).toEqual(["fixture"]);
+      expect(hub.sessionServers!(threadId).size).toBe(1);
+      // A withdrawn name the saved config no longer has is cut off too.
+      hub.refreshToolPolicies!(projectId, {}, ["fixture"]);
+      expect(hub.sessionServers!(threadId).size).toBe(0);
     } finally {
       await attachment.dispose();
     }

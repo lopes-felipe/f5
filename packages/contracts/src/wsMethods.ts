@@ -234,6 +234,14 @@ export const WS_METHODS = {
   mcpListActivity: "mcp.listActivity",
   mcpGetThreadServers: "mcp.getThreadServers",
   mcpSetThreadServerEnabled: "mcp.setThreadServerEnabled",
+  mcpListComposerPrompts: "mcp.listComposerPrompts",
+  mcpGetComposerPrompt: "mcp.getComposerPrompt",
+  mcpCompleteComposerPrompt: "mcp.completeComposerPrompt",
+  mcpListComposerResources: "mcp.listComposerResources",
+  mcpReadComposerResource: "mcp.readComposerResource",
+  mcpSearchCatalog: "mcp.searchCatalog",
+  mcpGetRepositoryServers: "mcp.getRepositoryServers",
+  mcpSetRepositoryServerTrust: "mcp.setRepositoryServerTrust",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
