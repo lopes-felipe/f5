@@ -149,9 +149,14 @@ shows the template, cost and per-step context.
   - Claude runs in Plan mode and is always **policy-enforced**. F5 decides every shell command
     with its read-only allowlist (see
     [shell commands in policy-enforced stages](#shell-commands-in-policy-enforced-stages)) and
-    refuses file edits and every MCP tool except its own read-only ones. Allow rules in your
-    Claude settings (`permissions.allow`) can't widen that: F5 answers before Claude Code applies
-    them. PowerShell commands are refused; Claude uses its Bash tool.
+    refuses file edits, every MCP tool except its own read-only ones, and built-in tools that
+    change something outside the stage (worktrees, schedules, remote triggers, messages to other
+    sessions, published pages). Allow rules in your Claude settings (`permissions.allow`) can't
+    widen that: F5 answers before Claude Code applies them. Web search and fetch, sub-agents and
+    skills stay with Claude's Plan mode; a sub-agent's or a skill's own tool calls go through
+    the same check, and a skill's inline shell commands are turned off. PowerShell commands are
+    refused; Claude uses its Bash tool. A custom Claude executable older than 2.1.317 can't run
+    a read-only stage.
   - OpenCode and Pi run with their write tools turned off.
   - Antigravity runs only on a certified runtime (see
     [Antigravity](../providers/antigravity.md#read-only-workflow-turns)).
@@ -267,10 +272,12 @@ project instructions (`CLAUDE.md`) and Antigravity's rules still load, since the
 instructions.
 
 Allow rules in Claude settings (`permissions.allow`), the repository's or your own, neither block
-a Claude stage nor widen it. F5 refuses a write, a command outside its list, or another MCP tool
-in a hook that Claude Code runs before it looks at allow rules. With a custom Claude binary older
-than 2.1.317, Claude Code can't be told to block a call when that hook fails to answer, so use the
-bundled runtime or a newer binary for stages on code you don't trust.
+a Claude stage nor widen it. F5 refuses a write, a command outside its list, another MCP tool, or
+a built-in tool that acts outside the stage, in a hook that Claude Code runs before it looks at
+allow rules. A rule can still approve a tool that F5 leaves to Claude's Plan mode: fetching a web
+page from a site Plan mode would have asked about, a sub-agent or a skill. A custom Claude
+executable older than 2.1.317 can't be told to block a call when that hook fails to answer, so F5
+refuses to start a read-only stage with one: use the bundled runtime or a newer executable.
 
 An external OpenCode server can't be fully isolated: it already loaded the workspace before F5
 checks it, and its built-in LSP servers and formatters can still run tools the repository

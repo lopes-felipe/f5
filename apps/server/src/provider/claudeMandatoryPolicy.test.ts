@@ -7,6 +7,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   CLAUDE_DELEGATION_TOOLS,
+  CLAUDE_READ_ONLY_NATIVE_TOOLS,
   CLAUDE_SHELL_COMMAND_TOOLS,
   CLAUDE_WORKSPACE_MUTATION_TOOLS,
   canonicalClaudeToolName,
@@ -167,6 +168,103 @@ describe("mandatory Claude policy before native permissions", () => {
           mcpServer: { name: "other", source: "project" },
         }),
       ).toContain("not permitted");
+    });
+
+    it("refuses a Monitor WebSocket with a reason of its own", async () => {
+      for (const toolInput of [
+        { ws: { url: "wss://example.invalid/feed" } },
+        { url: "wss://example.invalid/feed" },
+        { ws: { url: "wss://example.invalid/feed" }, command: "git status" },
+      ])
+        expect(await runHook("Monitor", toolInput)).toMatchObject(
+          denial("Monitor can't open a WebSocket in a read-only stage"),
+        );
+    });
+
+    // An allow rule naming one of these (`"allow": ["EnterWorktree", "RemoteTrigger"]`) skips
+    // `canUseTool`, so the hook has to refuse them.
+    it.each([
+      "EnterWorktree",
+      "ExitWorktree",
+      "CronCreate",
+      "RemoteTrigger",
+      "ScheduleWakeup",
+      "Artifact",
+      "SendMessage",
+      "PushNotification",
+      "Workflow",
+      "SomeToolALaterRuntimeAdds",
+    ])("the hook denies %s, which changes something outside the stage", async (name) => {
+      const denied: string[] = [];
+      expect(await runHook(name, {}, denied)).toMatchObject(
+        denial(`Tool '${name}' is not permitted in a read-only workflow stage.`),
+      );
+      expect(denied).toEqual([name]);
+    });
+
+    it("denies an MCP server's tool that takes a built-in tool's name", () => {
+      for (const name of ["Skill", "WebFetch", "Agent"])
+        expect(
+          evaluateClaudeMandatoryHookPolicy(policy, name, {
+            mcpServer: { name: "other", source: "project" },
+          }),
+        ).toContain("not permitted");
+    });
+
+    // Every built-in tool is decided on purpose: a tool a later runtime adds lands in `denied`
+    // and fails this test until someone puts it on a list.
+    it("sorts every built-in tool into allowed, left to native evaluation, or denied", () => {
+      const sorted = { allowed: [] as string[], native: [] as string[], denied: [] as string[] };
+      for (const name of BUILTIN_TOOL_NAMES) {
+        const hook = evaluateClaudeMandatoryHookPolicy(policy, name, { toolInput: {} });
+        const full = evaluateClaudeMandatoryPolicy(policy, name, undefined, {});
+        sorted[hook !== undefined ? "denied" : full === undefined ? "allowed" : "native"].push(
+          name,
+        );
+      }
+      expect(sorted.allowed).toEqual([
+        "EnterPlanMode",
+        "Glob",
+        "Grep",
+        "Read",
+        "TaskCreate",
+        "TaskGet",
+        "TaskList",
+        "TaskUpdate",
+        "TodoWrite",
+        "ToolSearch",
+      ]);
+      expect(sorted.native.toSorted()).toEqual([...CLAUDE_READ_ONLY_NATIVE_TOOLS].toSorted());
+      expect(sorted.denied).toEqual([
+        "Artifact",
+        "AskUserQuestion",
+        "Bash",
+        "ClaudeDesign",
+        "CronCreate",
+        "CronDelete",
+        "Edit",
+        "EndConversation",
+        "EnterWorktree",
+        "ExitPlanMode",
+        "ExitWorktree",
+        "Monitor",
+        "NotebookEdit",
+        "OfferChromeSetup",
+        "PowerShell",
+        "Projects",
+        "propose_skills",
+        "PushNotification",
+        "RemoteTrigger",
+        "ScheduleWakeup",
+        "SendFeedback",
+        "SendMessage",
+        "SendUserFile",
+        "SetGoal",
+        "ShareOnboardingGuide",
+        "ShowOnboardingRolePicker",
+        "Workflow",
+        "Write",
+      ]);
     });
 
     it("says nothing about a tool that runs no shell command", () => {
@@ -385,6 +483,7 @@ describe("mandatory Claude policy before native permissions", () => {
     const builtins = new Set<string>(BUILTIN_TOOL_NAMES);
     for (const name of CLAUDE_WORKSPACE_MUTATION_TOOLS) expect(builtins, name).toContain(name);
     for (const name of CLAUDE_SHELL_COMMAND_TOOLS) expect(builtins, name).toContain(name);
+    for (const name of CLAUDE_READ_ONLY_NATIVE_TOOLS) expect(builtins, name).toContain(name);
     for (const name of CLAUDE_DELEGATION_TOOLS)
       expect(builtins.has(name) || builtins.has(LEGACY_TOOL_NAME_ALIASES[name] ?? ""), name).toBe(
         true,

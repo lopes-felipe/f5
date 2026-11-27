@@ -3031,6 +3031,14 @@ describe("ClaudeAdapterLive", () => {
         true,
       );
       assert.equal(readOnly.strictMcpConfig, hasClaudeManagedMcpConfig() ? undefined : true);
+      // A skill's inline shell commands run with no tool call for F5's hook to refuse.
+      assert.equal(
+        (readOnly.settings as { disableSkillShellExecution?: boolean } | undefined)
+          ?.disableSkillShellExecution,
+        true,
+      );
+      // The classifier approves `git status`, which must not refresh the index.
+      assert.equal(readOnly.env?.GIT_OPTIONAL_LOCKS, "0");
       yield* adapter.stopSession(THREAD_ID);
 
       yield* adapter.startSession({
@@ -3043,12 +3051,73 @@ describe("ClaudeAdapterLive", () => {
         (normal.settings as { disableAllHooks?: boolean } | undefined)?.disableAllHooks,
         undefined,
       );
+      assert.equal(
+        (normal.settings as { disableSkillShellExecution?: boolean } | undefined)
+          ?.disableSkillShellExecution,
+        undefined,
+      );
+      assert.equal(normal.env?.GIT_OPTIONAL_LOCKS, undefined);
       assert.equal(normal.strictMcpConfig, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "refuses a read-only stage on an executable that can't block a tool when the hook fails",
+    () => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "f5-claude-readonly-runtime-"));
+      const olderBinary = writeCliScript(
+        path.join(directory, "claude-older"),
+        `process.stdout.write("2.1.316 (Claude Code)\\n");`,
+      );
+      const currentBinary = writeCliScript(
+        path.join(directory, "claude-current"),
+        `process.stdout.write("2.1.317 (Claude Code)\\n");`,
+      );
+      const harness = makeHarness();
+      const start = (binaryPath: string, readOnly: boolean) =>
+        Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          return yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            providerOptions: { claudeAgent: { binaryPath } },
+            ...(readOnly ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+          });
+        });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        // Without `onFailure: "block"` a hook that times out lets an allow rule decide.
+        const error = yield* start(olderBinary, true).pipe(Effect.flip);
+        assert.ok(Schema.is(ProviderAdapterValidationError)(error));
+        assert.include(error.message, "Claude can't run read-only workflow stages");
+        assert.include(error.message, "it reports version 2.1.316");
+        assert.include(error.message, "needs Claude Code 2.1.317 or later");
+        assert.equal(harness.getLastCreateQueryInput(), undefined);
+
+        // The same executable still runs sessions that are not read-only stages.
+        yield* start(olderBinary, false);
+        assert.equal(
+          harness.getLastCreateQueryInput()!.options.hooks?.PreToolUse?.at(-1)?.onFailure,
+          undefined,
+        );
+        yield* adapter.stopSession(THREAD_ID);
+
+        yield* start(currentBinary, true);
+        assert.equal(
+          harness.getLastCreateQueryInput()!.options.hooks?.PreToolUse?.at(-1)?.onFailure,
+          "block",
+        );
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(directory, { recursive: true, force: true }))),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect(
     "starts read-only stages whatever a folder's allow rules say, but not past a command setting",

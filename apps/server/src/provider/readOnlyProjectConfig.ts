@@ -257,10 +257,15 @@ const CLAUDE_PERMISSIVE_MODES = new Set(["acceptEdits", "bypassPermissions", "do
  * undefined: a command setting, an environment variable or a permissive default mode.
  *
  * `permissions.allow` is not one of them. Claude Code applies an allow rule before it asks F5,
- * but F5's mandatory `PreToolUse` hook runs before that and decides every shell command, MCP
- * tool and file edit itself (`claudeMandatoryPolicy.ts`, gate L5), so a rule can't widen what a
- * stage runs. Refusing the stage over one only stopped people with ordinary approvals of their
- * own, such as `Bash(python3:*)` in a `settings.local.json`.
+ * but F5's mandatory `PreToolUse` hook runs before that and denies everything the stage's policy
+ * denies: shell commands, MCP tools, file edits and built-in tools that act outside the stage
+ * (`claudeMandatoryPolicy.ts`, gate L5). A rule can only approve one of the tools the hook leaves
+ * to Plan mode (CLAUDE_READ_ONLY_NATIVE_TOOLS), which read or delegate. Refusing the stage over a
+ * rule only stopped people with ordinary approvals of their own, such as `Bash(python3:*)` in a
+ * `settings.local.json`.
+ *
+ * This rests on the hook answering. A stage therefore needs an executable that blocks a tool
+ * when the hook fails (`claudeReadOnlyStageRuntimeConflict`).
  */
 export function claudeProjectSettingsConflict(config: unknown): string | undefined {
   if (!isRecord(config)) return undefined;

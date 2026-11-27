@@ -33,7 +33,7 @@
 //   G7  A reviewer's reads (`git show … | nl -ba`, `git grep`, `git --no-lazy-fetch -C <dir> log`),
 //       answered by F5's own policy function and with F5's shell rules in the prompt: each one
 //       asks, is accepted and returns its output, none is refused, and `touch marker` is refused
-//       with a reason while the turn completes.
+//       with a reason while the turn completes. Left out of a --link-rules run.
 //
 // G5 (a repository's .codex/rules blocks the stage) is F5's own guard and is covered by unit
 // tests. Each check prints PASS, FAIL or INCONCLUSIVE; the script exits non-zero unless all pass.
@@ -75,6 +75,15 @@ if ([...selected].some((gate) => !ALL_GATES.includes(gate))) {
     `--gates takes a comma-separated list of ${ALL_GATES.join(", ")} (G1, G2, G6 always run)`,
   );
   process.exit(2);
+}
+// G7 expects `touch marker` to be refused and no marker to exist. The control links the allow
+// rule so that G4 does create it, so the two can't share a run.
+if (linkRules) {
+  if (gatesFlag && selected.has("G7")) {
+    console.error("G7 can't run with --link-rules, which lets `touch marker` through on purpose");
+    process.exit(2);
+  }
+  selected.delete("G7");
 }
 const codexBinary = flag("--codex") ?? "codex";
 const model = flag("--model");

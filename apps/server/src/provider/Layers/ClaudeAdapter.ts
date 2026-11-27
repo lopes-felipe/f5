@@ -292,8 +292,10 @@ import {
 import {
   claudeHookOnFailureSupported,
   claudeMcpServersDelivery,
+  claudeReadOnlyStageRuntimeConflict,
   readClaudeExecutableVersion,
 } from "../claudeExecutableVersion.ts";
+import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
 import { buildClaudeFlagPermissions } from "../claudeFlagPermissions.ts";
 import { resolveWorkflowAttachmentsDir } from "../../attachmentUploads.ts";
 import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
@@ -5549,10 +5551,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const rawResumeCandidate = readClaudeResumeCandidate(input.resumeCursor);
         // Built once so the resume preflight and the CLI launch see the same env.
         const queryEnvironment = withBrowserOpenThreadToken(
-          buildClaudeQueryEnv(
-            input.providerOptions?.claudeAgent,
-            options?.processEnvironment ?? process.env,
-          ),
+          {
+            ...buildClaudeQueryEnv(
+              input.providerOptions?.claudeAgent,
+              options?.processEnvironment ?? process.env,
+            ),
+            // F5's classifier approves `git status`, which would otherwise refresh the index
+            // and hold its lock, as it does for the other providers' stages.
+            ...(input.workflowExecutionProfile ? READ_ONLY_WORKFLOW_ENVIRONMENT : {}),
+          },
           threadId,
         );
         if (input.workflowExecutionProfile)
@@ -6722,8 +6729,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(showThinkingSummaries !== undefined ? { showThinkingSummaries } : {}),
           // A repository's hooks run unsandboxed and without asking, even in a folder Claude Code
           // doesn't trust. Flag settings can only switch off every hook, the user's included; F5's
-          // own hooks are SDK callbacks and keep working.
-          ...(input.workflowExecutionProfile ? { disableAllHooks: true } : {}),
+          // own hooks are SDK callbacks and keep working. A skill's inline shell commands run
+          // while the skill loads, with no tool call for F5's hook to refuse.
+          ...(input.workflowExecutionProfile
+            ? { disableAllHooks: true, disableSkillShellExecution: true }
+            : {}),
         };
         const configuredBase = {
           ...(selectedModel ? { model: selectedModel } : {}),
@@ -6812,6 +6822,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           customBinaryPath,
           customExecutableVersion,
         );
+        const readOnlyRuntimeConflict = input.workflowExecutionProfile
+          ? claudeReadOnlyStageRuntimeConflict(customBinaryPath, customExecutableVersion)
+          : undefined;
+        if (readOnlyRuntimeConflict !== undefined) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: readOnlyRuntimeConflict,
+          });
+        }
         const mcpServersDelivery = claudeMcpServersDelivery(
           customBinaryPath,
           customExecutableVersion,

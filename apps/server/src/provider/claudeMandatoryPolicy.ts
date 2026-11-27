@@ -67,11 +67,38 @@ const SHELL_COMMAND_TOOLS = new Set<string>(
   CLAUDE_SHELL_COMMAND_TOOLS.map((name) => name.toLowerCase()),
 );
 
-/** A shell tool, or one an MCP server provides: what an allow rule could widen in plan mode. */
-function isShellOrMcpTool(toolName: string, mcpServer: McpToolProvenance | undefined): boolean {
-  const name = toolName.trim().toLowerCase();
-  return SHELL_COMMAND_TOOLS.has(name) || name.startsWith("mcp__") || mcpServer !== undefined;
-}
+/**
+ * Built-in tools a read-only stage leaves to Claude Code's own plan-mode evaluation, which runs
+ * the ones it considers read-only and asks `canUseTool`, and so the full policy, about the rest.
+ * None changes anything outside the session, so an allow rule that skips `canUseTool` gains
+ * nothing a stage must not do: they read (the web included), or they are how delegation and
+ * skills work, and every tool a sub-agent or a skill then calls comes back through the hook.
+ * A built-in tool that is not listed here or allowed by the policy is denied by the hook, so a
+ * tool a later runtime adds stays off until it is put on a list (the test walks
+ * BUILTIN_TOOL_NAMES).
+ */
+export const CLAUDE_READ_ONLY_NATIVE_TOOLS = [
+  "Agent",
+  "ListAgents",
+  "SubagentHandback",
+  "TaskStop",
+  "Skill",
+  "WebFetch",
+  "WebSearch",
+  "LSP",
+  "ListMcpResourcesTool",
+  "ReadMcpResourceTool",
+  "ReadMcpResourceDirTool",
+  "WaitForMcpServers",
+  "ReadNotifications",
+  "CronList",
+  "ReportFindings",
+  "SendUserMessage",
+] as const;
+const READ_ONLY_NATIVE_TOOLS = new Set<string>([
+  ...CLAUDE_READ_ONLY_NATIVE_TOOLS.map((name) => name.toLowerCase()),
+  ...DELEGATION_ALIASES,
+]);
 
 /**
  * Why a read-only workflow stage refuses this call to a shell tool, as F5's read-only shell
@@ -86,10 +113,14 @@ export function claudeReadOnlyShellRefusal(
   if (!SHELL_COMMAND_TOOLS.has(name)) return undefined;
   if (name === "powershell")
     return "PowerShell commands can't be checked in a read-only stage: use the Bash tool";
-  const command =
+  const input =
     toolInput && typeof toolInput === "object"
-      ? (toolInput as { readonly command?: unknown }).command
+      ? (toolInput as { readonly command?: unknown; readonly ws?: unknown; readonly url?: unknown })
       : undefined;
+  // `Monitor` can open a WebSocket instead of running a command.
+  if (name === "monitor" && (input?.ws !== undefined || input?.url !== undefined))
+    return "Monitor can't open a WebSocket in a read-only stage, which is network access: it can only watch a command that reads";
+  const command = input?.command;
   if (typeof command !== "string" || command.trim().length === 0)
     return "the command to run was not reported";
   const verdict = classifyReadOnlyShellCommand(command);
@@ -180,13 +211,14 @@ function targetsPlansDirectory(
 /**
  * The subset of the policy enforced before Claude's native permission check.
  *
- * In a read-only stage that is workspace edits, shell commands and MCP tools: Claude Code
- * applies a `permissions.allow` rule before it asks `canUseTool`, so a rule in the repository's
- * or your own settings (`Bash(python3:*)`, `mcp__server__tool`) would otherwise run without F5
- * seeing the call. A hook denial comes first and no allow rule overrides it.
+ * In a read-only stage that is everything the full policy denies: Claude Code applies a
+ * `permissions.allow` rule before it asks `canUseTool`, so a rule in the repository's or your
+ * own settings (`Bash(python3:*)`, `mcp__server__tool`, `EnterWorktree`) would otherwise run
+ * without F5 seeing the call. A hook denial comes first and no allow rule overrides it.
  *
- * Web and delegation tools are left to native plan-mode evaluation, which escalates anything
- * it does not consider read-only to `canUseTool` and its full policy.
+ * Two kinds of call are left to native plan-mode evaluation, which escalates anything it does
+ * not consider read-only to `canUseTool` and its full policy: the built-in tools in
+ * CLAUDE_READ_ONLY_NATIVE_TOOLS, and writes to plan mode's own plan file.
  */
 export function evaluateClaudeMandatoryHookPolicy(
   policy: ClaudeMandatoryPolicy,
@@ -206,14 +238,15 @@ export function evaluateClaudeMandatoryHookPolicy(
   if (!reason || policy.noTools || !policy.workflowExecutionProfile) return reason;
   const name = toolName.trim().toLowerCase();
   if (policy.subagentsEnabled === false && DELEGATION_ALIASES.has(name)) return reason;
-  if (name === "exitplanmode" || name === "askuserquestion") return reason;
-  if (isShellOrMcpTool(toolName, context?.mcpServer)) return reason;
-  return isClaudePlanModeWorkspaceEdit(toolName, context?.toolInput, {
-    plansDirectory: policy.plansDirectory,
-    cwd: context?.cwd,
-  })
-    ? reason
-    : undefined;
+  // A tool an MCP server provides is never one of the built-in tools, whatever it is called.
+  if (context?.mcpServer === undefined && READ_ONLY_NATIVE_TOOLS.has(name)) return undefined;
+  const planFileWrite =
+    WORKSPACE_MUTATION_TOOLS.has(name) &&
+    !isClaudePlanModeWorkspaceEdit(toolName, context?.toolInput, {
+      plansDirectory: policy.plansDirectory,
+      cwd: context?.cwd,
+    });
+  return planFileWrite ? undefined : reason;
 }
 
 export const CLAUDE_PLAN_MODE_EDIT_DENIAL =

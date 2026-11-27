@@ -460,6 +460,7 @@ describe.skipIf(!live || !stateDir || !instanceId)(
       const cwd = await mkdtemp(path.join(tmpdir(), "f5-antigravity-followup-live-"));
       await writeFile(path.join(cwd, "README.md"), "Follow-up gate workspace.\n");
       const events: ProviderRuntimeEvent[] = [];
+      const prompts: string[] = [];
       const sandboxedLaunches: Array<boolean | undefined> = [];
       await Effect.runPromise(
         Effect.scoped(
@@ -477,6 +478,12 @@ describe.skipIf(!live || !stateDir || !instanceId)(
                   stateDir: stateDir!,
                   instanceId: instanceId!,
                   environment,
+                  // Every `session/prompt` F5 sends, so the follow-up itself can be checked.
+                  requestLogger: (event) =>
+                    Effect.sync(() => {
+                      if (event.method === "session/prompt" && event.status === "started")
+                        prompts.push(JSON.stringify(event.payload));
+                    }).pipe(Effect.andThen(input.requestLogger?.(event) ?? Effect.void)),
                 });
               },
             });
@@ -544,7 +551,13 @@ describe.skipIf(!live || !stateDir || !instanceId)(
           outcome._tag === "Failure" ? ` (${String(outcome.failure).slice(0, 300)})` : ""
         }\ntool calls:\n  ${[...new Set(toolCalls)].join("\n  ")}\nrefused by F5:\n  ${refused
           .map((event) => (event.payload.detail ?? "").slice(0, 200))
+          .join("\n  ")}\nprompts F5 sent (${prompts.length}):\n  ${prompts
+          .map((prompt) => prompt.slice(0, 400))
           .join("\n  ")}\nreply after the last refusal:\n  ${replyAfterRefusal.slice(0, 600)}`;
+        // The follow-up is a second `session/prompt` in the same F5 turn that names the refusal.
+        const followUps = prompts
+          .slice(1)
+          .filter((prompt) => prompt.includes("F5 refused") && /npm.*allowlist/s.test(prompt));
         console.info(`Follow-up gate: ${summary}`);
         // F5_ANTIGRAVITY_LIVE_REPORT=<file> keeps the summary of a passing run too.
         if (process.env.F5_ANTIGRAVITY_LIVE_REPORT)
@@ -553,6 +566,13 @@ describe.skipIf(!live || !stateDir || !instanceId)(
           refused.some((event) => /npm.*\(.*allowlist.*\)/s.test(event.payload.detail ?? "")),
           `\`npm --version\` reached F5 and was refused with a reason\n${summary}`,
         ).toBe(true);
+        // Without this a runtime that replies inside the first prompt would pass with the
+        // follow-up removed. If Antigravity stops ending its turn on a refusal, this fails and
+        // the follow-up is no longer exercised by a live run.
+        expect(
+          followUps.length,
+          `F5 sent a follow-up prompt carrying the refusal and its reason\n${summary}`,
+        ).toBeGreaterThan(0);
         expect(
           outcome._tag,
           `the turn completed instead of failing without a reply\n${summary}`,
