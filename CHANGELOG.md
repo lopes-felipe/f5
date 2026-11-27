@@ -6,6 +6,289 @@ Unreleased entries now live as one file each under [`changes/`](changes/README.m
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-11-27
+
+### Added
+
+- Grok, Antigravity, custom ACP agents, OpenCode, Muse Code, and Pi now use your MCP servers.
+  F5 connects to each server and gives every session its own local endpoint, applying enabled and
+  disabled tools. Servers that need OAuth sign-in are not available to these agents yet, and a
+  conversation warns about any server its agent did not get.
+- Project MCP settings list the connections these agents use under **Other agents**, with their
+  state, errors, and a **Reconnect** button.
+- Choose the app icon in Settings > Appearance, including the classic one.
+- After an update that changes the icon, F5 offers to restart a macOS Dock that still shows the
+  old one.
+- MCP server commands, arguments, environment values, working directories, URLs, and headers can
+  use `${env:NAME}` or `${env:NAME:-default}`, resolved from the provider account's environment
+  when the server starts (a URL can take its port from one). A server that needs an unset variable is skipped, and settings name the
+  variable. Import converts `${NAME}` references to this form.
+- MCP import detects Cursor, VS Code, Claude Desktop, and OpenCode configuration, and accepts
+  pasted VS Code and OpenCode documents, including comments and trailing commas.
+- MCP settings can sign in to remote MCP servers used by Cursor, OpenCode, Muse Code, Pi, and ACP
+  agents, from either scope and with no conversation running. F5 opens the browser only when you
+  click Sign in, and you can paste the redirected address when the browser runs on another
+  machine. A sign-in is shared by every project that uses the same server, and access tokens
+  renew automatically. An abandoned or failed sign-in leaves the existing sign-in in place. Servers that send their own
+  Authorization never use this sign-in, and their headers never reach separate sign-in hosts.
+- The chat's MCP chip shows each server's status for Cursor and other agents that reach MCP
+  servers through F5, with a Sign in button when a server needs one. Every server in the chip
+  links to its panel in MCP settings.
+- MCP servers can have a description and can be turned off for individual agents. A server's
+  Overview lists each agent as Supported, Limited (with the options that agent ignores), or Off.
+  Sign-in results now appear in settings as soon as they finish, without polling.
+- Each MCP tool can be set to Allow, Ask or Block, with a server default for the rest. Ask shows
+  an approval in the conversation before every call, for every agent and mode; when Codex or
+  Claude would ask about the same call, you are asked once.
+- A tool whose definition changes, or that a server adds later, asks before every call until you
+  review it in MCP settings.
+- MCP settings have an Activity tab with recent tool calls, the last day's error rate and latency,
+  and the server's stderr. Arguments and results are never stored.
+- The chat's MCP details can turn a server off for one conversation, without restarting the agent.
+- Stored MCP secrets can be used inside a longer value (`Bearer ${f5-secret:…}`), in arguments and
+  in URLs.
+- The composer offers MCP prompts under `/` as `/<server>:<prompt>`, with a form for their
+  arguments; the prompt's text goes into the composer for review. `@` lists MCP resources, whose
+  text is added to the message when it is sent.
+- Add server has a Catalog tab that searches the official MCP Registry and fills the form from
+  a chosen entry; nothing is saved or started until you save. Launcher options a package listing
+  asks for are left out and listed for you to add back if you trust them.
+- Servers in a project's `.mcp.json` are listed under "From this repository" and start only once
+  their exact definition is approved; a changed definition needs approval again.
+- Added a skippable Quick Setup wizard to the first-run onboarding screen that shows auto-detected provider readiness, copyable sign-in commands, a live refresh action, and a plain-English default permission mode picker for new threads.
+- Added live execution telemetry to workflow pages, including a run telemetry bar (step progress, live elapsed timer, deduplicated context tokens, cost, and slowest step callout) plus per-step duration, token, and parallel bottleneck badges on workflow board cards.
+
+### Changed
+
+- Cursor now reaches your MCP servers through F5, so stdio servers work there too, and enabled
+  and disabled tools apply. Remote servers that relied on Cursor's own OAuth sign-in show
+  **Needs sign-in** until F5 can sign in to them.
+- Codex read-only workflow stages can run read-only shell commands again in the macOS desktop app
+  when your organisation's Codex requirements forbid the `untrusted` approval policy but allow
+  `on-request`. Codex asks to run a command outside its sandbox, and F5 approves only read-only
+  ones. Only an organisation that allows nothing but `never` still gets the forge-tools-only
+  fallback, now recorded on the thread as sandboxed.
+- On macOS, F5's Dock icon keeps the app icon you chose while F5 is quit, as long as F5 is kept
+  in the Dock. This starts working after your next login.
+- MCP settings follow the settings scope switcher instead of their own Scope and Provider
+  toggles. Each server is a row with its live status, tool count or failure reason, an on/off
+  switch, and a menu to edit, duplicate, move between common and project scope, reconnect,
+  export, or remove it. Selecting a server opens a side panel with Overview, Tools, Prompts and
+  resources, Sign-in, and Configuration tabs. Add server opens a dialog with a form, a paste box
+  for JSON or TOML, and import from other clients. In a project, servers inherited from common
+  scope have their own group, where you can turn them off for the project or override them.
+  Servers that Codex or Claude configure themselves, and F5's built-in servers, are in a
+  collapsed read-only "Provider-managed servers" section.
+- A server's Overview keeps read-only Diagnostics for the observed conversation. After an Apply
+  in common scope it lists conversations from every project, and each retry runs where that
+  conversation lives.
+- Codex and Claude now reach your MCP servers through F5, like the other agents. Claude's stdio
+  servers start in the conversation's folder, and Apply sends edits and removals to running Codex
+  and Claude sessions without a restart; Claude also picks up newly added servers.
+- Remote servers that Codex or Claude were signed in to ask for one sign-in in F5, since their
+  saved sign-ins are not carried over. The server's Sign-in tab and Runtime details say so.
+- Servers F5 could not pass to Codex or Claude (for example a server with an unset `${env:…}`
+  variable) are named in a warning in the conversation and in Apply results.
+- A server asking for a sign-in page (URL-mode elicitation) reaches agents that support it, and
+  questions wait for the tool call's own timeout instead of one minute.
+- Claude read-only workflow stages now run shell commands under the same read-only allowlist as
+  Cursor, Codex and Antigravity. Commands Claude's Plan mode used to let through, such as
+  `git fetch`, `mkdir` or output redirected to a scratch file, are refused with F5's reason, and
+  the stage is told the rules up front. Each refusal counts toward the stage's limit of 15
+  refused operations in a turn, so a stage that keeps trying them fails sooner than before.
+- Allow rules in Claude settings (`permissions.allow`) no longer stop a Claude read-only stage
+  from starting, and can no longer let one write, run a command outside the allowlist, or use a
+  built-in tool that acts outside the stage, such as creating a worktree or a schedule. A
+  settings file that sets a command setting, an unsafe `env` variable or a permissive
+  `defaultMode` still blocks the stage.
+- Claude read-only stages no longer start with a custom Claude executable older than 2.1.317,
+  which can't block a tool call when F5's check fails to answer. Skills loaded in a stage no
+  longer run their inline shell commands.
+- Added reusable focus restoration on panel close (`useRestoreFocusOnClose`) wired into `RightPanelSheet`, polite screen-reader status announcements for workflow phase and terminal transitions (`WorkflowStatusAnnouncer`), Arrow/Home/End keyboard navigation across workflow board step cards, and `motion-safe:` reduced-motion guards on onboarding spinner icons.
+- F5's own tools (preview, computer, thread, interaction, and the integrations F5 proxies) agree on
+  the newest MCP protocol version the agent supports instead of always using 2024-11-05.
+- A thread now follows whatever branch its folder is on. When the agent (or you) switches
+  branches or leaves a detached HEAD, the next message is sent without a "Thread branch changed"
+  dialog or a drift banner, the workspace picker shows the live branch, and the timeline notes
+  "Now on `<branch>` (was `<branch>`)". **Switch branch here…** in the picker still switches back.
+- Every thread that shares a worktree follows it, including idle ones: each gets the new branch
+  recorded and its own timeline note. This used to need the **Follow worktree branch switches**
+  setting, which is gone: following is always on.
+- Switching a worktree's branch in place is now refused only by live use (a running or queued
+  turn, setup, an open terminal or a starting agent), as in the project folder. Idle threads
+  sharing the worktree no longer block it, and they are re-recorded with the switch.
+- In a project with several repositories, a thread follows its main checkout. A nested checkout
+  left on another branch keeps that branch, and is restored on it.
+- A queue that an older version paused because the worktree was on another branch is released
+  when F5 starts and finds the worktree in place.
+- A workspace switch that fails, is cancelled or is cut off by a restart now settles itself
+  instead of blocking the thread. The "Workspace switching needs attention" banner and its
+  **Inspect workspace** → Accept / Keep / Continue / Retry flow are gone, and so is the
+  "A workspace transition already owns this conversation" refusal that left the other recovery
+  buttons dead: the thread stays in its old workspace or moves to the new one, sending is never
+  held afterwards, and you can start another switch straight away.
+- When a switch was cut off, or a move had to keep a copied folder, the thread's timeline says
+  so (for example "Switching to `topic` did not finish.") instead of a banner. A worktree that
+  was restored before a later step failed is kept and used, and so is a branch switch that Git
+  finished: the timeline says which later step failed. A restore is recorded only for the
+  worktree it asked for; anything else found at that path is left alone.
+- A move that fails and cannot be cleaned up now reports why it stopped and why the cleanup
+  failed, instead of a general "The move did not finish".
+- Threads left waiting for inspection by an earlier version are settled the same way on the
+  next start.
+- A thread whose worktree is not on disk now restores it on your next message without asking,
+  and the timeline says what happened: "Worktree restored on `topic`", "`topic` no longer
+  existed; recreated from `main` at `abc1234`" when the branch was gone too, or "Worktree moved
+  to `<folder>`" when the old folder now holds something else (that folder is left untouched).
+  A branch that is gone locally but still on a remote is restored from that remote copy
+  ("Worktree restored on `topic` from `origin/topic`"), not from the default branch.
+  The **Recreate now**, **Recreate from `<default branch>`** and header **Recreate worktree**
+  controls are gone; the header shows **Worktree restores on send** instead, and **Worktree not
+  on disk** when you have to decide first.
+- Everything about a thread's workspace now appears in one card above the composer, replacing
+  the workspace-switch banner, the missing-worktree banner and the queue's own workspace
+  messages, which could disagree and repeat each other. The card shows one line while a
+  worktree is being created, restored or switched, and asks only when you have to decide:
+  **Continue there** or **New worktree** when another checkout has the thread's branch, and
+  **Try again** or **Continue in Local** when a restore failed. **Continue there** is offered
+  only for the project folder and worktrees F5 manages, and the card says how many other
+  threads already use that folder. After a worktree setup failed, **Try again** and **Continue
+  in Local** now release the waiting message instead of being refused.
+- Cancelling an automatic restore leaves the message waiting; the restore does not start again
+  on its own.
+- A queue paused by an earlier version because a worktree was missing stays paused across
+  restarts while the worktree is still missing: nothing waiting is sent until you choose
+  **Try again** or **Continue in Local**. It is released only when the worktree is back.
+- Worktree setup that a restart interrupted before the agent started now resumes by itself
+  instead of failing and pausing the queue. Checkout and submodules that already finished are
+  not repeated; submodules that a restart cut off are initialized again.
+- A background setup script that a restart cut off no longer holds the thread. The setup card
+  marks it "interrupted by a restart", the agent starts, and a new **Rerun setup script** button
+  runs it again when you want; the button also appears after a setup script fails. With **Agent
+  waits** on, F5 reruns the script once by itself, whether the server was killed or shut down.
+- A setup that resumes by itself never runs a setup command that was edited in the meantime:
+  it stops and waits for **Retry**. In a project made of several repositories, a script that a
+  restart cut off is never run again unasked.
+- **Stop script** stops a setup script that is still running after the agent started, including
+  one you asked to run again. **Rerun setup script** now says so when there is nothing to run.
+- Checkout waits and tries again, up to three times, when another F5 window is using the
+  repository, instead of failing the setup at once. This now also covers projects made of
+  several repositories and projects with a worktree layout command.
+- The setup card's actions are renamed and reordered: **Cancel** while setup runs, then
+  **Retry**, **Continue in Local** (was **Work locally**) and **Discard message** (was
+  **Discard**) after a failure.
+- Deleting threads now removes their worktrees without a dialog when nothing can be lost: the
+  tree is clean, no other thread uses the worktree (archived threads count), and its only
+  ignored files are build and cache output such as `node_modules/` or `dist/`. The branch is
+  always kept, and a toast says "Removed N worktrees · branches kept". The removal dialog opens
+  only for the worktrees that need a decision.
+- F5 now looks inside build folders before deleting them unasked, here and in automatic and
+  storage cleanup: a `dist/` or `build/` that holds a `.env` file, a database, a key or a
+  credentials file keeps its worktree and is asked about in the removal dialog.
+- In the removal dialog, build and cache output no longer needs its own confirmation checkbox.
+  The checkbox appears only when other ignored files, such as `.env`, would be deleted.
+- The workspace picker says **`<branch>` · restores on send** instead of **· missing** for a
+  worktree that is not on disk, and **Creating worktree…** while a first send sets one up.
+  **Manage** gains **Restore worktree now** for when you want the files back before sending.
+
+### Performance
+
+- Checking Codex MCP status with no conversation running no longer starts every configured MCP
+  server, and saving MCP settings no longer starts a new Codex process for the next check.
+
+### Removed
+
+- The MCP settings switch that let Codex and Claude connect to servers themselves is gone. Codex
+  and Claude always reach servers configured in F5 through F5, and their own sign-in covers only
+  the servers they configure themselves; a server configured in F5 signs in from its Sign-in tab.
+- The MCP server form no longer warns that Codex cannot use SSE-only servers, since Codex reaches
+  them through F5.
+
+### Fixed
+
+- Codex read-only workflow stages no longer fail with "Codex did not apply the read-only sandbox
+  (reported approval policy on-request)" when your organisation's Codex requirements don't allow
+  the `untrusted` approval policy.
+- The app icon picker in Settings > Appearance works as one radio group from the keyboard, and a
+  reloaded window shows the current choice.
+- Choosing Lines again on macOS restores the Dock's built-in icon, and a choice that cannot be
+  saved is reported instead of applied.
+- The offer to restart a stale macOS Dock appears in one window at a time and is not used up by
+  a window that closes before you answer it.
+- The Dock tile plug-in follows a change of app icon even when the change notification arrives
+  before the saved choice, and release builds fail unless it is signed for distribution.
+- Codex read-only workflow stages no longer run commands your Codex `allow` rules match without
+  F5 checking them. Those stages use a Codex home without your `rules` folder, and a repository
+  with its own `.codex/rules` can't run them.
+- Read-only workflow stages no longer let a repository's own provider config run commands or skip
+  F5's checks. Claude runs them with hooks off and only F5's MCP servers, and refuses committed
+  settings that run helper commands, change the environment or allow writes. OpenCode starts them
+  without the repository's config. Pi refuses a workspace with its own extensions, and Antigravity
+  one with workspace hooks.
+- Beta update checks no longer fail with "Update information is unavailable" when the newest
+  beta release on GitHub hasn't finished publishing. F5 skips that release and offers the newest
+  one it can download.
+- Antigravity local usage resolves more Gemini model IDs and keeps cost estimates when the CLI
+  reports the same model with different effort names.
+- Usage keeps counting local Antigravity history from removed provider instances while their
+  managed profiles remain on disk and local provider history is enabled.
+- Read-only workflow stages whose commands F5 approves without a sandbox (Cursor, and Codex or
+  Antigravity in the macOS desktop app) no longer let an approved `git diff`, `git status` or
+  `git log` run a helper from a repository's own `.git/config`, such as an external diff, a
+  diff driver, a clean filter, a pager or an fsmonitor hook. In the stage's folder F5 turns those
+  helpers off when the stage starts. For any other repository a command reaches (`cd`, `git -C`,
+  a submodule), and for a helper added later, F5 refuses the command and says which setting it
+  found. These stages also no longer fetch a missing object from a partial clone's remote.
+- Read-only workflow stages no longer approve a command that uses a variable as `$NAME:…` or
+  `$NAME[…]`. zsh, which agents run commands in, reads those as modifiers that can rewrite the
+  value into a flag that writes files. Write `${NAME}` with braces instead. `nl` is now allowed.
+- Read-only workflow stages no longer approve a command that uses zsh's parameter flags, such as
+  `$=NAME`, `$~NAME` or `$^NAME`. They expand a variable, including one from your environment,
+  where the command looked like plain text.
+- Read-only workflow stages on Cursor, and on Codex and Antigravity in the macOS desktop app, no
+  longer refuse the commands reviewers run most. `git grep`, `base64` decoding, `shasum`,
+  `sed -n` with several ranges or `/regex/` addresses, `git branch` and `git tag` listings with
+  filters, `git worktree list`, `git stash list`, bare `git remote` and `git --no-lazy-fetch` now
+  run. So do a variable set anywhere in a command (after `&&`, only for the rest of that `&&`
+  chain) and a `for` loop over a written-out list of words.
+- Read-only workflow stages no longer approve `git branch name=value` or `uniq in=1 out=2`, which
+  created a branch or wrote a file: an argument shaped like `NAME=value` was left out of the check.
+- A refused command no longer ends a read-only workflow stage so easily. The stage now fails when
+  the model asks for the same refused operation three times, or is refused fifteen times in one
+  turn, instead of after any three refusals.
+- Read-only workflow stages on Cursor and Antigravity no longer refuse a shell command just
+  because its text mentions `mcp_`, `mcp/` or `mcp.`, such as a path under `src/mcp/`.
+- Refused commands on Cursor and Antigravity now show F5's reason in the thread, as they do on
+  Codex.
+- Read-only workflow stages that F5 enforces command by command now tell the model up front which
+  shell commands run and which don't.
+- An Antigravity read-only stage no longer finishes without a reply when a command is refused: F5
+  explains the refusal and asks the agent to finish. The stage fails if the agent then ends its
+  turn twice in a row on commands F5 had already explained.
+- Agents without HTTP MCP support, which reach F5's MCP servers through `t3 mcp-session-stdio`, are
+  no longer refused by the servers F5 serves.
+
+### Security
+
+- Stored MCP secrets and MCP sign-in tokens are encrypted at rest with AES-256-GCM. The desktop app
+  keeps each profile's key in the OS keychain; a server without one uses a key file readable only
+  by its user. Existing secrets are re-encrypted the first time they are read. Password-encrypted backups hold
+  these values decrypted, so they restore on another machine, and the key file is removed once the
+  keychain key protects every value.
+- MCP server secrets no longer appear on Codex's or Claude's command line: Codex gets only local
+  addresses, and Claude a per-session local credential that is revoked when the session ends.
+- F5 records each MCP tool's name, description and input schema the first time it lists them. If
+  a server later changes a tool, F5 asks before every call to it until you review and accept the
+  change in the server's Tools tab.
+- F5 no longer checks Antigravity subscription quotas, directly or through CLIProxyAPI, because
+  calls to Google's internal quota APIs can flag accounts. Local usage history remains available.
+- MCP servers from a repository's `.mcp.json` never start in F5 until you approve their exact
+  definition for the project. A changed definition is never started again until approved; F5
+  does not watch the file, so running conversations stop reaching it the next time settings
+  change. Symlinked files and stored-secret references in the file are refused. Review shows
+  every field and names each environment value the server would receive or send to a host, and
+  revoking an approval cuts the server off from running conversations at once.
+
 ## [0.1.13] - 2026-11-26
 
 ### Changed
