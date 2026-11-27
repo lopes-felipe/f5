@@ -304,8 +304,14 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     released.add(entry.upstream);
   };
   const slots = new Map<string, McpHubSlot>();
-  /** Unbinds one live slot from its connection, by slot id. */
-  const detachers = new Map<string, () => void>();
+  /**
+   * Per live slot, by slot id: the connection hash it is bound to (`undefined` once
+   * unbound) and a way to unbind it.
+   */
+  const detachers = new Map<
+    string,
+    { readonly boundHash: () => string | undefined; readonly detach: () => void }
+  >();
   const upstreams = new Map<string, UpstreamEntry>();
   const changed = new Set<string>();
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -489,10 +495,13 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
       const record: AttachedSlot = { slot, entry: undefined, hash: hashDefinition(definition) };
       bindEntry(input, record, entry);
       records.set(serverName, record);
-      detachers.set(id, () => {
-        if (disposed || !record.entry) return;
-        unbindEntry(record);
-        record.slot.rebind(undefined);
+      detachers.set(id, {
+        boundHash: () => (record.entry ? record.hash : undefined),
+        detach: () => {
+          if (disposed || !record.entry) return;
+          unbindEntry(record);
+          record.slot.rebind(undefined);
+        },
       });
       const endpoint: McpHubEndpoint = {
         serverName,
@@ -730,10 +739,20 @@ export function makeMcpHub(options: McpHubOptions): McpHubShape {
     for (const slot of [...slots.values()]) {
       if (slot.sessionProjectId !== projectId) continue;
       const definition = servers[slot.serverName];
-      if (definition) slot.setToolPolicy(definition);
+      const binding = detachers.get(slot.id);
       // A revoked or changed repository server is a trust decision, not a connection
-      // edit: it stops serving live sessions instead of waiting for Apply.
-      else if (withdrawnKeys.has(mcpServerNameKey(slot.serverName))) detachers.get(slot.id)?.();
+      // edit: it stops serving live sessions instead of waiting for Apply. A slot with a
+      // withdrawn name keeps serving only while it is bound to exactly the saved
+      // definition (an applied project override); one still bound to the repository's
+      // definition is cut off even when an unapplied override or a common server now
+      // has the name.
+      if (
+        binding &&
+        withdrawnKeys.has(mcpServerNameKey(slot.serverName)) &&
+        (!definition || binding.boundHash() !== hashDefinition(definition))
+      )
+        binding.detach();
+      else if (definition) slot.setToolPolicy(definition);
     }
   };
 

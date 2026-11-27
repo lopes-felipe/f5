@@ -961,14 +961,21 @@ describe("F5 MCP hub", () => {
       const endpoint = attachment.endpoints[0]!;
       const client = await connect(endpoint.url, endpoint.token);
       expect((await client.listTools()).tools.length).toBeGreaterThan(0);
-      // A withdrawn name the saved config still has (a project override) keeps serving.
-      hub.refreshToolPolicies!(projectId, stdioServers(), ["fixture"]);
+      // A withdrawn name whose saved definition the slot is bound to (an applied project
+      // override) keeps serving; a settings-only change does not count as different.
+      hub.refreshToolPolicies!(projectId, withFixture({ toolPolicy: { echo: "allow" } }), [
+        "fixture",
+      ]);
       expect(hub.sessionServers!(threadId).size).toBe(1);
       // Without a withdrawn name, a missing server waits for Apply as before.
       hub.refreshToolPolicies!(projectId, {}, []);
       expect(hub.sessionServers!(threadId).size).toBe(1);
 
-      hub.refreshToolPolicies!(projectId, {}, ["FIXTURE"]);
+      // The saved config has another definition under the name (an unapplied override, or
+      // a common server visible once the repository entry is gone): the slot is still on
+      // the withdrawn definition, so it is cut off.
+      const other = stdioServers("other-report");
+      hub.refreshToolPolicies!(projectId, other, ["FIXTURE"]);
       expect(hub.sessionServers!(threadId).size).toBe(0);
       expect(hub.sessionServer!(threadId, "fixture")).toBeUndefined();
       expect((await client.listTools()).tools).toEqual([]);
@@ -977,6 +984,9 @@ describe("F5 MCP hub", () => {
       // Approving it again comes back through Apply.
       expect(attachment.update(stdioServers()).changed).toEqual(["fixture"]);
       expect(hub.sessionServers!(threadId).size).toBe(1);
+      // A withdrawn name the saved config no longer has is cut off too.
+      hub.refreshToolPolicies!(projectId, {}, ["fixture"]);
+      expect(hub.sessionServers!(threadId).size).toBe(0);
     } finally {
       await attachment.dispose();
     }

@@ -93,6 +93,28 @@ describe("MCP catalog", () => {
     expect(toCatalogEntry(page.servers[2])).toBeUndefined();
   });
 
+  it("keeps only http(s) source links", () => {
+    const entry = toCatalogEntry({
+      server: {
+        name: "io.github.acme/links",
+        websiteUrl: "vscode://open?x",
+        repository: { url: "javascript:alert(1)" },
+        remotes: [{ type: "streamable-http", url: "https://links.example/mcp" }],
+      },
+    });
+    expect(entry?.websiteUrl).toBeUndefined();
+    expect(entry?.repositoryUrl).toBeUndefined();
+    expect(
+      toCatalogEntry({
+        server: {
+          name: "io.github.acme/links",
+          websiteUrl: "https://links.example",
+          remotes: [{ type: "streamable-http", url: "https://links.example/mcp" }],
+        },
+      })?.websiteUrl,
+    ).toBe("https://links.example");
+  });
+
   it("searches the registry's latest versions and caches each page for an hour", async () => {
     const { fetch, urls } = fakeFetch(page);
     let now = 1_000;

@@ -108,11 +108,14 @@ On a certified version, F5 keeps every workflow turn read-only:
 - Read, search, think and fetch tools run. So do shell commands that only read, such as
   `gh pr view`, `gh pr diff`, `gh api` GET requests, `git log`/`diff`/`show`, `rg` and `cat`,
   joined by pipes, `&&`, `||` or `;`, with output redirected to `/dev/null` at most. They may
-  sit inside `if`/`elif`/`else`, `{ …; }` or `( … )` when every command inside reads; loops,
-  `case` and functions are refused. Arguments must be literal: no substitutions, and no variables
-  except ones the same command set to a literal first (`HEAD_SHA=abc123` on its own line or
-  first in an `&&` chain, then `git show "$HEAD_SHA"`), which are checked as the value they stand
-  for. Variables a shell or an allowed program gives a meaning to, such as `PATH`, `HOME`, `IFS`,
+  sit inside `if`/`elif`/`else`, `{ …; }`, `( … )` or a `for` loop over written-out words when
+  every command inside reads; `while`, `case` and functions are refused. Arguments must be
+  literal: no substitutions, and no variables except ones the same command set to a literal
+  first (`HEAD_SHA=abc123` on its own line or in an `&&` chain, then `git show "$HEAD_SHA"`),
+  which are checked as the value they stand for. A variable set after `&&` may not have been set,
+  so it can be used only in the rest of that `&&` chain. The full list is in
+  [shell commands in policy-enforced stages](../user/workflows.md#shell-commands-in-policy-enforced-stages).
+  Variables a shell or an allowed program gives a meaning to, such as `PATH`, `HOME`, `IFS`,
   `PAGER` or anything starting with `GIT_` or `GH_`, can't be set. Commands that never exit, such
   as `tail -f`, are refused. Cursor uses the same allowlist, in
   `apps/server/src/provider/readOnlyWorkflowShell.ts`. Commands that need the network, such as
@@ -252,10 +255,11 @@ Gemini 4 Neon.
   F5's compaction.
 - Attachments are limited to 50 MiB per turn.
 - With an API key, **Usage → Limits** shows "Billed per token" instead of subscription quota.
+- F5 no longer reads Antigravity subscription quotas from Google's internal APIs or CLIProxyAPI.
 - The provider card shows the runtime version and whether it is bundled with F5 or an installed
   update, when models were last discovered, and the kind of the last discovery failure (never its
   message).
-- Subscription quota, turn-failure details and native child work read Antigravity's private files.
+- Turn-failure details and native child work read Antigravity's private files.
   F5 reads them on Antigravity 1.5.13 or newer. On an older or unrecognised version the card shows
   "Native readers: Off" and threads run on standard ACP only. On a release F5 hasn't checked,
   each reader acts only on data it recognises (a known API or quota error, a sub-agent launch
@@ -290,4 +294,4 @@ Gemini 4 Neon.
 
 - [Provider prerequisites](../provider-prerequisites.md)
 - [Runtime modes](../runtime-modes.md)
-- [Usage and limits](../user/usage-limits.md) (Antigravity quotas)
+- [Usage and limits](../user/usage-limits.md)

@@ -3,10 +3,7 @@ import type {
   McpComposerServerResources,
   McpReadComposerResourceResult,
 } from "@t3tools/contracts";
-import {
-  MCP_COMPOSER_IMAGE_MIME_TYPES,
-  type McpResourceContextPart,
-} from "@t3tools/shared/mcpComposer";
+import { mcpComposerImageMimeType, type McpResourceContextPart } from "@t3tools/shared/mcpComposer";
 import type { ComposerCommandItem } from "../components/chat/ComposerCommandMenu";
 
 /** Most MCP entries one menu shows; typing narrows the rest. */
@@ -75,8 +72,7 @@ export function mcpResourceMenuItems(
  * types (such as SVG) are added as text like any other resource.
  */
 export function isMcpImageResource(item: McpResourceItem): boolean {
-  const mimeType = item.resource.mimeType?.toLowerCase().split(";")[0]?.trim();
-  return mimeType !== undefined && MCP_COMPOSER_IMAGE_MIME_TYPES.has(mimeType);
+  return mcpComposerImageMimeType(item.resource.mimeType) !== undefined;
 }
 
 /** Turns a resource's images into files for the composer's image attachments. */

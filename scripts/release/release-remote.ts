@@ -11,6 +11,8 @@ export interface RemoteRelease {
   draft: boolean;
   prerelease: boolean;
   tag_name: string;
+  /** The commit a draft names until its tag exists; GitHub echoes the SHA it was given. */
+  target_commitish?: string;
   assets: UploadedAsset[];
 }
 const exec = promisify(execFile);
@@ -33,10 +35,16 @@ export function validateRemoteRelease(release: RemoteRelease, tag: string, beta:
   )
     throw new Error("Release API returned a different identity");
 }
+/**
+ * Creates the draft without a tag. Its source is carried by `target_commitish` until the
+ * publisher creates the tag immediately before promotion, so a draft abandoned by a later
+ * gate never appears in the public release feed (which lists bare tags).
+ */
 export async function createDraft(
   tag: string,
   beta: boolean,
   notes: string,
+  sourceSha: string,
 ): Promise<RemoteRelease> {
   let release: RemoteRelease;
   try {
@@ -48,6 +56,8 @@ export async function createDraft(
         "repos/" + repository + "/releases",
         "-f",
         "tag_name=" + tag,
+        "-f",
+        "target_commitish=" + sourceSha,
         "-f",
         "name=F5 " + tag,
         "-f",
@@ -75,6 +85,8 @@ export async function createDraft(
     release = found;
   }
   validateRemoteRelease(release, tag, beta);
+  if (release.target_commitish !== sourceSha)
+    throw new Error("Release API returned a different identity");
   if (!release.draft) throw new Error("New draft became public before verification");
   releaseFields({ releaseId: release.id });
   return release;

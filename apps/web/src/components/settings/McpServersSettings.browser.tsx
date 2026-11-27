@@ -2306,6 +2306,20 @@ it("fills the Add form from a catalog entry, asking for its secret before saving
       }),
     );
     expect(mocks.replaceProjectConfig).not.toHaveBeenCalled();
+
+    // Choosing again over unsaved edits asks first; Keep editing keeps them.
+    const toastsBefore = toastAdd.mock.calls.length;
+    await page.getByLabelText("Name", { exact: true }).fill("my-notes");
+    await page.getByRole("tab", { name: "Catalog", exact: true }).click();
+    await page.getByRole("searchbox", { name: "Search the MCP Registry" }).fill("acme");
+    await page.getByRole("button", { name: "Use Notes for acme: npm package" }).click();
+    await expect
+      .element(page.getByRole("alertdialog"))
+      .toHaveTextContent("Discard unsaved MCP changes?");
+    await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+    expect(toastAdd.mock.calls.length).toBe(toastsBefore);
+    await page.getByRole("tab", { name: "Form", exact: true }).click();
+    await expect.element(page.getByLabelText("Name", { exact: true })).toHaveValue("my-notes");
   } finally {
     toastAdd.mockRestore();
     queryClient.clear();
@@ -2365,6 +2379,62 @@ it("lists .mcp.json servers and approves the reviewed definition", async () => {
     });
     await expect.element(section).toHaveTextContent("Approved");
     await expect.element(section.getByRole("button", { name: "Revoke" })).toBeVisible();
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("closes a stale review when .mcp.json changed under it", async () => {
+  const mocks = createNativeApiMock();
+  const pending = {
+    name: "repo-docs",
+    server: { type: "stdio" as const, command: "npx", args: ["-y", "docs-mcp"] },
+    definitionHash: "hash-1",
+    state: "needs-approval" as const,
+    overridden: false,
+    disabled: false,
+  };
+  const listing = (
+    server: Omit<typeof pending, "state"> & { state: "needs-approval" | "approved" },
+  ) => ({
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [server],
+    issues: [],
+  });
+  mocks.getRepositoryServers.mockResolvedValue(listing(pending));
+  mocks.setRepositoryServerTrust.mockImplementation(async () => {
+    mocks.getRepositoryServers.mockResolvedValue(
+      listing({
+        ...pending,
+        server: { ...pending.server, args: ["--write"] },
+        definitionHash: "hash-2",
+      }),
+    );
+    throw new Error("'repo-docs' changed in .mcp.json since you reviewed it. Review it again.");
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    const section = page.getByRole("region", { name: "Repository servers" });
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Approve repo-docs?" });
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    await expect.element(dialog).not.toBeInTheDocument();
+    await expect.element(section).toHaveTextContent("since you reviewed it");
+    await expect.element(section).toHaveTextContent("--write");
+
+    // A new review shows the refreshed definition and approves its hash.
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    await expect.element(dialog).toHaveTextContent("--write");
+    mocks.setRepositoryServerTrust.mockResolvedValue(
+      listing({ ...pending, state: "approved" as const }),
+    );
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    expect(mocks.setRepositoryServerTrust).toHaveBeenLastCalledWith(
+      expect.objectContaining({ definitionHash: "hash-2" }),
+    );
   } finally {
     queryClient.clear();
     await screen.unmount();

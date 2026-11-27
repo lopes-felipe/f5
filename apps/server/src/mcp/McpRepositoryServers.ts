@@ -19,7 +19,7 @@ import {
   MCP_SERVERS_PER_SCOPE,
   mcpServerNameKey,
 } from "@t3tools/shared/mcpValidation";
-import { Effect, Layer, Option, Schema, ServiceMap } from "effect";
+import { Effect, Layer, Option, Schema, Semaphore, ServiceMap } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ProjectionProjectRepository } from "../persistence/Services/ProjectionProjects.ts";
@@ -72,8 +72,9 @@ export interface McpRepositoryLayer {
   readonly version: string;
   /**
    * Name keys F5 must no longer run from this repository: servers in the file that are
-   * not approved (revoked, never approved or changed), and approved names the file no
-   * longer lists. Live sessions still using one are cut off.
+   * not approved (revoked, never approved or changed), approved names the file no
+   * longer lists, and names revoked since F5 started (even when the file is missing or
+   * unreadable) until they are approved again. Live sessions still using one are cut off.
    */
   readonly withdrawn: ReadonlyArray<string>;
 }
@@ -93,6 +94,14 @@ export interface McpRepositoryServersShape {
     readonly serverName: string;
     readonly trusted: boolean;
     readonly definitionHash?: string | undefined;
+    /**
+     * For an approval: why it must be refused (such as the effective server limit), or
+     * `undefined`. Runs under the same lock as the write, so concurrent approvals are
+     * checked one at a time against the layer each would extend.
+     */
+    readonly approvalIssue?: (
+      layer: McpRepositoryLayer,
+    ) => Effect.Effect<string | undefined, McpRepositoryTrustError>;
   }) => Effect.Effect<McpRepositoryLayer, McpRepositoryTrustError>;
 }
 
@@ -174,7 +183,12 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const projects = yield* ProjectionProjectRepository;
   const trust = new Map<string, Map<string, string>>();
+  // Names revoked since F5 started, per project. They stay withdrawn until approved again,
+  // so a revoke still cuts off live sessions when `.mcp.json` is missing or unreadable.
+  // Reporting one again is harmless: only sessions still bound to it are affected.
+  const revoked = new Map<string, Set<string>>();
   const files = new Map<string, ParsedFile>();
+  const trustWrites = yield* Semaphore.make(1);
 
   const rows = yield* sql<{
     projectId: string;
@@ -206,7 +220,9 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
 
   const readLayer = (projectId: ProjectId): Effect.Effect<McpRepositoryLayer> =>
     Effect.gen(function* () {
-      const trustedKeys = [...(trust.get(projectId)?.keys() ?? [])];
+      const trustedKeys = [
+        ...new Set([...(trust.get(projectId)?.keys() ?? []), ...(revoked.get(projectId) ?? [])]),
+      ];
       const root = yield* projectRoot(projectId);
       if (!root) return { ...EMPTY_LAYER, withdrawn: trustedKeys };
       const filename = path.join(root, MCP_REPOSITORY_FILE);
@@ -253,8 +269,12 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
       const approvedNames = Object.keys(approved);
       const listed = new Set(entries.map((entry) => mcpServerNameKey(entry.name)));
       const withdrawn = [
-        ...entries.filter((entry) => !entry.approved).map((entry) => mcpServerNameKey(entry.name)),
-        ...trustedKeys.filter((key) => !listed.has(key)),
+        ...new Set([
+          ...entries
+            .filter((entry) => !entry.approved)
+            .map((entry) => mcpServerNameKey(entry.name)),
+          ...trustedKeys.filter((key) => !listed.has(key)),
+        ]),
       ];
       return {
         path: filename,
@@ -279,6 +299,9 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
           ),
         );
         trust.get(input.projectId)?.delete(key);
+        const revokedNames = revoked.get(input.projectId) ?? new Set<string>();
+        revokedNames.add(key);
+        revoked.set(input.projectId, revokedNames);
         return yield* readLayer(input.projectId);
       }
       const layer = yield* readLayer(input.projectId);
@@ -291,6 +314,9 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
         return yield* new McpRepositoryTrustError({
           message: `'${input.serverName}' changed in ${MCP_REPOSITORY_FILE} since you reviewed it. Review it again.`,
         });
+      const issue =
+        input.approvalIssue && !entry.approved ? yield* input.approvalIssue(layer) : undefined;
+      if (issue) return yield* new McpRepositoryTrustError({ message: issue });
       const approvedAt = new Date().toISOString();
       yield* sql`INSERT INTO mcp_repository_trust (project_id, server_name, definition_hash, approved_at)
         VALUES (${input.projectId}, ${key}, ${entry.definitionHash}, ${approvedAt})
@@ -302,8 +328,9 @@ export const makeMcpRepositoryServers = Effect.gen(function* () {
       const byName = trust.get(input.projectId) ?? new Map<string, string>();
       byName.set(key, entry.definitionHash);
       trust.set(input.projectId, byName);
+      revoked.get(input.projectId)?.delete(key);
       return yield* readLayer(input.projectId);
-    });
+    }).pipe(trustWrites.withPermits(1));
 
   const trustedProjects = () =>
     [...trust.entries()]

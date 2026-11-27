@@ -1305,22 +1305,31 @@ export function McpServersSettings(props: {
         title={overriding ? `Override ${overriding}` : "Add MCP server"}
         scopeLabel={scopeLabel}
         form={editor}
-        onCatalogChoose={(choice) => {
-          const name = uniqueMcpServerName(choice.name, activeServers);
-          loadCatalogDraft(draftFromCatalog({ ...choice, name }));
-          setAdding("form");
-          const asks = [
-            ...(choice.secretKeys.length > 0
-              ? [`Store a secret for ${choice.secretKeys.join(", ")}.`]
-              : []),
-            ...(choice.needsInput.length > 0 ? [`Fill in ${choice.needsInput.join(", ")}.`] : []),
-          ];
-          toastManager.add({
-            type: "info",
-            title: `Review ${name} before saving`,
-            description: [...asks, "Nothing runs until you save."].join(" "),
-          });
-        }}
+        onCatalogChoose={(choice) =>
+          // Replaces the Add form's draft, so unsaved edits get the same discard check
+          // (and save-in-progress guard) as every other path that replaces the editor.
+          requestChange(() => {
+            const name = uniqueMcpServerName(choice.name, activeServers);
+            loadCatalogDraft(draftFromCatalog({ ...choice, name }));
+            setAdding("form");
+            const asks = [
+              ...(choice.secretKeys.length > 0
+                ? [`Store a secret for ${choice.secretKeys.join(", ")}.`]
+                : []),
+              ...(choice.needsInput.length > 0 ? [`Fill in ${choice.needsInput.join(", ")}.`] : []),
+              ...(choice.leftOutOptions.length > 0
+                ? [
+                    `Left out the listing's ${choice.server.type === "stdio" ? choice.server.command : "launcher"} options ${choice.leftOutOptions.join(", ")}; add any you trust to the arguments.`,
+                  ]
+                : []),
+            ];
+            toastManager.add({
+              type: "info",
+              title: `Review ${name} before saving`,
+              description: [...asks, "Nothing runs until you save."].join(" "),
+            });
+          })
+        }
         importProps={{
           scope,
           projectId: selectedProjectId,

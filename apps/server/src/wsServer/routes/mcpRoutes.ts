@@ -27,6 +27,7 @@ import type { McpCatalog } from "../../mcp/McpCatalog.ts";
 import { probeMcpServer } from "../../mcp/McpProbe.ts";
 import {
   type McpRepositoryLayer,
+  McpRepositoryTrustError,
   type McpRepositoryServers,
   repositoryApprovalLimitIssue,
 } from "../../mcp/McpRepositoryServers.ts";
@@ -533,23 +534,26 @@ export const mcpRoutes = ({
         return yield* new RouteRequestError({
           message: "Repository MCP servers are unavailable here.",
         });
-      if (body.trusted) {
-        const [layer, common, project] = yield* Effect.all([
-          mcpRepositoryServers.readLayer(body.projectId),
+      // The limit is checked inside setTrust, under the lock that serializes approvals,
+      // so two concurrent approvals cannot both pass it.
+      const approvalIssue = (layer: McpRepositoryLayer) =>
+        Effect.all([
           projectMcpConfigService.readCommonStoredConfig(),
           projectMcpConfigService.readProjectStoredConfig(body.projectId),
-        ]).pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-        const issue = repositoryApprovalLimitIssue({
-          layer,
-          serverName: body.serverName,
-          common: common.servers,
-          project: project.servers,
-          disabledCommon: project.disabledCommonServers,
-        });
-        if (issue) return yield* new RouteRequestError({ message: issue });
-      }
+        ]).pipe(
+          Effect.map(([common, project]) =>
+            repositoryApprovalLimitIssue({
+              layer,
+              serverName: body.serverName,
+              common: common.servers,
+              project: project.servers,
+              disabledCommon: project.disabledCommonServers,
+            }),
+          ),
+          Effect.mapError((error) => new McpRepositoryTrustError({ message: error.message })),
+        );
       const layer = yield* mcpRepositoryServers
-        .setTrust(body)
+        .setTrust({ ...body, approvalIssue })
         .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       // The effective configuration changed: settings, status and the hub re-read it.
       yield* codexMcpEventBus.publishStatusUpdated({

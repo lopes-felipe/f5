@@ -7,6 +7,7 @@ import {
   workflowEntries,
 } from "../orchestration/workflowArchiveLifecycle.ts";
 import { storageLstat, storageReadDir } from "./diskUsage.ts";
+import { stripPathTerminator } from "../git/worktreeList.ts";
 import {
   pruneStorageAutomationAudit,
   readSkipsSinceLastSuccess,
@@ -17,7 +18,6 @@ import {
   MACHINE_CATEGORY_IDS,
   isUngatedProviderTarget,
   scanCleanupProviders,
-  type CleanupFileReview,
 } from "./cleanupProviders.ts";
 import {
   runStorageTask,
@@ -29,9 +29,7 @@ import { makeUsageScanCoordinator } from "./usageScanCoordinator.ts";
 import { withProviderThreadAccess } from "../provider/providerThreadAccess.ts";
 import { cleanupRequiresTypedDelete } from "@t3tools/shared/storageCleanup";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
-import { userFacingCauseMessage } from "../causeMessage.ts";
 import {
-  type DiscardableChanges,
   evaluateWorktreeRemoval,
   removeWorktreeSafely,
   readWorktreeClaims,
@@ -45,7 +43,6 @@ import { canonicalWorktreePath } from "../git/worktreePaths.ts";
 import { pathContains } from "../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { NextTurnQueueStore } from "../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { TerminalManager } from "../terminal/Services/Manager.ts";
-import { stripPathTerminator } from "../git/worktreeList.ts";
 import { withAttachmentRetentionLease } from "./attachmentRetention.ts";
 import * as Crypto from "node:crypto";
 import * as FS from "node:fs/promises";
@@ -61,36 +58,32 @@ import type { CheckoutGarbageScan, KnownDependencyFolder } from "./checkoutGarba
 
 import {
   type CheckpointRef,
-  type ProjectId,
-  type ProjectKind,
   CommandId,
   type DiskSpaceReclaimableItem,
   type PendingDatabaseCompaction,
-  type StorageScheduleCompactionRequest,
-  type StorageScheduleCompactionResult,
   type StorageCleanupCategoryId,
-  type StorageAutomationJob,
   type StorageCleanupCategoryResult,
   type StorageCleanupCategoryUsage,
   type StorageCleanupProgressPayload,
   type StorageCleanupRequest,
-  type StorageCleanupTargetSelection,
   type StorageCleanupResult,
   type StorageCleanupTarget,
-  type StorageGetUsageRequest,
-  type StorageGetUsageResult,
-  type StorageStatus,
   type StorageCleanupStatus,
-  type StorageGetTargetsRequest,
-  type StorageGetTargetsResult,
   type StorageGetOperationRequest,
   type StorageGetOperationResult,
+  type StorageGetTargetsRequest,
+  type StorageGetTargetsResult,
+  type StorageGetUsageRequest,
+  type StorageGetUsageResult,
   type StoragePathWarning,
   type StorageScanStatus,
+  type StorageScheduleCompactionRequest,
+  type StorageScheduleCompactionResult,
+  type StorageStatus,
   type StorageUsageReport,
   ThreadId,
 } from "@t3tools/contracts";
-import { defaultF5BaseDir, legacyT3BaseDir } from "@t3tools/shared/appStatePaths";
+import { legacyT3BaseDir } from "@t3tools/shared/appStatePaths";
 import {
   Cause,
   Effect,
@@ -141,11 +134,11 @@ import {
   vacuumSpaceRequirement,
 } from "./databaseSpace.ts";
 import {
+  allocatedBytes,
   enumerateFiles,
   recursiveSize,
   indexFilesBySegment,
   fileIdentity,
-  allocatedBytes,
   type FileIdentity,
   type EnumeratedFile,
 } from "./diskUsage.ts";
@@ -160,32 +153,55 @@ import {
   isEnoent,
 } from "./storagePathSafety.ts";
 
-const USAGE_CACHE_TTL_MS = 10 * 60_000;
-/** Total time a scan may spend refreshing `origin/<default>` across repositories. */
-const REMOTE_REFRESH_BUDGET = "60 seconds";
-const NONCE_TTL_MS = 15 * 60_000;
-const EVENTS_ROTATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
-const ARCHIVED_THREAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
-/** Free pages worth one full VACUUM to switch to incremental auto-vacuum. */
-const AUTO_CONVERT_MIN_FREE_BYTES = 256 * 1024 * 1024;
-const AUTO_CONVERT_MIN_FREE_FRACTION = 0.2;
-/** Conversion reserves the database, so automatic runs wait for this quiet interval. */
-const AUTO_CONVERT_QUIET_MS = 30 * 60 * 1_000;
-/** Automatic conversion skipped this long is offered to run now or at the next start. */
-const PENDING_COMPACTION_AFTER_MS = 3 * 24 * 60 * 60 * 1_000;
-export const AUTO_CONVERT_SKIP_PREFIX = "switching to incremental auto-vacuum waits: ";
-/** A compaction scheduled for the next start is skipped if the server is not ready by then. */
-const SCHEDULED_COMPACTION_READY_WAIT = "2 minutes";
-export const PURGE_FAILURE_BACKOFF_MS = 24 * 60 * 60 * 1_000;
-
-const WORKTREE_SCAN_MAX_DEPTH = 4;
-const DOCKER_IMAGES_TARGET_ID = "docker:unused-images";
-/** Dependency folders of a checkout a thread used this recently are kept. */
-const CHECKOUT_RECENT_USE_MS = 24 * 60 * 60 * 1_000;
-const CHECKOUT_SIZE_BUDGET_MS = 60_000;
-/** Searching checkouts, including each candidate's nested-Git check; within the worker's 120 s. */
-const CHECKOUT_DISCOVERY_BUDGET_MS = 40_000;
-const GIT_WORKTREE_METADATA_UNRESOLVED = "Git worktree metadata could not be resolved.";
+import {
+  USAGE_CACHE_TTL_MS,
+  REMOTE_REFRESH_BUDGET,
+  NONCE_TTL_MS,
+  EVENTS_ROTATION_RETENTION_MS,
+  ARCHIVED_THREAD_RETENTION_MS,
+  AUTO_CONVERT_MIN_FREE_BYTES,
+  AUTO_CONVERT_MIN_FREE_FRACTION,
+  AUTO_CONVERT_QUIET_MS,
+  PENDING_COMPACTION_AFTER_MS,
+  AUTO_CONVERT_SKIP_PREFIX,
+  SCHEDULED_COMPACTION_READY_WAIT,
+  PURGE_FAILURE_BACKOFF_MS,
+  WORKTREE_SCAN_MAX_DEPTH,
+  DOCKER_IMAGES_TARGET_ID,
+  CHECKOUT_RECENT_USE_MS,
+  CHECKOUT_SIZE_BUDGET_MS,
+  CHECKOUT_DISCOVERY_BUDGET_MS,
+  GIT_WORKTREE_METADATA_UNRESOLVED,
+  isArchivePolicy,
+  manualAuditJob,
+  blockingReasons,
+  storageCauseMessage,
+  nowIso,
+  clampBytes,
+  uniqueCategoryIds,
+  normalizeTargetSelections,
+  providerLogSegmentFromName,
+  isEventsLogRotation,
+  isActiveStorageThread,
+  pathContainsOrEquals,
+  pathsOverlap,
+  sumNonOverlappingPathUsages,
+  categoryUsage,
+  resultFor,
+  warningFor,
+  parseActiveTurnId,
+  legacyAllowedRootForCategory,
+  type ThreadRow,
+  type OrphanAttachmentRow,
+  type LegacyCleanupCategoryId,
+  type PerTargetReclaimed,
+  type WorktreeReview,
+  type DependencyFolderReview,
+  type TemporaryPackReview,
+  type StorageReview,
+  type UsageNonceState,
+  type WorktreeRemovalReadiness,
+} from "./retentionPolicy.ts";
 
 export class StorageMaintenanceError extends Schema.TaggedErrorClass<StorageMaintenanceError>()(
   "StorageMaintenanceError",
@@ -367,180 +383,15 @@ export interface InactiveWorktreePreview {
   readonly reason: string;
 }
 
-export class StorageMaintenance extends ServiceMap.Service<
-  StorageMaintenance,
-  StorageMaintenanceShape
->()("t3/storage/StorageMaintenance") {}
-
-interface ThreadRow {
-  readonly threadId: ThreadId;
-  readonly projectId: ProjectId;
-  readonly title: string;
-  readonly lastInteractionAt: string;
-  readonly projectName: string | null;
-  readonly worktreePath: string | null;
-  readonly archivedAt: string | null;
-  readonly deletedAt: string | null;
-  readonly workspaceRoot: string | null;
-  readonly projectKind: ProjectKind | null;
-  readonly scratchPath: string | null;
-}
-
-interface OrphanAttachmentRow {
-  readonly attachmentId: string;
-  readonly name: string;
-  readonly finalPath: string;
-  readonly lifecycle?: string;
-  readonly lastError?: string | null;
-}
-
-type LegacyCleanupCategoryId = Extract<
-  StorageCleanupCategoryId,
-  | "legacyT3Userdata"
-  | "legacyT3Diverged"
-  | "legacyT3Worktrees"
-  | "legacyT3Dev"
-  | "legacyT3Caches"
-  | "legacyT3Root"
-  | "f5UserdataEmpty"
->;
-
-type PerTargetReclaimed = Array<StorageCleanupCategoryResult["perTargetReclaimed"][number]>;
-
-interface WorktreeReview {
-  readonly archiveThreads?: ReadonlyArray<{
-    readonly threadId: ThreadId;
-    readonly title: string;
-    readonly lastInteractionAt: string;
-    readonly sessionUpdatedAt: string | null;
-  }>;
-  readonly canonicalRoot: string;
-  readonly commonDir: string;
-  readonly head: string | null;
-  readonly registration: string;
-  readonly branch?: string | null;
-  /** Uncommitted changes matching the project's disposable paths, discarded on removal. */
-  readonly discardChanges?: DiscardableChanges;
-  /** External worktrees: the project checkout Git runs in. */
-  readonly projectRoot?: string;
-}
-interface DependencyFolderReview {
-  readonly checkoutRoot: string;
-  readonly identity: FileIdentity;
-}
-interface TemporaryPackReview {
-  readonly repositoryRoot: string;
-  readonly packDirectory: string;
-  readonly identity: FileIdentity;
-}
-interface StorageReview {
-  readonly files?: ReadonlyMap<string, CleanupFileReview>;
-  readonly dependencyFolders?: ReadonlyMap<string, DependencyFolderReview>;
-  readonly temporaryPacks?: ReadonlyMap<string, TemporaryPackReview>;
-  readonly worktrees: ReadonlyMap<string, WorktreeReview>;
-  readonly identities: ReadonlyMap<string, FileIdentity | null>;
-  readonly threads: ReadonlyMap<string, ThreadRow>;
-}
-interface UsageNonceState {
-  readonly scanId: string;
-  readonly nonce: string;
-  readonly expiresAtMs: number;
-  readonly generation: number;
-  readonly review: StorageReview;
-  readonly categories: ReadonlyMap<StorageCleanupCategoryId, StorageCleanupCategoryUsage>;
-  used: boolean;
-}
-
-interface WorktreeRemovalReadiness {
-  readonly review?: WorktreeReview;
-  /** The removal policy the gate used, including resolved disposable paths. */
-  readonly policy?: WorktreeRemovalPolicy;
-  readonly commandCwd: string | null;
-  readonly disabledReason?: string;
-  readonly warnings: ReadonlyArray<StoragePathWarning>;
-  /**
-   * Whether the branch may be deleted after removal. Kept out of the hashed
-   * review: a fetch between scan and confirmation must not invalidate it.
-   */
-  readonly branchDeletable?: boolean;
-}
-function isArchivePolicy(policy: WorktreeRemovalPolicy): boolean {
-  return (
-    (policy.kind === "storageMaintenance" || policy.kind === "externalCleanup") &&
-    policy.archiveIdleThreads === true
-  );
-}
-function manualAuditJob(category: StorageCleanupCategoryId): StorageAutomationJob {
-  if (MACHINE_CATEGORY_IDS.has(category) || category === "dockerUnusedImages")
-    return "machine-cleanup";
-  if (category.startsWith("purge")) return "thread-purge";
-  if (category === "databaseVacuum") return "database-vacuum";
-  if (category === "codexMarketplaceStaging") return "codex-marketplace-staging";
-  if (category.startsWith("providerLog")) return "provider-logs";
-  return "worktree-cleanup";
-}
-function blockingReasons(reason: string | undefined) {
-  if (!reason) return {};
-  const code = /uncommitted/.test(reason)
-    ? "local_changes"
-    : /ignored files/.test(reason)
-      ? "protected_ignored_files"
-      : /queued/.test(reason)
-        ? "queued_work"
-        : /active|session|terminal|using/.test(reason)
-          ? "workspace_in_use"
-          : /commits|pushed/.test(reason)
-            ? "merge_unverified"
-            : "verification_unavailable";
-  return { blockingReasons: [{ code, message: reason }] };
-}
-
-function storageCauseMessage(cause: Cause.Cause<unknown>): string {
-  return userFacingCauseMessage(cause, "Storage operation failed.", { maxLength: 300 });
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-function clampBytes(value: number): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    return 0;
-  }
-  return Math.floor(value);
-}
-
-function uniqueCategoryIds(
-  categoryIds: ReadonlyArray<StorageCleanupCategoryId>,
-): ReadonlyArray<StorageCleanupCategoryId> {
-  const seen = new Set<StorageCleanupCategoryId>();
-  const ordered: StorageCleanupCategoryId[] = [];
-  for (const categoryId of categoryIds) {
-    if (!seen.has(categoryId)) {
-      seen.add(categoryId);
-      ordered.push(categoryId);
-    }
-  }
-  const nonVacuum = ordered.filter((categoryId) => categoryId !== "databaseVacuum");
-  return [
-    ...nonVacuum.filter((categoryId) => categoryId === "purgeArchivedThreads"),
-    ...nonVacuum.filter((categoryId) => categoryId !== "purgeArchivedThreads"),
-    ...ordered.filter((categoryId) => categoryId === "databaseVacuum"),
-  ];
-}
-
-function normalizeTargetSelections(
-  selections: ReadonlyArray<StorageCleanupTargetSelection> | undefined,
-): Map<StorageCleanupCategoryId, ReadonlySet<string>> {
-  const result = new Map<StorageCleanupCategoryId, Set<string>>();
-  for (const selection of selections ?? []) {
-    const existing = result.get(selection.categoryId) ?? new Set<string>();
-    for (const targetId of selection.targetIds) {
-      existing.add(targetId);
-    }
-    result.set(selection.categoryId, existing);
-  }
-  return result;
+function toStorageMaintenanceError(operation: string) {
+  return (cause: unknown) =>
+    Schema.is(StorageMaintenanceError)(cause)
+      ? cause
+      : new StorageMaintenanceError({
+          operation,
+          message: cause instanceof Error ? cause.message : String(cause),
+          cause,
+        });
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -557,147 +408,6 @@ async function databaseFileBytes(dbPath: string): Promise<number> {
     ["", "-wal", "-shm", "-journal"].map((suffix) => safeLstat(`${dbPath}${suffix}`)),
   );
   return stats.reduce((total, stat) => total + (stat ? allocatedBytes(stat) : 0), 0);
-}
-
-function providerLogSegmentFromName(name: string): string | null {
-  const match = /^(.+)\.log(?:\.\d+)?$/.exec(name);
-  const segment = match?.[1];
-  if (!segment || segment === "events" || segment === "_global") {
-    return null;
-  }
-  return segment;
-}
-
-function isEventsLogRotation(file: EnumeratedFile): boolean {
-  return /^events\.log\.\d+$/.test(file.name);
-}
-
-function isActiveStorageThread(thread: ThreadRow): boolean {
-  return thread.deletedAt === null && thread.archivedAt === null;
-}
-
-function normalizePathForCompare(path: string): string {
-  return Path.resolve(path);
-}
-
-function pathContainsOrEquals(rootPath: string, targetPath: string): boolean {
-  const root = normalizePathForCompare(rootPath);
-  const target = normalizePathForCompare(targetPath);
-  const relative = Path.relative(root, target);
-  return (
-    relative.length === 0 ||
-    (relative !== ".." && !relative.startsWith(`..${Path.sep}`) && !Path.isAbsolute(relative))
-  );
-}
-
-function pathsOverlap(leftPath: string, rightPath: string): boolean {
-  return pathContainsOrEquals(leftPath, rightPath) || pathContainsOrEquals(rightPath, leftPath);
-}
-
-function sumNonOverlappingPathUsages(
-  usages: ReadonlyArray<{ readonly path: string; readonly bytes: number }>,
-): number {
-  const countedRoots: string[] = [];
-  let total = 0;
-  for (const usage of usages
-    .filter((entry) => entry.bytes > 0)
-    .toSorted(
-      (left, right) =>
-        normalizePathForCompare(left.path).length - normalizePathForCompare(right.path).length,
-    )) {
-    if (countedRoots.some((root) => pathContainsOrEquals(root, usage.path))) {
-      continue;
-    }
-    countedRoots.push(usage.path);
-    total += usage.bytes;
-  }
-  return total;
-}
-
-function categoryUsage(input: {
-  readonly id: StorageCleanupCategoryId;
-  readonly section: StorageCleanupCategoryUsage["section"];
-  readonly title: string;
-  readonly description: string;
-  readonly bytes: number;
-  readonly reclaimableBytes: number;
-  readonly defaultSelected: boolean;
-  readonly impact: StorageCleanupCategoryUsage["impact"];
-  readonly targets?: ReadonlyArray<StorageCleanupTarget>;
-  readonly disabledReason?: string | undefined;
-  readonly warnings?: ReadonlyArray<StoragePathWarning>;
-}): StorageCleanupCategoryUsage {
-  const targetCount = input.targets?.length ?? 0;
-  const disabledReason =
-    input.disabledReason ??
-    (input.reclaimableBytes <= 0 && input.id !== "databaseVacuum" && targetCount === 0
-      ? "No reclaimable storage found."
-      : undefined);
-  return {
-    id: input.id,
-    section: input.section,
-    title: input.title,
-    description: input.description,
-    bytes: clampBytes(input.bytes),
-    reclaimableBytes: clampBytes(input.reclaimableBytes),
-    measurement: input.warnings?.length ? "partial" : "complete",
-    eligibleThreadCount:
-      input.id === "purgeDeletedThreads" || input.id === "purgeArchivedThreads" ? targetCount : 0,
-    defaultSelected: input.defaultSelected,
-    impact: input.impact,
-    availability: disabledReason ? "disabled" : "ready",
-    ...(disabledReason ? { disabledReason } : {}),
-    targetCount,
-    targets: [...(input.targets ?? [])],
-    warnings: (input.warnings ?? []).map((warning) => warningFor(warning.path, warning.reason)),
-  };
-}
-
-function resultFor(input: {
-  readonly categoryId: StorageCleanupCategoryId;
-  readonly status: StorageCleanupCategoryResult["status"];
-  readonly reclaimedBytes?: number;
-  readonly perTargetReclaimed?: StorageCleanupCategoryResult["perTargetReclaimed"];
-  readonly warnings?: ReadonlyArray<StoragePathWarning>;
-  readonly message?: string;
-}): StorageCleanupCategoryResult {
-  return {
-    categoryId: input.categoryId,
-    status: input.status,
-    reclaimedBytes: clampBytes(input.reclaimedBytes ?? 0),
-    perTargetReclaimed: [...(input.perTargetReclaimed ?? [])],
-    warnings: (input.warnings ?? []).map((warning) => warningFor(warning.path, warning.reason)),
-    ...(input.message ? { message: input.message.replace(/\s+/g, " ").slice(0, 300) } : {}),
-  };
-}
-
-function warningFor(path: string, reason: string): StoragePathWarning {
-  return { path, reason: reason.replace(/\s+/g, " ").trim().slice(0, 300) };
-}
-
-function toStorageMaintenanceError(operation: string) {
-  return (cause: unknown) =>
-    Schema.is(StorageMaintenanceError)(cause)
-      ? cause
-      : new StorageMaintenanceError({
-          operation,
-          message: cause instanceof Error ? cause.message : String(cause),
-          cause,
-        });
-}
-
-function parseActiveTurnId(runtimePayloadJson: string | null): string | null {
-  if (!runtimePayloadJson) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(runtimePayloadJson) as { activeTurnId?: unknown };
-    return typeof parsed.activeTurnId === "string" && parsed.activeTurnId.length > 0
-      ? parsed.activeTurnId
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 async function listProviderLogFiles(providerLogsDir: string): Promise<{
@@ -768,11 +478,6 @@ async function listGitWorktreeDirectories(input: {
   };
 }
 
-function legacyAllowedRootForCategory(categoryId: LegacyCleanupCategoryId): string {
-  const homeDir = OS.homedir();
-  return categoryId === "f5UserdataEmpty" ? defaultF5BaseDir(homeDir) : legacyT3BaseDir(homeDir);
-}
-
 async function resolveWorktreeRemoveCwd(targetPath: string): Promise<string | null> {
   const gitPath = Path.join(targetPath, ".git");
   const gitStat = await safeLstat(gitPath);
@@ -818,6 +523,13 @@ async function loadStatfs(): Promise<
   };
   return typeof imported.statfs === "function" ? imported.statfs : null;
 }
+
+export class StorageMaintenance extends ServiceMap.Service<
+  StorageMaintenance,
+  StorageMaintenanceShape
+>()("t3/storage/StorageMaintenance") {}
+
+export { AUTO_CONVERT_SKIP_PREFIX, PURGE_FAILURE_BACKOFF_MS };
 
 const makeStorageMaintenance = Effect.gen(function* () {
   const removalServices = yield* Effect.services<

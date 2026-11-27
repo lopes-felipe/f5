@@ -6,6 +6,7 @@ import { pendingStableRequests } from "./release/release-candidate.ts";
 import { parseReleaseIntent } from "./release/release-intent.ts";
 import { gh, git, repository, stableRequests } from "./release/release-github.ts";
 import { fetchReleaseSummaries } from "./lib/release-profile.ts";
+import { assertUnreservedVersion } from "./release/release-publication.ts";
 import { refoldChangelog, releaseChangelog } from "./prepare-release.ts";
 import {
   releasePackageFiles,
@@ -80,7 +81,9 @@ if (remote) {
   openPreparationPr();
   process.exit(0);
 }
-const releases = fetchReleaseSummaries(repository).filter((r) => !r.draft);
+// The release app token sees drafts; they reserve versions too (see assertUnreservedVersion).
+const allReleases = fetchReleaseSummaries(repository);
+const releases = allReleases.filter((r) => !r.draft);
 for (const release of releases.filter((r) => /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(r.tag_name)))
   if (!("action" in intent))
     if (compareCliReleaseVersions(intent.version, release.tag_name.slice(1)) <= 0)
@@ -92,10 +95,11 @@ const published = new Map(
 );
 const history = stableRequests(git(["rev-parse", "HEAD"]), intent);
 const pending = pendingStableRequests(history, published);
-if (!("action" in intent) && git(["ls-remote", "--tags", "origin", "refs/tags/v" + intent.version]))
-  throw new Error(
-    "This version has a reserved immutable tag; resume it, or withdraw the request and prepare a higher unused version",
-  );
+if (!("action" in intent))
+  assertUnreservedVersion(intent.version, {
+    tagExists: git(["ls-remote", "--tags", "origin", "refs/tags/v" + intent.version]) !== "",
+    releases: allReleases,
+  });
 git(["switch", "-c", branch]);
 const current = JSON.parse(readFileSync("apps/desktop/package.json", "utf8")).version;
 if ("action" in intent) {

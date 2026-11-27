@@ -97,6 +97,18 @@ function toArgument(value: unknown): McpCatalogArgument | undefined {
   };
 }
 
+/** An http(s) URL, or undefined. */
+function webUrl(value: unknown): string | undefined {
+  const url = text(value);
+  if (!url) return undefined;
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "http:" || protocol === "https:" ? url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function toRemote(value: unknown): McpCatalogRemote | undefined {
   const remote = record(value);
   const url = text(remote?.url);
@@ -148,8 +160,9 @@ export function toCatalogEntry(value: unknown): McpCatalogEntry | undefined {
     ...optional("title", text(server.title)),
     ...optional("description", text(server.description)),
     ...optional("version", text(server.version)),
-    ...optional("websiteUrl", text(server.websiteUrl)),
-    ...optional("repositoryUrl", text(record(server.repository)?.url)),
+    // Shown as links: anything but http(s) could hand a click to another application.
+    ...optional("websiteUrl", webUrl(server.websiteUrl)),
+    ...optional("repositoryUrl", webUrl(record(server.repository)?.url)),
     remotes,
     packages,
   };

@@ -14,6 +14,15 @@ export const MCP_COMPOSER_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
   "image/gif",
   "image/webp",
 ]);
+
+/**
+ * The attachable image type of a MIME type (`IMAGE/PNG; charset=binary` → `image/png`),
+ * or `undefined` when the composer cannot attach it.
+ */
+export function mcpComposerImageMimeType(mimeType: string | undefined): string | undefined {
+  const base = mimeType?.toLowerCase().split(";")[0]?.trim();
+  return base !== undefined && MCP_COMPOSER_IMAGE_MIME_TYPES.has(base) ? base : undefined;
+}
 const MAX_LABEL_LENGTH = 60;
 const REFERENCE_PATTERN = /\[@([^[\]\n]{1,200})\]\(mcp-resource:\/\/([^\s()/]+)\/([^\s()]+)\)/g;
 
@@ -192,6 +201,43 @@ export function formatMcpResourceContext(
 export function stripTrailingMcpResourceContext(text: string): string {
   if (!text.trimEnd().endsWith(CONTEXT_CLOSE)) return text;
   const opening = `${CONTEXT_OPEN}\n`;
-  const start = text.startsWith(opening) ? 0 : text.indexOf(`\n\n${opening}`);
-  return start < 0 ? text : text.slice(0, start).replace(/\n+$/, "");
+  // The appended block is the first opening tag where a whole, well-formed block runs to
+  // the end. A tag the user typed earlier, or one inside a resource's contents, is not.
+  const starts = text.startsWith(opening) ? [0] : [];
+  for (
+    let at = text.indexOf(`\n\n${opening}`);
+    at >= 0;
+    at = text.indexOf(`\n\n${opening}`, at + 1)
+  )
+    starts.push(at + 2);
+  const start = starts.find((candidate) => isWholeContextBlock(text, candidate));
+  return start === undefined ? text : text.slice(0, start).replace(/\n+$/, "");
+}
+
+/**
+ * Whether `text` from `start` is exactly a block `formatMcpResourceContext` wrote: parts
+ * of `MCP resource …:`, a fence, the text, the same fence (each fence is longer than any
+ * backtick run in its text, so the first match closes it), then the closing tag.
+ */
+function isWholeContextBlock(text: string, start: number): boolean {
+  const partHeader = "MCP resource ";
+  let at = start + CONTEXT_OPEN.length + 1;
+  for (;;) {
+    if (!text.startsWith(partHeader, at)) return false;
+    const headerEnd = text.indexOf("\n", at);
+    if (headerEnd < 0 || text[headerEnd - 1] !== ":") return false;
+    const fenceEnd = text.indexOf("\n", headerEnd + 1);
+    if (fenceEnd < 0) return false;
+    const fence = text.slice(headerEnd + 1, fenceEnd);
+    if (!/^`{3,}$/.test(fence)) return false;
+    const close = text.indexOf(`\n${fence}`, fenceEnd + 1);
+    if (close < 0 || text[close + 1 + fence.length] === "`") return false;
+    at = close + 1 + fence.length;
+    if (text.startsWith(TRUNCATED_NOTE, at)) at += TRUNCATED_NOTE.length;
+    if (text.startsWith(`\n\n${partHeader}`, at)) {
+      at += 2;
+      continue;
+    }
+    return /^\n<\/mcp_resources>\s*$/.test(text.slice(at));
+  }
 }
