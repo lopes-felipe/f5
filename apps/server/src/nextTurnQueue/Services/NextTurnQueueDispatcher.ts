@@ -16,6 +16,17 @@ import type { NextTurnQueueError } from "../Errors.ts";
 import type { ProviderTurnDeliveryOutcome } from "../../orchestration/Services/ProviderTurnDeliveryWorker.ts";
 import type { ProviderTurnDelivery } from "../../orchestration/Services/ProviderTurnDeliveryRepository.ts";
 
+/**
+ * The user cancelled the restore of a worktree. It is the user's decision, not
+ * a failure: nothing tries again on its own.
+ */
+export class WorkspaceRestoreCancelledError extends Error {
+  readonly _tag = "WorkspaceRestoreCancelledError";
+  constructor() {
+    super("Restoring the worktree was cancelled.");
+  }
+}
+
 export interface NextTurnQueueDispatcherShape {
   readonly scheduleUsageLimitResume: (input: {
     threadId: ThreadId;
@@ -59,8 +70,8 @@ export interface NextTurnQueueDispatcherShape {
    * Registers what brings a missing worktree back when a send stops on it. The
    * restorer resolves to whether it restored the worktree; `false` means only
    * the user can decide, and a failure is retried once before the thread's
-   * status reports it. Registered late because the restorer notifies this
-   * dispatcher itself.
+   * status reports it. A `WorkspaceRestoreCancelledError` is not retried.
+   * Registered late because the restorer notifies this dispatcher itself.
    */
   readonly setWorkspaceRestorer: (
     restore: (threadId: ThreadId) => Effect.Effect<boolean, Error>,

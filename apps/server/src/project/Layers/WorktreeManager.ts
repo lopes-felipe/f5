@@ -1,6 +1,6 @@
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { listWorktreeInventory } from "../worktreeInventory.ts";
-import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
+import { switchWasCancelled, WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import nodePath from "node:path";
 import {
   type ThreadId,
@@ -9,13 +9,21 @@ import {
   type WorktreesSwitchWorkspaceInput,
 } from "@t3tools/contracts";
 import { transitionIsActive } from "../../persistence/Services/WorkspaceTransitions.ts";
-import { deriveThreadWorkspaceStatus, planRestore } from "../threadWorkspaceStatus.ts";
+import {
+  deriveThreadWorkspaceStatus,
+  isSetupFailure,
+  planRestore,
+  readBranchHolder,
+} from "../threadWorkspaceStatus.ts";
 import { appendWorkspaceNote } from "../workspaceNotes.ts";
 import { Effect, FileSystem, Layer, Option } from "effect";
 import { ServerConfig } from "../../config.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { canonicalWorktreePath } from "../../git/worktreePaths.ts";
-import { NextTurnQueueDispatcher } from "../../nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
+import {
+  NextTurnQueueDispatcher,
+  WorkspaceRestoreCancelledError,
+} from "../../nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
@@ -274,6 +282,12 @@ export const makeWorktreeManager = Effect.gen(function* () {
       return yield* deriveThreadWorkspaceStatus(git, {
         thread,
         project,
+        holder: readBranchHolder({
+          config,
+          project,
+          threadId: thread.id,
+          threads: (yield* engine.getReadModel()).threads,
+        }),
         switching: transition && transitionIsActive(transition) ? transition.intent : null,
         // The queue's own snapshot covers the moment before a restore reserves its switch.
         restoring: false,
@@ -400,6 +414,12 @@ export const makeWorktreeManager = Effect.gen(function* () {
         },
         orphanedOwner,
       );
+      // Cancelling is the user's decision: the automatic restore must not try again.
+      if (
+        switchWasCancelled(result) &&
+        (request.intent === "recreate" || request.intent === "recreate_from_base")
+      )
+        return yield* Effect.fail(new WorkspaceRestoreCancelledError());
       if (result.phase !== "completed")
         return yield* Effect.fail(
           new Error(result.error ?? "The workspace switch did not finish. Try again."),
@@ -412,15 +432,24 @@ export const makeWorktreeManager = Effect.gen(function* () {
         });
       return result;
     });
-  /** Lets the message that stopped on the missing worktree go. */
+  /**
+   * Lets the message go that stopped on the missing worktree, or on a setup
+   * that failed and that the recovery just dealt with. A setup that still owns
+   * the thread keeps its pause: its own card resolves it.
+   */
   const resume = (threadId: ThreadId) =>
     Effect.gen(function* () {
-      const latest = yield* queue.listByThread(threadId);
-      if (latest.state.paused && latest.state.pauseReasonCode === "worktree_missing")
+      const { state } = yield* queue.listByThread(threadId);
+      const reason = state.pauseReasonCode;
+      if (
+        state.paused &&
+        (reason === "worktree_missing" ||
+          (isSetupFailure(reason) && state.worktreeBlockToken === null))
+      )
         yield* queue.setPaused({
           threadId,
           paused: false,
-          expectedRevision: latest.state.revision,
+          expectedRevision: state.revision,
         });
       yield* dispatcher.notify(threadId);
     });
@@ -445,11 +474,15 @@ export const makeWorktreeManager = Effect.gen(function* () {
       const plan = state ? planRestore(state) : ({ kind: "none" } as const);
       if (plan.kind === "branchInUse" || plan.kind === "impossible") return false;
       if (plan.kind === "none" && thread.worktreePath !== null) {
-        // The folder is there but a restart cut its preparation short: finish it.
+        // The folder is there but its preparation did not finish: a restart cut
+        // it short, or it failed and a message is waiting behind that. Run it
+        // again; the message goes only if it succeeds.
         const receipt = yield* git.readWorktreePreparation(thread.worktreePath);
+        const { state: waiting } = yield* queue.listByThread(thread.id);
         if (
-          receipt !== null &&
-          ["allocated", "setup_failed", "setup_indeterminate"].includes(receipt.phase)
+          (receipt !== null &&
+            ["allocated", "setup_failed", "setup_indeterminate"].includes(receipt.phase)) ||
+          (waiting.paused && isSetupFailure(waiting.pauseReasonCode))
         )
           yield* switchTo(found, { intent: "recreate" });
       } else if (plan.kind === "recreate" && state?.grouped) {
@@ -465,6 +498,12 @@ export const makeWorktreeManager = Effect.gen(function* () {
             result.target.path === result.source.path
               ? `Worktree restored on ${result.result?.branch ?? thread.branch}`
               : `Worktree moved to ${nodePath.basename(result.target.path)}`,
+        });
+      } else if (plan.kind === "fromRemote") {
+        // The switch finds the same remote copy and starts the branch from it.
+        const result = yield* switchTo(found, { intent: "recreate_from_base" });
+        yield* appendWorkspaceNote(engine, thread.id, {
+          summary: `Worktree restored on ${result.result?.branch ?? thread.branch} from ${plan.base}`,
         });
       } else if (plan.kind === "fromBase") {
         const result = yield* switchTo(found, { intent: "recreate_from_base" });

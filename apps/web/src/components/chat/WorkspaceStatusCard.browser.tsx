@@ -23,7 +23,11 @@ const snapshot = (workspace: ThreadWorkspaceStatus | null, items: ReadonlyArray<
   reasonDetail: null,
   maxItems: 20,
   quarantinedCount: 0,
-  items: items.map((id) => ({ itemId: CommandId.makeUnsafe(id) })) as never,
+  // An id that starts with "failed" is a message that already failed.
+  items: items.map((id) => ({
+    itemId: CommandId.makeUnsafe(id),
+    status: id.startsWith("failed") ? "failed" : "queued",
+  })) as never,
   workspace,
 });
 const show = (workspace: ThreadWorkspaceStatus | null) =>
@@ -134,7 +138,10 @@ it("discards the waiting message instead of recovering, and never shows more tha
     message: "Worktree setup did not finish.",
     actions: ["retry", "useProjectFolder", "discard", "newWorktree"],
   });
-  api.nextTurnQueue.list.mockImplementation(async () => snapshot(null, ["waiting", "later"]));
+  // A message that failed earlier is still listed first; it is not the one waiting.
+  api.nextTurnQueue.list.mockImplementation(async () =>
+    snapshot(null, ["failed-earlier", "waiting", "later"]),
+  );
   const screen = await mount();
   expect(buttons()).toEqual(["Try again", "Continue in Local", "Discard message"]);
   await screen.getByRole("button", { name: "Discard message" }).click();

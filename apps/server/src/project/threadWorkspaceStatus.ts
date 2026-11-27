@@ -4,9 +4,12 @@ import type {
   WorkspaceTransitionSnapshot,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
+import { stat } from "node:fs/promises";
 import nodePath from "node:path";
+import type { ServerConfigShape } from "../config.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
 import type { WorktreeSetupGateState } from "./Services/WorktreeSetupGate.ts";
+import { canonicalWorkspace, isProjectOrManagedPath } from "./workspaceAttachment.ts";
 import { readWorktreeState } from "./worktreeReadiness.ts";
 
 type WorkspaceTransitionIntent = WorkspaceTransitionSnapshot["intent"];
@@ -21,7 +24,9 @@ export type RestorePlan =
   | { readonly kind: "none" }
   /** Put the recorded branch back in a worktree; at a new path if the folder is taken. */
   | { readonly kind: "recreate" }
-  /** The branch is gone too: start it again from the default branch. */
+  /** The branch is gone here but a remote still has it: start it again from that copy. */
+  | { readonly kind: "fromRemote"; readonly base: string }
+  /** The branch is gone everywhere: start it again from the default branch. */
   | { readonly kind: "fromBase"; readonly base: string }
   /** Git allows one checkout per branch, and another one has it. */
   | { readonly kind: "branchInUse"; readonly at: string }
@@ -40,6 +45,7 @@ export const planRestore = (state: WorktreeState): RestorePlan => {
     return state.branchCheckedOutAt === null
       ? { kind: "recreate" }
       : { kind: "branchInUse", at: state.branchCheckedOutAt };
+  if (state.remoteBranch) return { kind: "fromRemote", base: state.remoteBranch };
   if (state.defaultBranch) return { kind: "fromBase", base: state.defaultBranch };
   return {
     kind: "impossible",
@@ -63,13 +69,76 @@ export interface ThreadWorkspaceFacts {
     readonly pauseReasonCode: QueueReasonCode | null;
     readonly pauseDetail: string | null;
   };
+  /** Asked only when another checkout holds the thread's branch; see `readBranchHolder`. */
+  readonly holder: (path: string) => Effect.Effect<BranchHolder>;
 }
+
+export interface BranchHolder {
+  /** F5 attaches threads only to the project folder and to worktrees it manages. */
+  readonly attachable: boolean;
+  /** How many other threads of the project already work in that folder. */
+  readonly sharedWith: number;
+}
+
+/**
+ * What "Continue there" needs to know about the checkout that holds a thread's
+ * branch: whether a thread can be attached to it at all, and who it would be
+ * shared with. A folder that cannot be read is not offered.
+ */
+export const readBranchHolder =
+  (input: {
+    /** Null where the server's folders are not known: only the project folder is offered then. */
+    readonly config: ServerConfigShape | null;
+    readonly project: { readonly id: string; readonly workspaceRoot: string };
+    readonly threadId: string;
+    readonly threads: ReadonlyArray<{
+      readonly id: string;
+      readonly projectId: string;
+      readonly worktreePath: string | null;
+      readonly deletedAt: string | null;
+      readonly archivedAt: string | null;
+    }>;
+  }) =>
+  (holder: string): Effect.Effect<BranchHolder> =>
+    Effect.gen(function* () {
+      const [target, root] = yield* Effect.all([
+        canonicalWorkspace(holder),
+        canonicalWorkspace(input.project.workspaceRoot),
+      ]);
+      const attachable =
+        target === root ||
+        (input.config !== null && (yield* isProjectOrManagedPath(input.config, root, target)));
+      let sharedWith = 0;
+      for (const thread of input.threads) {
+        if (
+          thread.id === input.threadId ||
+          thread.projectId !== input.project.id ||
+          thread.deletedAt !== null ||
+          thread.archivedAt !== null
+        )
+          continue;
+        if (thread.worktreePath === null) {
+          if (target === root) sharedWith++;
+          // The folder's name is compared first: resolving every thread's path is not needed.
+        } else if (
+          nodePath.basename(thread.worktreePath) === nodePath.basename(target) &&
+          (yield* canonicalWorkspace(thread.worktreePath).pipe(
+            Effect.orElseSucceed(() => null),
+          )) === target
+        )
+          sharedWith++;
+      }
+      return { attachable, sharedWith };
+    }).pipe(Effect.orElseSucceed(() => ({ attachable: false, sharedWith: 0 })));
 
 const SETUP_FAILURES: ReadonlyArray<QueueReasonCode> = [
   "worktree_setup_failed",
   "worktree_setup_cancelled",
   "worktree_setup_cancelled_kept",
 ];
+/** The queue is held because a worktree's setup failed or was cancelled. */
+export const isSetupFailure = (reason: QueueReasonCode | null | undefined) =>
+  reason != null && SETUP_FAILURES.includes(reason);
 
 const switchActivity = (intent: WorkspaceTransitionIntent) =>
   intent === "move_to_new_worktree"
@@ -80,6 +149,15 @@ const switchActivity = (intent: WorkspaceTransitionIntent) =>
 
 const samePath = (left: string, right: string) =>
   nodePath.resolve(left) === nodePath.resolve(right);
+
+/** Whether a Git checkout is at the folder, by one `stat` and without running Git. */
+const holdsCheckout = (folder: string) =>
+  Effect.promise(() =>
+    stat(nodePath.join(folder, ".git")).then(
+      () => true,
+      () => false,
+    ),
+  );
 
 /**
  * The single place that decides what state a thread's workspace is in. It
@@ -127,7 +205,7 @@ export const deriveThreadWorkspaceStatus = (
         message: queue.pauseDetail ?? "Worktree setup did not finish.",
         actions: ["retry", "useProjectFolder", "discard"],
       } as const;
-    if (thread.worktreePath === null)
+    if (!thread.worktreePath)
       return {
         kind: "ready",
         location: "projectFolder",
@@ -148,6 +226,11 @@ export const deriveThreadWorkspaceStatus = (
       path: thread.worktreePath,
       branch: thread.branch,
     } as const;
+    // This runs for every queue snapshot, so the usual case asks Git nothing:
+    // a checkout is at the folder and no send has stopped on it. What the
+    // checkout holds is verified by the send itself, which stops here if it
+    // is not this thread's worktree.
+    if (!stopped && (yield* holdsCheckout(thread.worktreePath))) return ready;
     const state = yield* readWorktreeState(git, {
       projectCwd: project.workspaceRoot,
       worktreePath: thread.worktreePath,
@@ -159,7 +242,13 @@ export const deriveThreadWorkspaceStatus = (
     switch (plan.kind) {
       case "none":
         return ready;
-      case "branchInUse":
+      case "branchInUse": {
+        const holder = yield* facts.holder(plan.at);
+        // Continuing there shares the folder, so the card says with whom.
+        const shared =
+          holder.attachable && holder.sharedWith > 0
+            ? `, which ${holder.sharedWith} other ${holder.sharedWith === 1 ? "thread uses" : "threads use"}`
+            : "";
         return {
           kind: "attention",
           reason: "branch_in_use",
@@ -167,12 +256,15 @@ export const deriveThreadWorkspaceStatus = (
             samePath(plan.at, project.workspaceRoot)
               ? "the project folder"
               : nodePath.basename(plan.at)
-          }, so this thread's worktree cannot be restored on it.`,
-          actions: ["attach", "newWorktree"],
+          }${shared}, so this thread's worktree cannot be restored on it.`,
+          // A checkout F5 does not manage cannot take a thread: only a new worktree is offered.
+          actions: holder.attachable ? ["attach", "newWorktree"] : ["newWorktree"],
         } as const;
+      }
       case "impossible":
         return failed(plan.message);
       case "recreate":
+      case "fromRemote":
       case "fromBase":
         // A send that stopped here already tried the automatic restore.
         return stopped

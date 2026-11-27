@@ -471,7 +471,7 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     );
   });
 
-  it("retries indeterminate async preparation after its old setup token was cleared, preserving the existing setup pause", async () => {
+  it("retries indeterminate async preparation after its old setup token was cleared, then lets the waiting message go", async () => {
     const f = await fixture();
     const target = path.join(f.config.worktreesDir, "async-restart");
     await f.runtime.runPromise(
@@ -510,9 +510,11 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
       f.manager.recover({ threadId: f.threadId, action: "restore" }),
     );
     expect(f.preparations.length).toBe(prepared + 1);
-    expect(state).toMatchObject(held);
-    expect(
-      (await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state.pauseReasonCode,
-    ).toBe("worktree_setup_failed");
+    // "Try again" worked, so nothing holds the message any more.
+    expect(state).toMatchObject({ kind: "ready", location: "worktree" });
+    expect((await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state).toMatchObject({
+      paused: false,
+      pauseReasonCode: null,
+    });
   });
 });

@@ -52,15 +52,23 @@ path, the dialog refreshes the list and requires confirmation again. An incomple
 
 If a thread's worktree is not on disk, your next message restores it. Nothing asks first, and the
 thread's timeline says what was done. Until then the thread header shows **Worktree restores on
-send** (**Worktree removed** on an archived thread: unarchive it and send a message).
+send** (**Worktree removed** on an archived thread: unarchive it and send a message). When F5
+has to ask first, the header says **Worktree not on disk** and the card above the composer asks.
 
-| What F5 finds                                        | What it does                                                                                 | Timeline note                                              |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| The folder is gone, the branch exists                | Recreates the worktree in the same folder, on that branch                                    | "Worktree restored on `<branch>`"                          |
-| The folder and the branch are gone                   | Recreates the worktree in the same folder from the default branch, reusing the branch's name | "`<branch>` no longer existed; recreated from `main` at …" |
-| The folder now holds something else                  | Puts the branch in a new folder; the old folder and its files are left untouched             | "Worktree moved to `<folder>`"                             |
-| Another checkout has the branch                      | Asks: **Continue there** or **New worktree** (which starts from that branch)                 |                                                            |
-| Nothing to restore from, or Git fails twice in a row | Asks: **Try again** or **Continue in Local**, with Git's reason                              |                                                            |
+| What F5 finds                                                           | What it does                                                                                 | Timeline note                                              |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| The folder is gone, the branch exists                                   | Recreates the worktree in the same folder, on that branch                                    | "Worktree restored on `<branch>`"                          |
+| The folder and the local branch are gone, a remote still has the branch | Recreates the worktree in the same folder from the remote copy, following it                 | "Worktree restored on `<branch>` from `origin/<branch>`"   |
+| The folder and the branch are gone everywhere                           | Recreates the worktree in the same folder from the default branch, reusing the branch's name | "`<branch>` no longer existed; recreated from `main` at …" |
+| The folder now holds something else                                     | Puts the branch in a new folder; the old folder and its files are left untouched             | "Worktree moved to `<folder>`"                             |
+| Another checkout has the branch                                         | Asks: **Continue there** or **New worktree** (which starts from that branch)                 |                                                            |
+| Nothing to restore from, or Git fails twice in a row                    | Asks: **Try again** or **Continue in Local**, with Git's reason                              |                                                            |
+
+The remote copy is the one your repository already knows; nothing is fetched. **Continue there**
+is offered only when the other checkout is the project folder or a worktree F5 manages, and the
+card says how many other threads already use it. Cancelling a restore leaves your message
+waiting; it does not start again until you choose **Try again** or send again. A message that
+was already waiting on a missing worktree when F5 started stays waiting until you choose.
 
 F5 never moves a thread into the project folder on its own. When it has to ask, it asks in one
 place: a single card above the composer with the message and its actions. The same card shows

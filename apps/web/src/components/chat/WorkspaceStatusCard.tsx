@@ -10,6 +10,7 @@ import { Spinner } from "../ui/spinner";
 import { COMPOSER_TRAY_PANEL_CLASS_NAME } from "./composer/ComposerTray";
 import {
   describeWorkspaceActivity,
+  heldQueueItem,
   recoverActionFor,
   WORKSPACE_ACTION_LABELS,
   type WorkspaceAction,
@@ -53,9 +54,9 @@ export function WorkspaceStatusCard({
     setError(null);
     try {
       if (action === "discard") {
-        // The message that is waiting for the worktree is the first in line.
+        // The message that is waiting for the worktree, by the server's rule.
         const queue = await api.nextTurnQueue.list({ threadId });
-        const waiting = queue.items[0];
+        const waiting = heldQueueItem(queue.items);
         if (waiting) await api.nextTurnQueue.cancel({ itemId: waiting.itemId });
       } else {
         await api.worktrees.recover({

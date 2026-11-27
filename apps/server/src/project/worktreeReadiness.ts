@@ -13,6 +13,28 @@ export class WorktreeInspectionError extends Error {
 export const MISSING_WORKTREE_MESSAGE = "This thread's worktree is not on disk.";
 
 /**
+ * The remote-tracking copy of a branch, as `<remote>/<branch>`, or null when no
+ * remote has it. `origin` is preferred. Nothing is fetched: it reads what the
+ * repository already knows.
+ */
+export const findRemoteBranch = (
+  git: Pick<GitCoreShape, "listRemotes" | "resolveCommit">,
+  cwd: string,
+  branch: string,
+) =>
+  Effect.gen(function* () {
+    const remotes = (yield* git.listRemotes(cwd)).map((remote) => remote.name);
+    const ordered = [
+      ...remotes.filter((name) => name === "origin"),
+      ...remotes.filter((name) => name !== "origin"),
+    ];
+    for (const remote of ordered)
+      if (yield* git.resolveCommit(cwd, `refs/remotes/${remote}/${branch}`))
+        return `${remote}/${branch}`;
+    return null;
+  });
+
+/**
  * Read-only readiness shared by admission, recovery, startup and final delivery.
  *
  * The folder is the thread's identity. A registered checkout of this
@@ -66,6 +88,7 @@ export const readWorktreeState = (
           // Readiness no longer says which branch a group's root is on.
           headBranch: null,
           branchCheckedOutAt: null,
+          remoteBranch: null,
           grouped: true,
         } as const;
     }
@@ -75,11 +98,13 @@ export const readWorktreeState = (
     const entry = entries.find((entry) => entry.canonicalPath === canonical);
     const branchExists =
       input.branch !== null && (yield* git.branchExists(input.projectCwd, input.branch));
-    const defaultBranch = includeDefaultBranch
-      ? ((yield* git.readDefaultBranch(input.projectCwd)) ??
-        (yield* git.inspectCheckoutIdentity(input.projectCwd)).branch ??
-        null)
-      : null;
+    // Only a branch that is gone is started again from the default branch.
+    const defaultBranch =
+      includeDefaultBranch && !branchExists
+        ? ((yield* git.readDefaultBranch(input.projectCwd)) ??
+          (yield* git.inspectCheckoutIdentity(input.projectCwd)).branch ??
+          null)
+        : null;
     let matching = entry !== undefined;
     /** The branch HEAD is on now; null when detached, missing or foreign. */
     let headBranch: string | null = null;
@@ -109,17 +134,19 @@ export const readWorktreeState = (
     // Another checkout on the recorded branch: Git refuses a second one, so a
     // missing worktree cannot come back on that branch while it stands. A
     // leftover folder holds nothing, and recreation takes the branch from it.
-    const holder =
-      input.branch === null
-        ? undefined
-        : entries.find(
-            (other) => other.canonicalPath !== canonical && other.branch === input.branch,
-          );
-    const holderIsLeftover =
-      holder !== undefined &&
-      !holder.isMain &&
-      holder.locked === null &&
-      (yield* Effect.tryPromise(() => isLeftoverWorktreeFolder(holder.path)));
+    // Every registration on the branch is looked at: a leftover one can be
+    // listed in front of a live checkout.
+    let holder: (typeof entries)[number] | undefined;
+    for (const other of input.branch === null ? [] : entries) {
+      if (other.canonicalPath === canonical || other.branch !== input.branch) continue;
+      const leftover =
+        !other.isMain &&
+        other.locked === null &&
+        (yield* Effect.tryPromise(() => isLeftoverWorktreeFolder(other.path)));
+      if (leftover) continue;
+      holder = other;
+      break;
+    }
     const registration = directoryExists
       ? matching
         ? "matching"
@@ -135,7 +162,15 @@ export const readWorktreeState = (
       branchExists,
       defaultBranch,
       headBranch,
-      branchCheckedOutAt: holder && !holderIsLeftover ? holder.path : null,
+      branchCheckedOutAt: holder?.path ?? null,
+      // Asked for with the default branch: both say where a branch that is
+      // gone would be started again from.
+      remoteBranch:
+        includeDefaultBranch && input.branch !== null && !branchExists
+          ? yield* findRemoteBranch(git, input.projectCwd, input.branch).pipe(
+              Effect.orElseSucceed(() => null),
+            )
+          : null,
       grouped: false,
     } as const;
   });

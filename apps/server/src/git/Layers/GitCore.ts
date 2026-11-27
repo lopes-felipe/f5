@@ -102,6 +102,7 @@ import {
 import { ServerConfig } from "../../config.ts";
 import {
   canonicalWorktreePath,
+  dropLeftoverWorktreeRegistration,
   isLeftoverWorktreeFolder,
   worktreePathSlug,
   worktreePathExceedsWindowsLimit,
@@ -1657,32 +1658,48 @@ const makeGitCore = Effect.gen(function* () {
                 "The missing worktree registration is locked or is the main checkout.",
               );
             }
-            const other = entries.find(
+            // Every other registration on the branch is looked at, not only the
+            // first: a leftover one can sit in front of a live checkout.
+            const holders = entries.filter(
               (entry) => entry.canonicalPath !== target && entry.branch === input.branch,
             );
-            // A registration whose folder is no checkout any more holds nothing.
-            // Git still counts it until it prunes it, hence `--force` below.
-            const leftover =
-              other !== undefined &&
-              !other.isMain &&
-              other.locked === null &&
-              (yield* Effect.tryPromise({
-                try: () => isLeftoverWorktreeFolder(other.path),
-                catch: () =>
-                  createGitCommandError(
-                    "GitCore.ensureWorktree",
-                    input.cwd,
-                    [],
-                    "Cannot inspect the checkout that holds the branch.",
-                  ),
-              }));
-            if (other && !leftover)
-              return yield* createGitCommandError(
+            const cannotInspect = () =>
+              createGitCommandError(
                 "GitCore.ensureWorktree",
                 input.cwd,
                 [],
-                `Branch ${input.branch} is checked out at ${other.path}.`,
+                "Cannot inspect the checkout that holds the branch.",
               );
+            for (const holder of holders) {
+              // A registration whose folder is no checkout any more holds nothing.
+              const leftover =
+                !holder.isMain &&
+                holder.locked === null &&
+                (yield* Effect.tryPromise({
+                  try: () => isLeftoverWorktreeFolder(holder.path),
+                  catch: cannotInspect,
+                }));
+              if (!leftover)
+                return yield* createGitCommandError(
+                  "GitCore.ensureWorktree",
+                  input.cwd,
+                  [],
+                  `Branch ${input.branch} is checked out at ${holder.path}.`,
+                );
+            }
+            // Only the registrations just verified are dropped. The checkout
+            // below is added without `--force`, so Git itself refuses a holder
+            // that is live, or that appeared since.
+            if (holders.length > 0) {
+              const commonDir = yield* resolveCommonDir(input.cwd).pipe(
+                Effect.flatMap(canonicalPath),
+              );
+              for (const holder of holders)
+                yield* Effect.tryPromise({
+                  try: () => dropLeftoverWorktreeRegistration(commonDir, holder.path),
+                  catch: cannotInspect,
+                });
+            }
             yield* clearMissingRegistrationUnlocked(input.cwd, input.path);
             const prior = yield* preparations
               .latest(target)
@@ -1734,7 +1751,7 @@ const makeGitCore = Effect.gen(function* () {
             yield* executeGit(
               "GitCore.ensureWorktree",
               input.cwd,
-              ["worktree", "add", ...(leftover ? ["--force"] : []), "--", input.path, input.branch],
+              ["worktree", "add", "--", input.path, input.branch],
               { timeoutMs: 300_000 },
             ).pipe(
               Effect.tapError(() =>

@@ -9,6 +9,15 @@ import type {
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
+
+/** What a switch the user cancelled records as its reason; anything after it is why cleanup failed. */
+export const WORKSPACE_SWITCH_CANCELLED = "The workspace switch was cancelled.";
+/** Whether a switch ended because the user cancelled it, and not because it failed. */
+export const switchWasCancelled = (
+  snapshot: Pick<WorkspaceTransitionSnapshot, "phase" | "error">,
+) =>
+  snapshot.phase === "cancelled" && snapshot.error?.startsWith(WORKSPACE_SWITCH_CANCELLED) === true;
+
 export interface WorkspaceTransitionShape {
   readonly moveThread: (
     input: WorktreesMoveThreadInput,

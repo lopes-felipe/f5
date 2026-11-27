@@ -1,7 +1,9 @@
 import type { ThreadId } from "@t3tools/contracts";
 
+import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { useStore } from "../../store";
 import { selectThreadById } from "../../threadSelectors";
+import { describeMissingWorktree } from "./WorkspaceStatusCard.logic";
 
 /**
  * Stands where the Git actions would be while a thread's worktree folder is
@@ -18,16 +20,13 @@ export function WorktreeDormantLabel({
   const archived = useStore((state) =>
     isServerThread && threadId ? Boolean(selectThreadById(state, threadId)?.archivedAt) : false,
   );
+  const status = useNextTurnQueueStore((state) =>
+    threadId ? state.byThreadId[threadId]?.snapshot?.workspace : undefined,
+  );
+  const { label, title } = describeMissingWorktree(status, archived);
   return (
-    <span
-      className="inline-flex h-7 items-center px-2 text-xs text-muted-foreground"
-      title={
-        archived
-          ? "This thread's worktree was removed. Unarchive the thread and send a message to restore it."
-          : "This thread's worktree was cleaned up. Your next message restores it."
-      }
-    >
-      {archived ? "Worktree removed" : "Worktree restores on send"}
+    <span className="inline-flex h-7 items-center px-2 text-xs text-muted-foreground" title={title}>
+      {label}
     </span>
   );
 }

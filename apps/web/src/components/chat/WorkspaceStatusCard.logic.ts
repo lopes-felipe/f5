@@ -43,6 +43,49 @@ export const WORKSPACE_ACTION_LABELS: Record<WorkspaceAction, string> = {
 };
 
 /**
+ * What to say where the Git actions would be while a thread's worktree folder
+ * is not on disk. "Restores on send" is a promise, so it is made only when the
+ * server says the next message brings the worktree back. When the user has to
+ * decide first, the workspace status card says what; this only names the fact.
+ */
+export function describeMissingWorktree(
+  status: ThreadWorkspaceStatus | null | undefined,
+  archived: boolean,
+): { label: string; title: string } {
+  if (archived)
+    return {
+      label: "Worktree removed",
+      title:
+        "This thread's worktree was removed. Unarchive the thread and send a message to restore it.",
+    };
+  if (status?.kind === "dormant")
+    return {
+      label: "Worktree restores on send",
+      title: "This thread's worktree was cleaned up. Your next message restores it.",
+    };
+  if (status?.kind === "working")
+    return { label: "Restoring worktree…", title: "This thread's worktree is being restored." };
+  return {
+    label: "Worktree not on disk",
+    title:
+      status?.kind === "attention"
+        ? "This thread's worktree is not on disk. Choose how to continue above the message box."
+        : "This thread's worktree is not on disk.",
+  };
+}
+
+/**
+ * The message the workspace is holding back: the first one that has not
+ * failed. This is the server's own rule for which message waits, so
+ * "Discard message" removes that one and not a failed one listed before it.
+ */
+export function heldQueueItem<Item extends { readonly status: string }>(
+  items: ReadonlyArray<Item>,
+): Item | undefined {
+  return items.find((item) => item.status !== "failed");
+}
+
+/**
  * The `worktrees.recover` action behind a button. Discarding is not a recovery:
  * it removes the waiting message from the queue instead.
  */
