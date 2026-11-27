@@ -18,6 +18,18 @@ export interface WorkflowSidebarRow<T> {
   stepState: WorkflowSidebarStepState | null;
 }
 
+/**
+ * A step that hasn't started and has no thread yet, such as a plan review waiting for one of
+ * the run's review slots: listed under its phase, but nothing to open.
+ */
+export interface WorkflowSidebarQueuedStep {
+  /** Unique within its phase. */
+  id: string;
+  label: string;
+  fullLabel: string;
+  modelSlot: WorkflowModelSlot | null;
+}
+
 export type WorkflowSidebarGroup<T> =
   | {
       kind: "phase";
@@ -25,6 +37,8 @@ export type WorkflowSidebarGroup<T> =
       label: string;
       state: WorkflowSidebarStepState;
       rows: readonly WorkflowSidebarRow<T>[];
+      /** The phase's steps that haven't started, in step order, after `rows`. */
+      queued: readonly WorkflowSidebarQueuedStep[];
     }
   | {
       /** A phase none of whose steps has a thread yet: shown, but nothing to open. */
@@ -89,19 +103,32 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
     // Steps of this phase without a row (no thread yet, or a snoozed one) still count toward
     // its state, so a phase whose second half hasn't started doesn't read as done.
     const rowlessStates: WorkflowSidebarStepState[] = [];
+    // Rowless steps that haven't started (a review waiting for a slot) are listed as queued.
+    const queued: WorkflowSidebarQueuedStep[] = [];
+    const addRowless = (step: WorkflowPhaseStepSummary, index: number) => {
+      rowlessStates.push(step.state);
+      if (step.state !== "pending") return;
+      queued.push({
+        id: `${index}`,
+        label: shortWorkflowStepLabel(phase.label, step.label),
+        fullLabel: step.label,
+        modelSlot: step.modelSlot,
+      });
+    };
     let hasThreadStep = false;
-    for (const step of phase.steps) {
+    for (const [index, step] of phase.steps.entries()) {
       if (step.threadId === null) {
-        rowlessStates.push(step.state);
+        addRowless(step, index);
         continue;
       }
       hasThreadStep = true;
       if (claimed.has(step.threadId)) continue;
       claimed.add(step.threadId);
-      // Snoozed threads are left out of the workflow's list.
+      // Snoozed threads are left out of the workflow's list; a review thread that hasn't been
+      // created yet isn't in it either.
       const thread = threadById.get(step.threadId);
       if (!thread) {
-        rowlessStates.push(step.state);
+        addRowless(step, index);
         continue;
       }
       rows.push({
@@ -124,6 +151,7 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
           ...rowlessStates,
         ]),
         rows,
+        queued,
       });
     } else if (!hasThreadStep) {
       groups.push({
@@ -146,6 +174,7 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
       label,
       state: "completed",
       rows: [{ thread, label, fullLabel: label, stepState: null }],
+      queued: [],
     });
   }
   return groups;

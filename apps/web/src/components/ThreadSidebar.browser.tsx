@@ -4308,6 +4308,129 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("lists reviews waiting for a slot under Reviews and counts them", async () => {
+    const at = "2026-03-11T12:00:00.000Z";
+    const authors = {
+      a: "queued-branch-a" as ThreadId,
+      b: "queued-branch-b" as ThreadId,
+      c: "queued-branch-c" as ThreadId,
+    };
+    const reviewThreadId = (reviewed: string, slot: string, reviewer: string) =>
+      `queued-review-${reviewed}-${slot}-${reviewer}` as ThreadId;
+    const review = (
+      slot: "cross" | "self",
+      reviewerBranchId: "a" | "b" | "c",
+      reviewed: "a" | "b" | "c",
+      status: "running" | "pending",
+    ) => ({
+      slot,
+      reviewerBranchId,
+      threadId: reviewThreadId(reviewed, slot, reviewerBranchId),
+      outputFilePath: null,
+      status,
+      error: null,
+      retryCount: 0,
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      lastRetryAt: null,
+      updatedAt: at,
+    });
+    // The first four reviews hold the run's review slots; the other five have no thread yet.
+    const started = [
+      reviewThreadId("a", "cross", "b"),
+      reviewThreadId("a", "cross", "c"),
+      reviewThreadId("a", "self", "a"),
+      reviewThreadId("b", "cross", "a"),
+    ];
+    const base = createPlanningWorkflow({
+      id: "workflow-queued-reviews",
+      title: "Queued reviews workflow",
+      branchAThreadId: authors.a,
+      branchBThreadId: authors.b,
+    });
+    const workflow = {
+      ...base,
+      branchA: {
+        ...base.branchA,
+        status: "reviews_requested" as const,
+        reviews: [
+          review("cross", "b", "a", "running"),
+          review("cross", "c", "a", "running"),
+          review("self", "a", "a", "running"),
+        ],
+      },
+      branchB: {
+        ...base.branchB,
+        status: "reviews_requested" as const,
+        reviews: [
+          review("cross", "a", "b", "running"),
+          review("cross", "c", "b", "pending"),
+          review("self", "b", "b", "pending"),
+        ],
+      },
+      additionalBranches: [
+        {
+          ...base.branchA,
+          branchId: "c" as const,
+          authorThreadId: authors.c,
+          status: "reviews_requested" as const,
+          reviews: [
+            review("cross", "a", "c", "pending"),
+            review("cross", "b", "c", "pending"),
+            review("self", "c", "c", "pending"),
+          ],
+        },
+      ],
+    };
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${authors.a}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...[...Object.values(authors), ...started].map((id) =>
+              createSnapshotThread({ id, title: `Thread ${id}` }),
+            ),
+          ]),
+          planningWorkflows: [workflow],
+        };
+      },
+    });
+
+    try {
+      const reviewsPhase = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="workflow-phase-row-reviews"]'),
+        "Reviews should render as a phase row.",
+      );
+      // Every review counts, started or waiting.
+      expect(reviewsPhase.textContent).toContain("Reviews9");
+      expect(reviewsPhase.getAttribute("aria-expanded")).toBe("true");
+      await waitForSidebarThreadRow("A by B");
+      const queued = await vi.waitFor(() => {
+        const rows = [
+          ...document.querySelectorAll<HTMLElement>(
+            '[data-testid^="workflow-queued-step-reviews-"]',
+          ),
+        ];
+        expect(rows).toHaveLength(5);
+        return rows;
+      });
+      const labels = ["B by C", "C by A", "C by B", "B Self", "C Self"];
+      queued.forEach((row, index) => {
+        expect(row.textContent).toContain(labels[index]);
+        expect(row.textContent).toContain("Queued");
+      });
+      // Nothing to open: clicking a queued review leaves the route alone.
+      const pathname = window.location.pathname;
+      queued[0]!.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(window.location.pathname).toBe(pathname);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps the implementation PR during code review and a folded phase's approval in view", async () => {
     const at = "2026-03-11T12:00:00.000Z";
     const slot = { provider: "codex", model: "gpt-5-codex" } as const;

@@ -58,6 +58,7 @@ import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { SidebarTreeParentContext, useSidebarTreeRowProps } from "./sidebarTreeRow";
 import {
   type WorkflowSidebarGroup,
+  type WorkflowSidebarQueuedStep,
   type WorkflowSidebarRow,
   groupWorkflowThreadsByPhase,
   newestActivityThread,
@@ -343,7 +344,8 @@ function isNeedsYouStatus(status: ThreadStatusPill | null): boolean {
 }
 
 /**
- * A phase of two or more step threads: its state, label, thread count and newest activity.
+ * A phase of two or more steps with at least one thread: its state, label, step count
+ * (queued steps included) and newest activity.
  * Clicking (or Enter, Right and Left in the tree) opens and closes its steps. A step that
  * waits on the user shows its status here too, so folding the phase can't hide it.
  */
@@ -387,7 +389,7 @@ function SidebarWorkflowPhaseRow(props: {
         <span className="min-w-0 flex-1 truncate">
           {group.label}
           <span className="ms-1.5 text-2xs text-faint-foreground tabular-nums">
-            {group.rows.length}
+            {group.rows.length + group.queued.length}
             <span className="sr-only"> steps</span>
           </span>
         </span>
@@ -450,6 +452,38 @@ function SidebarWorkflowPendingRow({
         </span>
         {group.modelSlot ? (
           <ModelChip model={group.modelSlot.model} provider={group.modelSlot.provider} iconOnly />
+        ) : null}
+      </div>
+    </SidebarMenuSubItem>
+  );
+}
+
+/**
+ * A step of an open phase that hasn't started and has no thread yet (a review waiting for a
+ * slot): shown faint so the phase lists every step, but not a tree row, since there is
+ * nothing to open. The phase row's count already includes it for screen readers.
+ */
+function SidebarWorkflowQueuedStepRow({
+  phaseId,
+  step,
+}: {
+  phaseId: string;
+  step: WorkflowSidebarQueuedStep;
+}) {
+  return (
+    <SidebarMenuSubItem className="w-full" aria-hidden="true">
+      <div
+        data-testid={`workflow-queued-step-${phaseId}-${step.id}`}
+        className={cn(
+          "flex w-full items-center gap-2 px-2 text-ui text-muted-foreground opacity-60 select-none",
+          SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+        )}
+      >
+        <WorkflowStepGlyph state="pending" />
+        <span className="min-w-0 flex-1 truncate">{step.label}</span>
+        <span className="shrink-0 text-2xs text-muted-foreground">Queued</span>
+        {step.modelSlot ? (
+          <ModelChip model={step.modelSlot.model} provider={step.modelSlot.provider} iconOnly />
         ) : null}
       </div>
     </SidebarMenuSubItem>
@@ -581,7 +615,8 @@ export function SidebarWorkflowItem(props: {
     defaultPhaseExpanded(group);
   // Shift-click ranges follow the rows on screen: grouped, collapsed phases left out.
   const visibleThreadIds = groups.flatMap((group) =>
-    group.kind === "pending" || (group.rows.length > 1 && !isPhaseExpanded(group))
+    group.kind === "pending" ||
+    (group.rows.length + group.queued.length > 1 && !isPhaseExpanded(group))
       ? []
       : group.rows.map((row) => row.thread.id),
   );
@@ -777,7 +812,7 @@ export function SidebarWorkflowItem(props: {
                 return <SidebarWorkflowPendingRow key={group.id} group={group} />;
               }
               // A phase of one step is that step's row, under its full label.
-              if (group.rows.length === 1) {
+              if (group.rows.length === 1 && group.queued.length === 0) {
                 const row = group.rows[0]!;
                 return renderThreadRow(row, row.fullLabel);
               }
@@ -793,6 +828,9 @@ export function SidebarWorkflowItem(props: {
                   onToggle={() => props.onToggleCollapsed(phaseKey, defaultPhaseExpanded(group))}
                 >
                   {group.rows.map((row) => renderThreadRow(row, row.label))}
+                  {group.queued.map((step) => (
+                    <SidebarWorkflowQueuedStepRow key={step.id} phaseId={group.id} step={step} />
+                  ))}
                 </SidebarWorkflowPhaseRow>
               );
             })}

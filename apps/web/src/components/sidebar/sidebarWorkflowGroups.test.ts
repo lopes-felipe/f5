@@ -160,8 +160,146 @@ describe("groupWorkflowThreadsByPhase", () => {
             stepState: null,
           },
         ],
+        queued: [],
       },
     ]);
+  });
+
+  it("lists steps that haven't started yet as queued, after the rows", () => {
+    // Three authors with self-review: 4 reviews running, 5 waiting for a review slot. Two
+    // have pre-allocated thread ids whose threads don't exist yet; three are placeholders.
+    const [reviews] = groupWorkflowThreadsByPhase(
+      [
+        phase("reviews", "Reviews", "active", [
+          step("Review A by B", "active", "rab"),
+          step("Review A by C", "active", "rac"),
+          step("Review B by A", "completed", "rba"),
+          step("Review B by C", "pending", "rbc"),
+          step("Review C by A", "pending", null),
+          step("Review C by B", "pending", null),
+          step("Review A Self", "active", "ras"),
+          step("Review B Self", "pending", "rbs"),
+          step("Review C Self", "pending", null),
+        ]),
+      ],
+      ["rab", "rac", "rba", "ras"].map((value) => thread(value)),
+      () => "unused",
+    );
+    expect(reviews?.kind).toBe("phase");
+    if (reviews?.kind !== "phase") return;
+    expect(reviews.state).toBe("active");
+    expect(reviews.rows.map((row) => row.label)).toEqual(["A by B", "A by C", "B by A", "A Self"]);
+    expect(reviews.queued.map((entry) => entry.label)).toEqual([
+      "B by C",
+      "C by A",
+      "C by B",
+      "B Self",
+      "C Self",
+    ]);
+    expect(reviews.queued[0]).toMatchObject({ fullLabel: "Review B by C", modelSlot: null });
+    expect(new Set(reviews.queued.map((entry) => entry.id)).size).toBe(5);
+  });
+
+  it("doesn't list a snoozed thread's started step as queued", () => {
+    const [reviews] = groupWorkflowThreadsByPhase(
+      [
+        phase("reviews", "Reviews", "completed", [
+          step("Review A Cross", "completed", "rac"),
+          step("Review B Cross", "completed", "snoozed"),
+        ]),
+      ],
+      [thread("rac")],
+      () => "unused",
+    );
+    expect(reviews).toMatchObject({ kind: "phase", state: "completed", queued: [] });
+    expect(reviews?.kind === "phase" && reviews.rows.length).toBe(1);
+  });
+
+  it("keeps a phase with one started thread and queued steps as a group", () => {
+    const [codeReview] = groupWorkflowThreadsByPhase(
+      [
+        phase("code-review", "Code Review", "active", [
+          step("Code Review A", "active", "cra"),
+          step("Code Review B", "pending", null),
+        ]),
+      ],
+      [thread("cra")],
+      () => "unused",
+    );
+    expect(codeReview).toMatchObject({ kind: "phase", id: "code-review" });
+    expect(codeReview?.kind === "phase" && codeReview.queued.map((entry) => entry.label)).toEqual([
+      "Code Review B",
+    ]);
+  });
+
+  it("counts every review of a three-author run, started or queued", () => {
+    const base = createPlanningWorkflow();
+    const review = (
+      slot: "cross" | "self",
+      reviewerBranchId: "a" | "b" | "c",
+      reviewed: string,
+      status: "running" | "completed" | "pending",
+    ) => ({
+      slot,
+      reviewerBranchId,
+      threadId: id(`review-${reviewed}-${slot}-${reviewerBranchId}`),
+      outputFilePath: null,
+      status,
+      error: null,
+      retryCount: 0,
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      lastRetryAt: null,
+      updatedAt: base.updatedAt,
+    });
+    const workflow = {
+      ...base,
+      branchA: {
+        ...base.branchA,
+        authorThreadId: id("a"),
+        status: "reviews_requested" as const,
+        reviews: [
+          review("cross", "b", "a", "running"),
+          review("cross", "c", "a", "running"),
+          review("self", "a", "a", "completed"),
+        ],
+      },
+      branchB: {
+        ...base.branchB,
+        authorThreadId: id("b"),
+        status: "reviews_requested" as const,
+        reviews: [
+          review("cross", "a", "b", "completed"),
+          review("cross", "c", "b", "pending"),
+          review("self", "b", "b", "pending"),
+        ],
+      },
+      additionalBranches: [
+        {
+          ...base.branchA,
+          branchId: "c" as const,
+          authorThreadId: id("c"),
+          status: "reviews_requested" as const,
+          reviews: [
+            review("cross", "a", "c", "pending"),
+            review("cross", "b", "c", "pending"),
+            review("self", "c", "c", "pending"),
+          ],
+        },
+      ],
+    };
+    const meta = deriveSidebarWorkflowMeta({ type: "planning", workflow });
+    const started = ["review-a-cross-b", "review-a-cross-c", "review-a-self-a", "review-b-cross-a"];
+    const groups = groupWorkflowThreadsByPhase(
+      meta.phases,
+      ["a", "b", "c", ...started].map((value) => thread(value)),
+      () => "unused",
+    );
+    const reviews = groups.find((group) => group.id === "reviews");
+    expect(reviews?.kind).toBe("phase");
+    if (reviews?.kind !== "phase") return;
+    expect(reviews.rows).toHaveLength(4);
+    expect(reviews.queued).toHaveLength(5);
   });
 
   it("groups a real planning workflow the same way", () => {
