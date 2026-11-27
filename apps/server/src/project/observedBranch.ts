@@ -1,4 +1,4 @@
-import { CommandId, EventId, type ThreadId } from "@t3tools/contracts";
+import { CommandId, type ThreadId } from "@t3tools/contracts";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
@@ -8,7 +8,10 @@ import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../git/worktre
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { pathContains } from "./Layers/WorktreeLifecycleCoordinator.ts";
+import { appendWorkspaceNote, WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND } from "./workspaceNotes.ts";
 import { dispatchVerifiedWorkspace, WorkspaceWriteContext } from "./workspaceTransitionContext.ts";
+
+export { WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND };
 
 /**
  * A thread's folder is its identity; the branch it records is only the last
@@ -19,8 +22,6 @@ import { dispatchVerifiedWorkspace, WorkspaceWriteContext } from "./workspaceTra
  * is what a removed worktree is recreated from. Temporary branches are skipped
  * too, since F5 renames them itself.
  */
-export const WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND = "workspace.branch-changed";
-
 export interface ObservedBranchDeps {
   readonly engine: Pick<OrchestrationEngineShape, "dispatch" | "getReadModel">;
   readonly git: Pick<
@@ -50,26 +51,12 @@ const appendBranchNote = (
   threadId: ThreadId,
   branch: string,
   previousBranch: string | null,
-) => {
-  const createdAt = new Date().toISOString();
-  return engine
-    .dispatch({
-      type: "thread.activity.append",
-      commandId: CommandId.makeUnsafe(`server:workspace-branch-note:${timeOrderedUuid()}`),
-      threadId,
-      activity: {
-        id: EventId.makeUnsafe(`workspace-branch:${timeOrderedUuid()}`),
-        kind: WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
-        tone: "info",
-        summary: previousBranch ? `Now on ${branch} (was ${previousBranch})` : `Now on ${branch}`,
-        payload: { branch, previousBranch },
-        turnId: null,
-        createdAt,
-      },
-      createdAt,
-    })
-    .pipe(Effect.ignore);
-};
+) =>
+  appendWorkspaceNote(engine, threadId, {
+    kind: WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
+    summary: previousBranch ? `Now on ${branch} (was ${previousBranch})` : `Now on ${branch}`,
+    payload: { branch, previousBranch },
+  });
 
 /**
  * Records `branch` for one thread whose folder is already known to be on it.

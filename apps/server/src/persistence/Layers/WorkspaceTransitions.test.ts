@@ -75,27 +75,36 @@ it.layer(WorkspaceTransitionsLive.pipe(Layer.provideMerge(SqlitePersistenceMemor
       "applied",
       "needs_recovery",
     ] as const) {
-      it.effect(`restart at ${phase} retains the barrier without repeating Git`, () =>
+      it.effect(`a restart at ${phase} leaves the row for the service to settle`, () =>
         Effect.gen(function* () {
           const store = yield* WorkspaceTransitions;
           yield* seed(phase);
           const initial = yield* store.reserve(record(phase));
-          yield* store.update(initial, {
+          const interrupted = yield* store.update(initial, {
             phase,
             mutationAttempted: phase === "applying" || phase === "applied",
           });
           const restarted = yield* makeWorkspaceTransitions;
           yield* restarted.reconcile;
-          const recovered = yield* restarted.forThread(initial.threadId, true);
-          expect(recovered?.phase).toBe("needs_recovery");
-          expect(recovered?.source).toEqual(initial.source);
-          expect(
-            (yield* restarted.reserve(record(`other-${phase}`, initial.threadId)).pipe(Effect.exit))
-              ._tag,
-          ).toBe("Failure");
-          yield* restarted.cancel(initial.threadId);
-          expect(yield* restarted.forThread(initial.threadId, true)).toBeNull();
+          // Without an accepted metadata write the store decides nothing and parks nothing.
+          expect(yield* restarted.get(initial.operationId)).toEqual(interrupted);
+          expect((yield* restarted.unsettled).map((entry) => entry.operationId)).toContain(
+            initial.operationId,
+          );
+          // Only a running phase holds the thread; a row an older version parked does not.
+          const legacy = phase === "needs_recovery";
+          expect((yield* restarted.forThread(initial.threadId, true))?.operationId).toBe(
+            legacy ? undefined : initial.operationId,
+          );
+          const next = yield* restarted
+            .reserve(record(`other-${phase}`, initial.threadId))
+            .pipe(Effect.exit);
+          expect(next._tag).toBe(legacy ? "Success" : "Failure");
+          if (!legacy) yield* restarted.cancel(initial.threadId);
           expect((yield* restarted.get(initial.operationId))?.phase).toBe("cancelled");
+          expect((yield* restarted.unsettled).map((entry) => entry.operationId)).not.toContain(
+            initial.operationId,
+          );
         }),
       );
     }
@@ -139,24 +148,28 @@ it.layer(WorkspaceTransitionsLive.pipe(Layer.provideMerge(SqlitePersistenceMemor
           expect(yield* restarted.forThread(initial.threadId, true)).toBeNull();
         }),
     );
-    it.effect("returns a reactivated older operation ahead of newer failed history", () =>
+    it.effect("returns the running switch ahead of newer history, then the newest row", () =>
       Effect.gen(function* () {
         const store = yield* WorkspaceTransitions;
         yield* seed("retry-history");
         const threadId = ThreadId.makeUnsafe("retry-history");
-        const a = yield* store.update(
-          yield* store.reserve({ ...record("history-a", threadId), createdAt: "2026-01-01" }),
-          { phase: "failed" },
-        );
         yield* store.update(
-          yield* store.reserve({ ...record("history-b", threadId), createdAt: "2026-01-02" }),
+          yield* store.reserve({ ...record("history-a", threadId), createdAt: "2026-01-02" }),
           { phase: "failed" },
         );
-        expect((yield* store.forThread(threadId))?.operationId).toBe("history-b");
-        const retried = yield* store.reactivate(a);
-        expect(yield* store.forThread(threadId)).toEqual(retried);
-        const recovery = yield* store.update(retried, { phase: "needs_recovery" });
-        expect(yield* store.forThread(threadId)).toEqual(recovery);
+        const running = yield* store.reserve({
+          ...record("history-b", threadId),
+          createdAt: "2026-01-01",
+        });
+        expect(yield* store.forThread(threadId)).toEqual(running);
+        const ended = yield* store.update(running, { phase: "failed" });
+        expect((yield* store.forThread(threadId))?.operationId).toBe("history-a");
+        // An attempt that never touched Git can run again under its own operation ID.
+        const again = yield* store.reactivate(ended);
+        expect(again.phase).toBe("reserved");
+        expect(yield* store.forThread(threadId)).toEqual(again);
+        const touched = yield* store.update(again, { phase: "failed", mutationAttempted: true });
+        expect((yield* store.reactivate(touched).pipe(Effect.exit))._tag).toBe("Failure");
       }),
     );
     it.effect("uses the partial recovery index instead of scanning completed move manifests", () =>
@@ -170,7 +183,7 @@ it.layer(WorkspaceTransitionsLive.pipe(Layer.provideMerge(SqlitePersistenceMemor
         ).toBe(true);
       }),
     );
-    it.effect("rechecks pending work before retrying a confirmed pre-mutation failure", () =>
+    it.effect("rechecks pending work before running an unfinished attempt again", () =>
       Effect.gen(function* () {
         const store = yield* WorkspaceTransitions;
         const sql = yield* SqlClient.SqlClient;

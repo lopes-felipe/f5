@@ -192,8 +192,6 @@ export const WS_METHODS = {
   worktreesRecover: "worktrees.recover",
   worktreesSwitchWorkspace: "worktrees.switchWorkspace",
   worktreesGetTransition: "worktrees.getTransition",
-  worktreesPreviewTransitionRecovery: "worktrees.previewTransitionRecovery",
-  worktreesResolveTransition: "worktrees.resolveTransition",
 
   worktreeSetupSubscribe: "worktreeSetup.subscribe",
   worktreeSetupCancel: "worktreeSetup.cancel",

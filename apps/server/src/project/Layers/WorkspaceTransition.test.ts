@@ -127,7 +127,10 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
           .then(() => true)
           .catch(() => false),
       ).toBe(unexpected);
-      if (unexpected) expect(record.error).toContain("Retained");
+      if (unexpected)
+        expect(record.error).toBe(
+          `copy failed. Kept ${path.basename(record.target.path)}: ignored files other than node_modules/ (.env).`,
+        );
       expect(
         (await f.runtime.runPromise(f.engine.getReadModel())).threads[0]?.worktreePath,
       ).toBeNull();
@@ -327,7 +330,7 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
       git(f.repo.root, "rev-parse", "HEAD"),
     );
     expect((await f.runtime.runPromise(f.store.forThread(f.threadId)))?.error).toContain(
-      "no creation proof",
+      "branch external-race was not created by this move and was kept",
     );
   });
 

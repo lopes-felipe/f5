@@ -158,8 +158,6 @@ export function describeQueueBlockedState(
       return "Queue paused after conversation compaction.";
     case "workspace_switch":
       return "Switching workspace. Queued turns will wait.";
-    case "workspace_switch_failed":
-      return fallback ?? "Inspect and resolve the interrupted workspace switch.";
     case "worktree_missing":
       // The workspace banner above the composer owns the details and recovery
       // actions; it only renders for a thread that records a worktree.

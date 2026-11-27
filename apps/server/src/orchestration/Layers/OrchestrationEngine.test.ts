@@ -901,7 +901,7 @@ describe("OrchestrationEngine", () => {
             branch: "bypass",
           }),
         ),
-      ).rejects.toThrow(/transition/);
+      ).rejects.toThrow(/workspace switch is still running/);
       const turn = {
         type: "thread.turn.start" as const,
         commandId: CommandId.makeUnsafe("blocked-turn"),
@@ -916,7 +916,9 @@ describe("OrchestrationEngine", () => {
         runtimeMode: "approval-required" as const,
         createdAt,
       };
-      await expect(system.run(system.engine.dispatch(turn))).rejects.toThrow(/transition/);
+      await expect(system.run(system.engine.dispatch(turn))).rejects.toThrow(
+        /workspace switch is still running/,
+      );
       record = await system.run(
         system.transitions.update(record, {
           phase: "applied",

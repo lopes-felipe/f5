@@ -56,25 +56,6 @@ export type WorktreesSwitchWorkspaceInput = typeof WorktreesSwitchWorkspaceInput
 export const WorktreesGetTransitionInput = WorktreesThreadStateInput;
 export type WorktreesGetTransitionInput = typeof WorktreesGetTransitionInput.Type;
 
-export const WorktreesPreviewTransitionRecoveryInput = Schema.Struct({
-  operationId: Schema.String,
-});
-export type WorktreesPreviewTransitionRecoveryInput =
-  typeof WorktreesPreviewTransitionRecoveryInput.Type;
-
-export const WorktreesResolveTransitionInput = Schema.Struct({
-  operationId: Schema.String,
-  version: NonNegativeInt,
-  acceptanceToken: Schema.String,
-  action: Schema.Literals([
-    "accept_inspected_workspace",
-    "keep_original_workspace",
-    "use_project_checkout",
-    "retry",
-  ]),
-});
-export type WorktreesResolveTransitionInput = typeof WorktreesResolveTransitionInput.Type;
-
 /** Inventory is informational; every mutation revalidates identity and claims. */
 
 export const WorktreesListInput = Schema.Struct({ projectId: Schema.optional(ProjectId) });

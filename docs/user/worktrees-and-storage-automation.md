@@ -145,9 +145,9 @@ never deleted recursively. Paths are preserved exactly, including whitespace.
 
 Changing an established conversation's workspace stops its idle provider session before
 switching. Active or pending turns, queued work, native operations, and setup owners block
-switching. A paused missing-worktree message can still use recovery. Switching has its own
-durable barrier: queue resume, promotion, setup retry, and reconnect cannot bypass it.
-Manual pauses remain paused after switching.
+switching. A paused missing-worktree message can still use recovery. While a switch is
+running, queue resume, promotion, setup retry, and reconnect cannot bypass it; once it ends,
+nothing is held. Manual pauses remain paused after switching.
 
 A project's workspace root cannot be changed while it has any non-deleted conversations,
 including archived ones. That root is the effective workspace of local conversations; changing
@@ -170,15 +170,21 @@ whatever branch their folder is on. A new turn waits for a switch that is alread
 then starts on the new branch. A refused switch names the conversations and what they are doing;
 use a separate worktree instead.
 
-Interrupted switches keep their checkout and block sending until resolved. Choose
-**Inspect workspace** to see the actual branch, commit, and path. **Accept inspected
-workspace** adopts that verified checkout; **Keep original workspace** works only when
-the original checkout still matches its recorded identity. Neither action restores or
-discards files. **Continue in Local** adopts the inspected project root and retains the old checkout,
-including when recreation failed before creating any directory. **Retry** is available only when
-no Git mutation could have occurred.
-If the checkout changes after inspection, inspect again before accepting it.
-Archiving or deleting the conversation cancels its switch and keeps checkout files.
+A switch that fails, is cancelled, or is cut off by a restart settles itself: there is nothing
+to inspect or resolve, and sending is never blocked afterwards. The conversation is always in
+either its old workspace or the new one, and no files are restored or discarded.
+
+| Switch                                    | How it settles                                                                                                                                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| To another worktree or the project folder | The conversation moved only if the switch was recorded; otherwise it stays where it was                                                                                                          |
+| To another branch in place                | The folder is the same either way. If Git reached the branch, the conversation records it; if not, it keeps following whatever branch the folder is on                                           |
+| Restoring a missing worktree              | If the worktree is back, the conversation uses it, even when a later step such as setup failed. If it is not, the next message restores it                                                       |
+| Moving to a new worktree                  | Rolled back as described under [Move a local conversation to a worktree](#move-a-local-conversation-to-a-worktree); a copy that cannot be proven disposable is kept and named, and holds nothing |
+
+When a switch ends unfinished, the action that started it reports the reason, and a switch
+that was cut off, or that had to keep a folder, leaves a note in the conversation's timeline.
+Start the switch again whenever you like. Archiving or deleting the conversation cancels its
+switch and keeps checkout files.
 
 ## Manage worktrees
 
@@ -338,9 +344,9 @@ ignored secrets, changed commits, or new references retain the checkout and bran
 an explanation. The temporary private `refs/f5/moves/<operationId>` ref is removed after
 completion, rollback, or cancellation; it never uses `refs/stash`. Archiving or deleting
 a conversation cancels the worker, waits for filesystem writes to settle, releases the
-private ref, and records any retained checkout and branch for manual review. Recovery can
-accept a verified complete copy, or keep the original workspace and clean up only proven
-copies. Untracked nested repositories must be committed, ignored, or removed before moving.
+private ref, and records any retained checkout and branch. A retained checkout is named in the
+conversation's timeline and listed on the Worktrees page; it never blocks sending or another
+move. Untracked nested repositories must be committed, ignored, or removed before moving.
 
 ## Settlement scripts and cleanup
 

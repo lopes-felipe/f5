@@ -31,10 +31,7 @@ import type {
   WorktreesDiscardMovedChangesResult,
   WorktreesSwitchWorkspaceInput,
   WorktreesGetTransitionInput,
-  WorktreesPreviewTransitionRecoveryInput,
-  WorktreesResolveTransitionInput,
   WorkspaceTransitionSnapshot,
-  WorkspaceTransitionRecoveryPreview,
   WorktreesListInput,
   WorktreesListResult,
   WorktreesInspectInput,
@@ -1434,12 +1431,6 @@ export interface NativeApi {
     getTransition: (
       input: WorktreesGetTransitionInput,
     ) => Promise<WorkspaceTransitionSnapshot | null>;
-    previewTransitionRecovery: (
-      input: WorktreesPreviewTransitionRecoveryInput,
-    ) => Promise<WorkspaceTransitionRecoveryPreview>;
-    resolveTransition: (
-      input: WorktreesResolveTransitionInput,
-    ) => Promise<WorkspaceTransitionSnapshot>;
 
     inspect: (input: WorktreesInspectInput) => Promise<WorktreesInspectResult>;
     remove: (input: WorktreesRemoveInput) => Promise<WorktreesRemoveResult>;

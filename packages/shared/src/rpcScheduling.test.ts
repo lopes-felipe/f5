@@ -166,7 +166,6 @@ describe("RPC method policy", () => {
         "server.saveProviderFeedback",
         "usage.analyzeClaudeUsage",
         "worktrees.moveThread",
-        "worktrees.resolveTransition",
         "worktrees.switchWorkspace",
       ].sort(),
     );

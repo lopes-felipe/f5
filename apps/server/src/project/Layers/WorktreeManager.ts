@@ -1,6 +1,7 @@
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { listWorktreeInventory } from "../worktreeInventory.ts";
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
+import { transitionIsActive } from "../../persistence/Services/WorkspaceTransitions.ts";
 import {
   type ThreadId,
   type WorktreesInspectInput,
@@ -287,12 +288,10 @@ export const makeWorktreeManager = Effect.gen(function* () {
       const transition = Option.isSome(transitions)
         ? yield* transitions.value.getTransition(input)
         : null;
+      // A switch is either running or settled; only setup can be left interrupted.
       const recovery =
-        transition &&
-        ["reserved", "stopping", "applying", "applied", "needs_recovery"].includes(transition.phase)
-          ? transition.phase === "needs_recovery"
-            ? "interrupted"
-            : "running"
+        transition && transitionIsActive(transition)
+          ? "running"
           : token?.startsWith("recovery:") || token?.startsWith("preparation:")
             ? (yield* setup.check(thread.id, token)) === "gating"
               ? "running"
@@ -418,7 +417,8 @@ export const makeWorktreeManager = Effect.gen(function* () {
       if (Option.isNone(transitions))
         return yield* Effect.fail(new Error("Workspace transitions are unavailable."));
       if (input.action === "cancel") {
-        yield* transitions.value.cancel(thread.id, true);
+        // Settles the switch at once: nothing is left to resolve before the next action.
+        yield* transitions.value.cancel(thread.id);
         return yield* threadState(input);
       }
       const orphanedOwner =
@@ -448,7 +448,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
       );
       if (result.phase !== "completed")
         return yield* Effect.fail(
-          new Error(result.error ?? "Inspect and resolve the workspace transition."),
+          new Error(result.error ?? "The workspace switch did not finish. Try again."),
         );
       if (orphanedOwner)
         yield* queue.setWorktreeBlockToken({
