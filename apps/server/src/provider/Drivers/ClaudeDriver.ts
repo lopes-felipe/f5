@@ -29,6 +29,7 @@ import {
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import { Duration, Effect, FileSystem, Option, Path, Ref, Schema, Stream } from "effect";
 import { makeClaudeInstanceProbes, makeClaudeSignOutInvalidation } from "./ClaudeProbeCache.ts";
+import { nativeMcpHubAdapterOptions } from "../../mcp/hub/nativeHubOptions.ts";
 import {
   makeClaudeConsumeResetCredit,
   makeClaudeLimitResetAccess,
@@ -201,6 +202,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             }),
           ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        ...(yield* nativeMcpHubAdapterOptions),
         previewAutomationBroker,
         ...(threadMcpBroker._tag === "Some" ? { threadMcpBroker: threadMcpBroker.value } : {}),
         ...(computerAutomationBroker._tag === "Some"

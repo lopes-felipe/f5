@@ -5,7 +5,10 @@ on:
 permissions:
   contents: read
   actions: read
-# Every main SHA is durable. Stable builds are never cancelled by later pushes.
+# Every main SHA gets its own candidate; later pushes never cancel it through this
+# group. Beta candidates are cancelled only by scripts: supersede-queued-ci.ts when
+# the same SHA's queued CI run is superseded, and coordinate-releases.ts once a newer
+# source's CI passes. Stable builds are never cancelled.
 concurrency:
   group: candidate-${{ github.sha }}
   cancel-in-progress: false
