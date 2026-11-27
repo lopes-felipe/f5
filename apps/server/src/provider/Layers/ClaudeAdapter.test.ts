@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { makeThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -113,6 +114,8 @@ function makeHarness(config?: {
   readonly reportedModelCapabilities?: ClaudeAdapterLiveOptions["reportedModelCapabilities"];
   readonly resolveBypassAvailability?: ClaudeAdapterLiveOptions["resolveBypassAvailability"];
   readonly threadMcpBroker?: ClaudeAdapterLiveOptions["threadMcpBroker"];
+  readonly mcpHub?: ClaudeAdapterLiveOptions["mcpHub"];
+  readonly mcpNativePassthrough?: ClaudeAdapterLiveOptions["mcpNativePassthrough"];
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -184,6 +187,8 @@ function makeHarness(config?: {
       ? { previewAutomationBroker: config.previewAutomationBroker }
       : {}),
     ...(config?.threadMcpBroker ? { threadMcpBroker: config.threadMcpBroker } : {}),
+    ...(config?.mcpHub ? { mcpHub: config.mcpHub } : {}),
+    ...(config?.mcpNativePassthrough ? { mcpNativePassthrough: config.mcpNativePassthrough } : {}),
   };
 
   return {
@@ -17632,4 +17637,157 @@ it.effect("settles the exact persisted native task run when its session stops", 
     if (completed.type === "task.completed") assert.equal(completed.payload.runId, "run-2");
     yield* Fiber.interrupt(listener);
   }).pipe(Effect.provide(h.layer));
+});
+
+describe("F5 MCP hub", () => {
+  const hubServers = {
+    docs: {
+      type: "stdio" as const,
+      command: "node",
+      args: ["docs.js"],
+      env: { DOCS_TOKEN: "secret-value" },
+      toolTimeoutSec: 120,
+    },
+  };
+
+  it.effect("hands Claude loopback hub endpoints instead of the servers themselves", () => {
+    const fakeHub = makeFakeMcpHub();
+    const harness = makeHarness({ mcpHub: fakeHub.hub, cwd: "/tmp/claude-hub-cwd" });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const threadId = ThreadId.makeUnsafe("claude-hub");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        cwd: "/tmp/claude-hub-cwd",
+        providerOptions: { mcpServers: hubServers },
+      });
+      const attach = fakeHub.attaches.at(-1)!;
+      assert.equal(attach.provider, "claudeAgent");
+      assert.equal(attach.cwd, "/tmp/claude-hub-cwd");
+      assert.deepEqual(Object.keys(attach.servers ?? {}), ["docs"]);
+      const launched = harness.getLastCreateQueryInput()!.options.mcpServers ?? {};
+      assert.deepEqual(launched["docs"], {
+        type: "http",
+        url: "http://127.0.0.1:9/mcp/user/docs",
+        headers: { Authorization: "Bearer token-docs" },
+        // The provider waits a little longer than the hub's own tool timeout.
+        timeout: 605_000,
+      });
+      assert.notInclude(JSON.stringify(launched), "secret-value");
+      yield* adapter.stopSession(threadId);
+      assert.equal(fakeHub.disposed, 1);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("applies edits, removals and new servers through the hub without a restart", () => {
+    const fakeHub = makeFakeMcpHub();
+    const harness = makeHarness({ mcpHub: fakeHub.hub });
+    const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => ({
+      added: Object.keys(servers),
+      removed: [],
+      errors: {},
+    }));
+    Object.assign(harness.query, { setMcpServers });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const threadId = ThreadId.makeUnsafe("claude-hub-reload");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: hubServers },
+      });
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "dynamic" },
+      ];
+      yield* adapter.reloadMcpConfig!({
+        threadId,
+        mcpServers: {
+          docs: { ...hubServers.docs, args: ["docs.js", "--v2"] },
+          search: { type: "http", url: "https://search.example/mcp" },
+        },
+      });
+      assert.equal(fakeHub.updates.length, 1);
+      const payload = setMcpServers.mock.calls.at(-1)![0] as Record<string, { url?: string }>;
+      assert.deepEqual(Object.keys(payload).toSorted(), ["docs", "search"]);
+      assert.equal(payload["docs"]?.url, "http://127.0.0.1:9/mcp/user/docs");
+      assert.equal(payload["search"]?.url, "http://127.0.0.1:9/mcp/user/search");
+
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "dynamic" },
+        { name: "search", status: "connected", source: "dynamic" },
+      ];
+      yield* adapter.reloadMcpConfig!({
+        threadId,
+        mcpServers: { search: { type: "http", url: "https://search.example/mcp" } },
+      });
+      const afterRemoval = setMcpServers.mock.calls.at(-1)![0];
+      assert.deepEqual(Object.keys(afterRemoval), ["search"]);
+      assert.equal(fakeHub.attaches.length, 1);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("leaves tool filters to the hub and unbinds a server Claude kept for its own", () => {
+    const fakeHub = makeFakeMcpHub({
+      omitted: [{ serverName: "later", reason: "needs ${env:LATER_TOKEN}, which is not set" }],
+    });
+    const harness = makeHarness({ mcpHub: fakeHub.hub });
+    const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => ({
+      added: Object.keys(servers),
+      removed: [],
+      errors: {},
+    }));
+    Object.assign(harness.query, { setMcpServers });
+    const filtered = { docs: { ...hubServers.docs, disabledTools: ["write"] } };
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const threadId = ThreadId.makeUnsafe("claude-hub-filters");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: filtered },
+      });
+      // The hub hides turned-off tools; a launch deny list would outlive a re-enable.
+      const launchedDenied = harness.getLastCreateQueryInput()!.options.disallowedTools ?? [];
+      assert.isFalse(launchedDenied.some((name) => name.startsWith("mcp__docs__")));
+
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "dynamic" },
+      ];
+      const reEnabled = yield* adapter.reloadMcpConfig!({
+        threadId,
+        mcpServers: { docs: hubServers.docs },
+      });
+      assert.isFalse(reEnabled.restartRequired);
+      // Left-out servers are named in the Apply result.
+      assert.isTrue(reEnabled.errors.some((error) => error.server === "later"));
+      assert.deepEqual(fakeHub.declined, []);
+
+      // A plugin server now holds the name: Claude keeps it, and F5's endpoint is unbound.
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "plugin" },
+      ];
+      yield* adapter.reloadMcpConfig!({ threadId, mcpServers: { docs: hubServers.docs } });
+      assert.deepEqual(fakeHub.declined, ["docs"]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("keeps the native server path when mcpNativePassthrough is on", () => {
+    const fakeHub = makeFakeMcpHub();
+    const harness = makeHarness({
+      mcpHub: fakeHub.hub,
+      mcpNativePassthrough: Effect.succeed(true),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: ThreadId.makeUnsafe("claude-hub-passthrough"),
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: hubServers },
+      });
+      assert.equal(fakeHub.attaches.length, 0);
+      const launched = harness.getLastCreateQueryInput()!.options.mcpServers ?? {};
+      assert.equal((launched["docs"] as { command?: string }).command, "node");
+    }).pipe(Effect.provide(harness.layer));
+  });
 });

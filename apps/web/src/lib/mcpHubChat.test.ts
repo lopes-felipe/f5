@@ -1,7 +1,9 @@
 import { ProjectId, type McpHubServerStatus } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
-import { hubServersForChat, isMcpHubProvider } from "./mcpHubChat";
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
+
+import { hubServersForChat, isMcpHubProvider, mergeChatMcpServers } from "./mcpHubChat";
 
 const PROJECT = ProjectId.make("project-1");
 const OTHER = ProjectId.make("project-2");
@@ -60,10 +62,32 @@ describe("hubServersForChat", () => {
     ]);
   });
 
-  it("treats every agent but Codex and Claude as served by the hub", () => {
+  it("serves Codex and Claude through the hub unless native passthrough is on", () => {
     expect(isMcpHubProvider("cursor")).toBe(true);
     expect(isMcpHubProvider("codex")).toBe(false);
     expect(isMcpHubProvider("claudeAgent")).toBe(false);
-    expect(isMcpHubProvider(null)).toBe(false);
+    expect(isMcpHubProvider("codex", true)).toBe(true);
+    expect(isMcpHubProvider("claudeAgent", true)).toBe(true);
+    expect(isMcpHubProvider(null, true)).toBe(false);
+  });
+});
+
+describe("mergeChatMcpServers", () => {
+  it("prefers hub entries and keeps the agent's own servers", () => {
+    const merged = mergeChatMcpServers(
+      [{ name: "Docs", status: "needs-auth" }],
+      [
+        { name: "docs", status: "ready", toolCount: 0 },
+        { name: "codex-own", status: "ready", toolCount: 3 },
+      ],
+    );
+    expect(merged.servers).toEqual([
+      { name: "Docs", status: "needs-auth" },
+      { name: "codex-own", status: "ready", toolCount: 3 },
+    ]);
+    expect([...merged.hubNames]).toEqual([mcpServerNameKey("Docs")]);
+    expect(mergeChatMcpServers(null, [{ name: "a", status: "ready" }]).servers).toEqual([
+      { name: "a", status: "ready" },
+    ]);
   });
 });

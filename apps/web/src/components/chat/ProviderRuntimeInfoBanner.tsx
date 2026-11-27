@@ -41,6 +41,7 @@ export const ProviderRuntimeInfoChip = memo(function ProviderRuntimeInfoChip({
   provider,
   entries,
   mcpServers,
+  mcpHubServerNames,
   projectId,
   threadId,
   className,
@@ -48,6 +49,8 @@ export const ProviderRuntimeInfoChip = memo(function ProviderRuntimeInfoChip({
   provider: ProviderKind | null;
   entries: ReadonlyArray<ProviderRuntimeInfoEntry>;
   mcpServers?: ReadonlyArray<CompactMcpStatusActivityPayload> | undefined;
+  /** Server name keys whose entries come from F5's hub (see `mergeChatMcpServers`). */
+  mcpHubServerNames?: ReadonlySet<string> | undefined;
   projectId?: ProjectId | undefined;
   threadId?: ThreadId | undefined;
   className?: string | undefined;
@@ -89,6 +92,7 @@ export const ProviderRuntimeInfoChip = memo(function ProviderRuntimeInfoChip({
                   <McpRuntimeChip
                     summary={entry.value}
                     servers={mcpServers}
+                    hubServerNames={mcpHubServerNames}
                     projectId={projectId}
                     provider={provider}
                     threadId={threadId}
@@ -111,12 +115,15 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
   provider,
   entries,
   mcpServers,
+  mcpHubServerNames,
   projectId,
   threadId,
 }: {
   provider: ProviderKind | null;
   entries: ReadonlyArray<ProviderRuntimeInfoEntry>;
   mcpServers?: ReadonlyArray<CompactMcpStatusActivityPayload> | undefined;
+  /** Server name keys whose entries come from F5's hub (see `mergeChatMcpServers`). */
+  mcpHubServerNames?: ReadonlySet<string> | undefined;
   projectId?: ProjectId | undefined;
   threadId?: ThreadId | undefined;
 }) {
@@ -138,6 +145,7 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
             key={entry.label}
             summary={entry.value}
             servers={mcpServers}
+            hubServerNames={mcpHubServerNames}
             projectId={projectId}
             provider={provider}
             threadId={threadId}
@@ -158,12 +166,14 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
 function McpRuntimeChip({
   summary,
   servers,
+  hubServerNames,
   projectId,
   provider,
   threadId,
 }: {
   readonly summary: string;
   readonly servers: ReadonlyArray<CompactMcpStatusActivityPayload>;
+  readonly hubServerNames: ReadonlySet<string> | undefined;
   readonly projectId: ProjectId | undefined;
   readonly provider: ProviderKind;
   readonly threadId: ThreadId | undefined;
@@ -240,7 +250,9 @@ function McpRuntimeChip({
                   </p>
                 ) : null}
                 {server.status === "needs-auth" && server.name ? (
-                  provider === "claudeAgent" || provider === "codex" ? (
+                  (provider === "claudeAgent" || provider === "codex") &&
+                  !hubServerNames?.has(mcpServerNameKey(server.name)) ? (
+                    // Codex's and Claude's own servers sign in through the agent.
                     <McpSignInControls
                       provider={provider}
                       instanceId={server.providerInstanceId}
@@ -250,8 +262,16 @@ function McpRuntimeChip({
                       threadId={provider === "claudeAgent" ? threadId : undefined}
                     />
                   ) : (
-                    // Other agents use F5's own sign-in, shared by every project.
-                    <McpHubSignInRow serverName={server.name} projectId={projectId ?? null} />
+                    // Servers F5 serves use F5's own sign-in, shared by every project.
+                    <>
+                      {provider === "claudeAgent" || provider === "codex" ? (
+                        <p className="text-muted-foreground">
+                          {runtimeProviderLabel(provider)} reaches this server through F5 now; its
+                          earlier sign-in is not carried over.
+                        </p>
+                      ) : null}
+                      <McpHubSignInRow serverName={server.name} projectId={projectId ?? null} />
+                    </>
                   )
                 ) : null}
               </div>
