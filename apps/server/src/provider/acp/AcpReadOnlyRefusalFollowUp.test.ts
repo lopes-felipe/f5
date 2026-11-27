@@ -168,6 +168,15 @@ describe("readOnlyRefusalFollowUpText", () => {
     expect(text.length).toBeLessThan(5 * 700 + 600);
   });
 
+  it("keeps the reason of a command too long to quote in full", () => {
+    const text = readOnlyRefusalFollowUpText([
+      { operation: `cat ${"very/long/path/".repeat(80)}x > out`, reason: REASON },
+    ]);
+    expect(text).toContain("- cat very/long/path/");
+    expect(text).toContain(`… (${REASON})`);
+    expect(text).not.toContain("x > out");
+  });
+
   it("points at the rules sent with the stage's request", () => {
     // Antigravity gets the rules in its first prompt, not in instructions.
     expect(readOnlyRefusalFollowUpText([REFUSAL])).toContain(

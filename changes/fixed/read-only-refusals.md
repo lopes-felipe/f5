@@ -8,4 +8,5 @@
 - Read-only workflow stages that F5 enforces command by command now tell the model up front which
   shell commands run and which don't.
 - An Antigravity read-only stage no longer finishes without a reply when a command is refused: F5
-  explains the refusal and asks the agent to finish.
+  explains the refusal and asks the agent to finish. The stage fails if the agent then ends its
+  turn twice in a row on commands F5 had already explained.
