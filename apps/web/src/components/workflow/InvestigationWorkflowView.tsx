@@ -172,6 +172,7 @@ export function InvestigationWorkflowView(props: { workflowId: string }) {
 
   return (
     <WorkflowPageLayout
+      workflowId={workflow.id}
       projectId={workflow.projectId}
       workflowType="investigation"
       typeLabel={WORKFLOW_TYPE_DIALOG_LABEL.investigation}
