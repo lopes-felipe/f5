@@ -13,7 +13,7 @@ import {
 import { formatMcpServersAsJson } from "@t3tools/shared/mcpConfig";
 import { createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
 import { setMcpProviderEnabled } from "@t3tools/shared/mcpProviderSupport";
-import { setMcpToolEnabled } from "@t3tools/shared/mcpTools";
+import { setMcpToolPolicy } from "@t3tools/shared/mcpTools";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
@@ -39,14 +39,23 @@ import { McpProviderSignIn } from "./McpProviderSignIn";
 import { McpSessionOutcomes } from "./McpSessionOutcomes";
 import { LazyMcpServerInspector as McpServerInspector } from "./LazyMcpServerInspector";
 import { McpTestConnection } from "./McpTestConnection";
+import { McpActivity } from "./McpActivity";
+import { McpToolPolicies, useMcpToolPins } from "./McpToolPolicies";
 import { reconnectMcpServer } from "./mcpActions";
 import { readErrorMessage } from "./mcpSettingsHelpers";
 
-export type McpDetailTab = "overview" | "tools" | "prompts" | "sign-in" | "configuration";
+export type McpDetailTab =
+  | "overview"
+  | "tools"
+  | "activity"
+  | "prompts"
+  | "sign-in"
+  | "configuration";
 
 export const MCP_DETAIL_TABS: ReadonlyArray<{ value: McpDetailTab; label: string }> = [
   { value: "overview", label: "Overview" },
   { value: "tools", label: "Tools" },
+  { value: "activity", label: "Activity" },
   { value: "prompts", label: "Prompts and resources" },
   { value: "sign-in", label: "Sign-in" },
   { value: "configuration", label: "Configuration" },
@@ -69,6 +78,15 @@ const HUB_STATE_LABELS: Record<McpHubServerStatus["state"], string> = {
   "needs-auth": "Needs sign-in",
   stopped: "Stopped",
 };
+
+function readPinnedDescription(json: string): { description?: string } {
+  try {
+    const parsed = JSON.parse(json) as { description?: unknown };
+    return typeof parsed.description === "string" ? { description: parsed.description } : {};
+  } catch {
+    return {};
+  }
+}
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -121,6 +139,11 @@ export function McpServerDetailSheet(props: {
   );
   const editable = props.kind === "scope";
   const instanceId = props.account?.instanceId ?? ProviderInstanceId.make("codex");
+  const toolPins = useMcpToolPins(props.name);
+  // Tools F5 pinned from its own connection, for a server no probe or account listed yet.
+  const pinnedToolSummaries = toolPins.pins.length
+    ? toolPins.pins.map((pin) => ({ name: pin.toolName, ...readPinnedDescription(pin.accepted) }))
+    : undefined;
   // A connection check describes the definition and account it tested; once either
   // changes (a save, another account), its tools and counts no longer apply.
   const connectionKey = (
@@ -440,23 +463,37 @@ export function McpServerDetailSheet(props: {
           ) : null}
 
           {props.tab === "tools" ? (
-            <McpServerInspector
-              key={`${props.account?.data?.threadId}:${props.account?.data?.generation}`}
-              tab="Tools"
-              provider={props.account?.provider ?? "codex"}
-              instanceId={instanceId}
-              projectId={props.account ? props.projectId : null}
-              serverName={props.name}
-              configuredServer={props.server}
-              onToolToggle={
-                editable
-                  ? (tool, enabled) =>
-                      props.onServerChange(setMcpToolEnabled(props.server, tool, enabled))
-                  : undefined
-              }
-              fallbackTools={probe?.tools ?? observed?.tools}
-              observation={props.account?.data}
-            />
+            <div className="space-y-4">
+              <McpToolPolicies
+                serverName={props.name}
+                server={props.server}
+                editable={editable}
+                onServerChange={props.onServerChange}
+                pins={toolPins.pins}
+              />
+              <McpServerInspector
+                key={`${props.account?.data?.threadId}:${props.account?.data?.generation}`}
+                tab="Tools"
+                provider={props.account?.provider ?? "codex"}
+                instanceId={instanceId}
+                projectId={props.account ? props.projectId : null}
+                serverName={props.name}
+                configuredServer={props.server}
+                onToolPolicy={
+                  editable
+                    ? (tool, choice) =>
+                        props.onServerChange(setMcpToolPolicy(props.server, tool, choice))
+                    : undefined
+                }
+                pinStates={toolPins.states}
+                fallbackTools={probe?.tools ?? observed?.tools ?? pinnedToolSummaries}
+                observation={props.account?.data}
+              />
+            </div>
+          ) : null}
+
+          {props.tab === "activity" ? (
+            <McpActivity serverName={props.name} projectId={props.projectId} />
           ) : null}
 
           {props.tab === "prompts" ? (

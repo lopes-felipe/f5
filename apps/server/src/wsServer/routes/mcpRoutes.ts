@@ -1,10 +1,13 @@
 import {
   MCP_APPS_WS_METHODS,
   McpServerWriteDefinition,
+  type ProjectId,
   type ProviderInstanceId,
   type ProviderKind,
+  type ThreadId,
   WS_METHODS,
 } from "@t3tools/contracts";
+import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { Effect, Schema, Struct } from "effect";
 
 import type { ServerSecretStoreShape } from "../../auth/Services/ServerSecretStore.ts";
@@ -13,7 +16,21 @@ import type { makeMcpAccountExecutionResolver } from "../../mcp/accountExecution
 import { detectMcpImports } from "../../mcp/McpImportDetection.ts";
 import type { McpHub } from "../../mcp/hub/McpHub.ts";
 import type { McpHubAuth } from "../../mcp/hub/McpHubAuth.ts";
+import type { McpHubGovernanceService } from "../../mcp/hub/McpHubGovernanceLive.ts";
+import {
+  flattenPrompt,
+  listComposerPrompts,
+  listComposerResources,
+  shapeResourceContents,
+} from "../../mcp/hub/mcpComposerContext.ts";
+import type { McpCatalog } from "../../mcp/McpCatalog.ts";
 import { probeMcpServer } from "../../mcp/McpProbe.ts";
+import {
+  type McpRepositoryLayer,
+  McpRepositoryTrustError,
+  type McpRepositoryServers,
+  repositoryApprovalLimitIssue,
+} from "../../mcp/McpRepositoryServers.ts";
 import type { McpRuntimeService } from "../../mcp/McpRuntimeService.ts";
 import { resolveMcpSecrets } from "../../mcp/McpSecretResolver.ts";
 import type { makeMcpSecretWriter } from "../../mcp/McpSecretWriter.ts";
@@ -45,6 +62,19 @@ type McpMethod =
   | typeof WS_METHODS.mcpStartHubSignIn
   | typeof WS_METHODS.mcpCompleteHubSignIn
   | typeof WS_METHODS.mcpSignOutHubServer
+  | typeof WS_METHODS.mcpListToolPins
+  | typeof WS_METHODS.mcpAcceptToolChanges
+  | typeof WS_METHODS.mcpListActivity
+  | typeof WS_METHODS.mcpGetThreadServers
+  | typeof WS_METHODS.mcpSetThreadServerEnabled
+  | typeof WS_METHODS.mcpListComposerPrompts
+  | typeof WS_METHODS.mcpGetComposerPrompt
+  | typeof WS_METHODS.mcpCompleteComposerPrompt
+  | typeof WS_METHODS.mcpListComposerResources
+  | typeof WS_METHODS.mcpReadComposerResource
+  | typeof WS_METHODS.mcpSearchCatalog
+  | typeof WS_METHODS.mcpGetRepositoryServers
+  | typeof WS_METHODS.mcpSetRepositoryServerTrust
   | typeof WS_METHODS.mcpApplyToLiveSessions
   | typeof MCP_APPS_WS_METHODS.toolInfo
   | typeof MCP_APPS_WS_METHODS.callTool
@@ -56,6 +86,10 @@ export interface McpRouteDependencies {
   readonly mcpRuntimeService: typeof McpRuntimeService.Service;
   readonly mcpHub: typeof McpHub.Service | undefined;
   readonly mcpHubAuth: typeof McpHubAuth.Service | undefined;
+  readonly mcpHubGovernance: typeof McpHubGovernanceService.Service | undefined;
+  readonly mcpRepositoryServers: typeof McpRepositoryServers.Service | undefined;
+  /** Shared by every client of this server, so registry pages stay cached across them. */
+  readonly mcpCatalog: McpCatalog;
   readonly codexMcpEventBus: typeof CodexMcpEventBus.Service;
   readonly providerService: typeof ProviderService.Service;
   readonly profileSecrets: ServerSecretStoreShape;
@@ -83,6 +117,61 @@ export interface McpRouteDependencies {
 const withoutTag = <Body extends { readonly _tag: string }>(body: Body) =>
   Struct.omit(body, ["_tag"]);
 
+/** The hub server a conversation's live session uses under `serverName`, for the composer. */
+const composerServer = (
+  mcpHub: typeof McpHub.Service | undefined,
+  threadId: ThreadId,
+  serverName: string,
+) => {
+  const server = mcpHub?.sessionServers?.(threadId).get(serverName);
+  return server
+    ? Effect.succeed(server)
+    : Effect.fail(
+        new RouteRequestError({
+          message: `'${serverName}' isn't available in this conversation. Start or resume the conversation first.`,
+        }),
+      );
+};
+
+const composerCall = <A>(run: (signal: AbortSignal) => Promise<A>) =>
+  Effect.tryPromise({
+    try: run,
+    catch: (error) =>
+      new RouteRequestError({ message: error instanceof Error ? error.message : String(error) }),
+  });
+
+/** Repository servers with their approval, and whether the project overrides or turns them off. */
+const repositoryServersResult = (
+  projectMcpConfigService: typeof ProjectMcpConfigService.Service,
+  projectId: ProjectId,
+  layer: McpRepositoryLayer,
+) =>
+  projectMcpConfigService.readProjectStoredConfig(projectId).pipe(
+    Effect.mapError((error) => new RouteRequestError({ message: error.message })),
+    Effect.map((project) => {
+      const projectNames = new Set(Object.keys(project.servers).map(mcpServerNameKey));
+      const disabled = new Set((project.disabledCommonServers ?? []).map(mcpServerNameKey));
+      return {
+        projectId,
+        ...(layer.path ? { path: layer.path } : {}),
+        found: layer.found,
+        servers: layer.entries.map((entry) => ({
+          name: entry.name,
+          server: entry.server,
+          definitionHash: entry.definitionHash,
+          state: entry.approved
+            ? ("approved" as const)
+            : entry.changed
+              ? ("changed" as const)
+              : ("needs-approval" as const),
+          overridden: projectNames.has(mcpServerNameKey(entry.name)),
+          disabled: disabled.has(mcpServerNameKey(entry.name)),
+        })),
+        issues: [...layer.issues],
+      };
+    }),
+  );
+
 /**
  * MCP configuration, status, discovery, probing, secret storage, OAuth/login,
  * live session reload, and MCP Apps routes.
@@ -92,6 +181,9 @@ export const mcpRoutes = ({
   mcpRuntimeService,
   mcpHub,
   mcpHubAuth,
+  mcpHubGovernance,
+  mcpRepositoryServers,
+  mcpCatalog,
   codexMcpEventBus,
   providerService,
   profileSecrets,
@@ -330,6 +422,147 @@ export const mcpRoutes = ({
           .signOut(withoutTag(request))
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
       : Effect.succeed({ signedOut: false }),
+
+  [WS_METHODS.mcpListToolPins]: (request) =>
+    Effect.succeed({
+      tools: mcpHubGovernance ? [...mcpHubGovernance.listToolPins(request.serverName)] : [],
+    }),
+
+  [WS_METHODS.mcpAcceptToolChanges]: (request) =>
+    mcpHubGovernance
+      ? mcpHubGovernance.acceptToolChanges(withoutTag(request))
+      : Effect.succeed({ accepted: 0, stale: 0 }),
+
+  [WS_METHODS.mcpListActivity]: (request) =>
+    Effect.gen(function* () {
+      const body = withoutTag(request);
+      const activity = mcpHubGovernance
+        ? yield* mcpHubGovernance.listActivity(body)
+        : { calls: [], last24h: { calls: 0, errors: 0 } };
+      const stderrTail = body.serverName
+        ? mcpHub?.readStderrTail(body.serverName, body.projectId)
+        : undefined;
+      return { ...activity, ...(stderrTail ? { stderrTail } : {}) };
+    }),
+
+  [WS_METHODS.mcpGetThreadServers]: (request) =>
+    Effect.succeed(
+      mcpHubGovernance ? mcpHubGovernance.threadServers(request.threadId) : { disabledServers: [] },
+    ),
+
+  [WS_METHODS.mcpSetThreadServerEnabled]: (request) =>
+    mcpHubGovernance
+      ? mcpHubGovernance.setThreadServerEnabled(withoutTag(request))
+      : Effect.fail(
+          new RouteRequestError({
+            message: "Turning MCP servers off per conversation is unavailable here.",
+          }),
+        ),
+
+  [WS_METHODS.mcpListComposerPrompts]: (request) =>
+    Effect.gen(function* () {
+      const servers = mcpHub?.sessionServers?.(request.threadId);
+      if (!servers?.size) return { servers: [] };
+      return {
+        servers: yield* Effect.promise((signal) => listComposerPrompts(servers, signal)),
+      };
+    }),
+
+  [WS_METHODS.mcpGetComposerPrompt]: (request) =>
+    Effect.gen(function* () {
+      const server = yield* composerServer(mcpHub, request.threadId, request.serverName);
+      return yield* composerCall((signal) =>
+        server
+          .getPrompt({ name: request.name, arguments: { ...request.arguments } }, signal)
+          .then(flattenPrompt),
+      );
+    }),
+
+  [WS_METHODS.mcpCompleteComposerPrompt]: (request) =>
+    Effect.gen(function* () {
+      const server = yield* composerServer(mcpHub, request.threadId, request.serverName);
+      const result = yield* composerCall((signal) =>
+        server.complete(
+          {
+            ref: { type: "ref/prompt", name: request.name },
+            argument: { name: request.argument, value: request.value },
+            ...(request.arguments ? { context: { arguments: { ...request.arguments } } } : {}),
+          },
+          signal,
+        ),
+      );
+      return { values: result.completion.values.slice(0, 100) };
+    }),
+
+  [WS_METHODS.mcpListComposerResources]: (request) =>
+    Effect.gen(function* () {
+      const servers = mcpHub?.sessionServers?.(request.threadId);
+      if (!servers?.size) return { servers: [] };
+      return {
+        servers: yield* Effect.promise((signal) => listComposerResources(servers, signal)),
+      };
+    }),
+
+  [WS_METHODS.mcpReadComposerResource]: (request) =>
+    Effect.gen(function* () {
+      const server = yield* composerServer(mcpHub, request.threadId, request.serverName);
+      return yield* composerCall((signal) =>
+        server
+          .readResource({ uri: request.uri }, signal)
+          .then((result) => shapeResourceContents(result)),
+      );
+    }),
+
+  [WS_METHODS.mcpSearchCatalog]: (request) =>
+    composerCall((signal) => mcpCatalog.search(withoutTag(request), signal)),
+
+  [WS_METHODS.mcpGetRepositoryServers]: (request) =>
+    Effect.gen(function* () {
+      if (!mcpRepositoryServers)
+        return { projectId: request.projectId, found: false, servers: [], issues: [] };
+      return yield* repositoryServersResult(
+        projectMcpConfigService,
+        request.projectId,
+        yield* mcpRepositoryServers.readLayer(request.projectId),
+      );
+    }),
+
+  [WS_METHODS.mcpSetRepositoryServerTrust]: (request) =>
+    Effect.gen(function* () {
+      const body = withoutTag(request);
+      if (!mcpRepositoryServers)
+        return yield* new RouteRequestError({
+          message: "Repository MCP servers are unavailable here.",
+        });
+      // The limit is checked inside setTrust, under the lock that serializes approvals,
+      // so two concurrent approvals cannot both pass it.
+      const approvalIssue = (layer: McpRepositoryLayer) =>
+        Effect.all([
+          projectMcpConfigService.readCommonStoredConfig(),
+          projectMcpConfigService.readProjectStoredConfig(body.projectId),
+        ]).pipe(
+          Effect.map(([common, project]) =>
+            repositoryApprovalLimitIssue({
+              layer,
+              serverName: body.serverName,
+              common: common.servers,
+              project: project.servers,
+              disabledCommon: project.disabledCommonServers,
+            }),
+          ),
+          Effect.mapError((error) => new McpRepositoryTrustError({ message: error.message })),
+        );
+      const layer = yield* mcpRepositoryServers
+        .setTrust({ ...body, approvalIssue })
+        .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
+      // The effective configuration changed: settings, status and the hub re-read it.
+      yield* codexMcpEventBus.publishStatusUpdated({
+        scope: "project",
+        projectId: body.projectId,
+        reason: "updated",
+      });
+      return yield* repositoryServersResult(projectMcpConfigService, body.projectId, layer);
+    }),
 
   [WS_METHODS.mcpApplyToLiveSessions]: (request) =>
     Effect.gen(function* () {

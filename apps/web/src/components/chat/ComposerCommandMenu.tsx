@@ -1,11 +1,15 @@
-import { type ProjectEntry } from "@t3tools/contracts";
+import {
+  type McpComposerPrompt,
+  type McpComposerResource,
+  type ProjectEntry,
+} from "@t3tools/contracts";
 import { memo } from "react";
 import {
   type ComposerPathSearchTarget,
   type ComposerSlashCommand,
   type ComposerTriggerKind,
 } from "../../composer-logic";
-import { BotIcon } from "lucide-react";
+import { BotIcon, FileTextIcon, MessageSquareTextIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { Command, CommandItem, CommandList } from "../ui/command";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
@@ -44,6 +48,22 @@ export type ComposerCommandItem =
       argumentHint: string | null;
       /** Catalog the entry came from; session and instance catalogs are private. */
       source?: "session" | "instance" | "project";
+    }
+  | {
+      id: string;
+      type: "mcp-prompt";
+      serverName: string;
+      prompt: McpComposerPrompt;
+      label: string;
+      description: string;
+    }
+  | {
+      id: string;
+      type: "mcp-resource";
+      serverName: string;
+      resource: McpComposerResource;
+      label: string;
+      description: string;
     };
 
 /** The editor's aria-activedescendant target for one suggestion in one composer's list. */
@@ -161,6 +181,12 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       {props.item.type === "model" ? (
         <BotIcon className="size-4 shrink-0 text-muted-foreground" />
       ) : null}
+      {props.item.type === "mcp-prompt" ? (
+        <MessageSquareTextIcon className="size-4 shrink-0 text-muted-foreground" />
+      ) : null}
+      {props.item.type === "mcp-resource" ? (
+        <FileTextIcon className="size-4 shrink-0 text-muted-foreground" />
+      ) : null}
       {/* The name wins the space; the description takes what is left. */}
       <span className="flex min-w-0 max-w-[60%] shrink-0 items-center gap-1.5">
         <span className="truncate">{props.item.label}</span>
@@ -170,6 +196,14 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
       </span>
       {props.item.type === "skill" && props.item.argumentHint ? (
         <span className="truncate text-2xs text-muted-foreground">{props.item.argumentHint}</span>
+      ) : null}
+      {props.item.type === "mcp-prompt" || props.item.type === "mcp-resource" ? (
+        <span
+          className="shrink-0 rounded-sm border border-border/60 px-1 text-2xs text-muted-foreground"
+          title={`From the MCP server ${props.item.serverName}`}
+        >
+          MCP
+        </span>
       ) : null}
       {props.item.type === "skill" && props.item.source ? (
         <span

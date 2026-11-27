@@ -58,6 +58,11 @@ export const ProviderSession = Schema.Struct({
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   lastError: Schema.optional(TrimmedNonEmptyStringSchema),
+  /**
+   * Set by an adapter on a read-only stage it started: the enforcement the stage actually runs
+   * under, which can be stricter than the one requested (Codex under managed requirements).
+   */
+  readOnlyEnforcement: Schema.optional(ReadOnlyEnforcement),
   /** Set by ProviderService for the session generation it started or resumed. */
   capabilities: Schema.optional(ProviderSessionCapabilities),
   computerBackendSelection: Schema.optional(ComputerBackendSelection),

@@ -61,6 +61,30 @@ export function assertPublishableVersion(
     if (compareCliReleaseVersions(candidate.version, version) <= 0)
       throw new Error("Candidate superseded by published " + version);
 }
+/**
+ * Stable preparation must not reuse a version that publication already reserved: a remote
+ * tag, or a draft (publishers create drafts without a tag until promotion, so a draft
+ * abandoned after upload reserves its version only through the release itself).
+ */
+export function assertUnreservedVersion(
+  version: string,
+  reservation: {
+    readonly tagExists: boolean;
+    readonly releases: readonly { readonly tag_name: string; readonly draft: boolean }[];
+  },
+): void {
+  const tag = "v" + version;
+  if (reservation.tagExists)
+    throw new Error(
+      "This version has a reserved immutable tag; resume it, or withdraw the request and prepare a higher unused version",
+    );
+  if (reservation.releases.some((release) => release.draft && release.tag_name === tag))
+    throw new Error(
+      "An unpublished draft release reserves " +
+        tag +
+        "; resume its publication, delete the draft, or withdraw the request and prepare a higher unused version",
+    );
+}
 export function artifactEntries(names: readonly string[]): void {
   if (
     !names.length ||

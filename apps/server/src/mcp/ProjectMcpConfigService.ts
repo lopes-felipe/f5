@@ -5,6 +5,7 @@ import {
   resolveMcpSecrets,
   validateStoredMcpSecrets,
 } from "./McpSecretResolver.ts";
+import { McpRepositoryServers } from "./McpRepositoryServers.ts";
 import {
   type CodexMcpServerEntry,
   type McpConfigIssue,
@@ -56,6 +57,10 @@ export interface StoredEffectiveMcpConfig {
   readonly projectId: ProjectId;
   readonly commonVersion?: string;
   readonly projectVersion?: string;
+  /** Changes when the approved `.mcp.json` servers do. */
+  readonly repositoryVersion?: string;
+  /** `.mcp.json` server name keys F5 must no longer run (see `McpRepositoryLayer.withdrawn`). */
+  readonly withdrawnRepositoryServers?: ReadonlyArray<string>;
   readonly effectiveVersion: string;
   readonly servers: McpProjectServersConfig;
 }
@@ -169,6 +174,10 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
   const repository = yield* ProjectMcpConfigRepository;
   const secrets = yield* Effect.serviceOption(ServerSecretStore);
   const secretStore = Option.getOrUndefined(secrets);
+  // Approved `.mcp.json` servers; absent in runtimes without project storage.
+  const repositoryServers = Option.getOrUndefined(
+    yield* Effect.serviceOption(McpRepositoryServers),
+  );
 
   const toStorageError = (operation: string) => (cause: unknown) =>
     new ProjectMcpConfigServiceError({
@@ -273,15 +282,21 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
   const readEffectiveStoredConfig: ProjectMcpConfigServiceShape["readEffectiveStoredConfig"] = (
     projectId,
   ) =>
-    repository
-      .withTransaction(
+    Effect.gen(function* () {
+      // The file is read outside the transaction; only approved servers join the layers.
+      const repositoryLayer = repositoryServers
+        ? yield* repositoryServers.readLayer(projectId)
+        : undefined;
+      return yield* repository.withTransaction(
         Effect.gen(function* () {
           const [commonConfig, projectConfig] = yield* Effect.all([
             readCommonStoredConfig(),
             readProjectStoredConfig(projectId),
           ]);
+          const approved = repositoryLayer?.approved ?? {};
           const servers = mergeMcpServerLayers({
             common: commonConfig.servers,
+            repository: approved,
             project: projectConfig.servers,
             disabledCommon: projectConfig.disabledCommonServers,
           });
@@ -289,24 +304,29 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
             projectId,
             ...(commonConfig.version ? { commonVersion: commonConfig.version } : {}),
             ...(projectConfig.version ? { projectVersion: projectConfig.version } : {}),
+            ...(repositoryLayer?.version ? { repositoryVersion: repositoryLayer.version } : {}),
+            ...(repositoryLayer?.withdrawn.length
+              ? { withdrawnRepositoryServers: repositoryLayer.withdrawn }
+              : {}),
             effectiveVersion: computeEffectiveMcpConfigVersion(servers),
             servers,
             issues: [
               ...readMcpValidationIssues(commonConfig.servers),
+              ...readMcpValidationIssues(approved),
               ...readMcpValidationIssues(projectConfig.servers),
               ...readMcpLayerNameConflicts(commonConfig.servers, projectConfig.servers),
               ...callbackIssue(servers, [projectId], [projectConfig.projectName ?? projectId]),
             ],
           };
         }),
-      )
-      .pipe(
-        Effect.mapError((error) =>
-          Schema.is(ProjectMcpConfigServiceError)(error)
-            ? error
-            : toStorageError("Failed to read effective MCP config")(error),
-        ),
       );
+    }).pipe(
+      Effect.mapError((error) =>
+        Schema.is(ProjectMcpConfigServiceError)(error)
+          ? error
+          : toStorageError("Failed to read effective MCP config")(error),
+      ),
+    );
 
   const readCommonConfig: ProjectMcpConfigServiceShape["readCommonConfig"] = () =>
     Effect.gen(function* () {
@@ -382,6 +402,9 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
             );
             if (projectId) {
               const common = yield* readCommonStoredConfig();
+              const repositoryLayer = repositoryServers
+                ? yield* repositoryServers.readLayer(projectId)
+                : undefined;
               yield* Effect.try({
                 try: () =>
                   validateMcpLayerMerge({
@@ -389,22 +412,36 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
                     project: servers,
                     baseCommon: common.servers,
                     baseProject: base.servers,
+                    ...(repositoryLayer ? { repository: repositoryLayer.approved } : {}),
                   }),
                 catch: validationError,
               });
             } else {
-              const projects = yield* listProjects();
-              for (const row of projects)
+              // Every project inherits the common layer: check it against the same three
+              // layers sessions use, including projects with only repository approvals.
+              const projects = new Map<ProjectId, McpProjectServersConfig>(
+                (yield* listProjects()).flatMap((row) =>
+                  row.projectId ? [[row.projectId, row.servers] as const] : [],
+                ),
+              );
+              for (const trusted of repositoryServers?.trustedProjects() ?? [])
+                if (!projects.has(trusted)) projects.set(trusted, {});
+              for (const [rowProjectId, projectServers] of projects) {
+                const repositoryLayer = repositoryServers
+                  ? yield* repositoryServers.readLayer(rowProjectId)
+                  : undefined;
                 yield* Effect.try({
                   try: () =>
                     validateMcpLayerMerge({
                       common: servers,
-                      project: row.servers,
+                      project: projectServers,
                       baseCommon: base.servers,
-                      baseProject: row.servers,
+                      baseProject: projectServers,
+                      ...(repositoryLayer ? { repository: repositoryLayer.approved } : {}),
                     }),
                   catch: validationError,
                 });
+              }
             }
             const saved = yield* repository
               .replaceIfVersionMatches({
@@ -448,7 +485,7 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
       Effect.flatMap((stored) => {
         // Secret ids are immutable (each write mints a new placeholder), so the layer
         // versions fully determine the resolved result.
-        const cacheKey = `${stored.commonVersion ?? ""}\u0000${stored.projectVersion ?? ""}`;
+        const cacheKey = `${stored.commonVersion ?? ""}\u0000${stored.projectVersion ?? ""}\u0000${stored.repositoryVersion ?? ""}`;
         const cached = runtimeConfigCache.get(projectId);
         if (cached?.key === cacheKey) return Effect.succeed(cached.value);
         return resolveMcpSecrets(stored.servers, secretStore).pipe(
