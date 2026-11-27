@@ -82,8 +82,23 @@
     },
     "typecheck": {
       "dependsOn": ["^typecheck"],
-      "outputs": [],
-      "cache": false
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/tsconfig.base.json",
+        "$TURBO_ROOT$/scripts/lib/**"
+      ],
+      "outputs": ["*.tsbuildinfo"]
+    },
+    "@t3tools/scripts#typecheck": {
+      "dependsOn": ["^typecheck"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/tsconfig.base.json",
+        "$TURBO_ROOT$/apps/server/src/provider/codexExecutable.ts",
+        "$TURBO_ROOT$/apps/server/src/spawn/asarExecutable.ts",
+        "$TURBO_ROOT$/apps/server/src/spawn/resolveCommand.ts"
+      ],
+      "outputs": ["*.tsbuildinfo"]
     },
     "test": {
       "passThroughEnv": [
