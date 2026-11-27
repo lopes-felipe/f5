@@ -19,14 +19,16 @@ export interface WorkflowSidebarRow<T> {
 }
 
 /**
- * A step that hasn't started and has no thread yet, such as a plan review waiting for one of
- * the run's review slots: listed under its phase, but nothing to open.
+ * A step with no thread to open yet: a plan review waiting for one of the run's review slots
+ * (`pending`), one being launched (`active`), or one that failed before its thread was
+ * created (`error`). Listed under its phase, but nothing to open.
  */
-export interface WorkflowSidebarQueuedStep {
+export interface WorkflowSidebarThreadlessStep {
   /** Unique within its phase. */
   id: string;
   label: string;
   fullLabel: string;
+  state: Exclude<WorkflowSidebarStepState, "completed">;
   modelSlot: WorkflowModelSlot | null;
 }
 
@@ -37,8 +39,8 @@ export type WorkflowSidebarGroup<T> =
       label: string;
       state: WorkflowSidebarStepState;
       rows: readonly WorkflowSidebarRow<T>[];
-      /** The phase's steps that haven't started, in step order, after `rows`. */
-      queued: readonly WorkflowSidebarQueuedStep[];
+      /** The phase's unfinished steps without a thread, in step order, after `rows`. */
+      threadless: readonly WorkflowSidebarThreadlessStep[];
     }
   | {
       /** A phase none of whose steps has a thread yet: shown, but nothing to open. */
@@ -76,13 +78,16 @@ export function workflowGroupState(
  * A workflow's threads grouped by the phase that first names them, in pipeline order. A
  * thread appears once, so a phase that only reuses earlier threads (Revision reruns the
  * Branch A/B authors) gets no group; its progress shows on those threads' rows, whose state
- * is their latest started step's. A phase with no threads yet becomes a `pending` group.
+ * is their latest started step's. A phase with no thread steps yet becomes a `pending` group.
+ * Unfinished steps whose thread doesn't exist yet are listed as `threadless`; a step whose
+ * thread is in `snoozedThreadIds` exists elsewhere, so it only counts toward the state.
  * Threads no phase names come last, one per group, labelled by `labelForUnmatched`.
  */
 export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
   phases: readonly WorkflowPhaseSummary[],
   threads: readonly T[],
   labelForUnmatched: (thread: T) => string,
+  snoozedThreadIds: ReadonlySet<ThreadId> = new Set(),
 ): WorkflowSidebarGroup<T>[] {
   const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
   const stepStateByThreadId = new Map<ThreadId, WorkflowSidebarStepState>();
@@ -103,32 +108,33 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
     // Steps of this phase without a row (no thread yet, or a snoozed one) still count toward
     // its state, so a phase whose second half hasn't started doesn't read as done.
     const rowlessStates: WorkflowSidebarStepState[] = [];
-    // Rowless steps that haven't started (a review waiting for a slot) are listed as queued.
-    const queued: WorkflowSidebarQueuedStep[] = [];
-    const addRowless = (step: WorkflowPhaseStepSummary, index: number) => {
+    // Unfinished rowless steps are listed: waiting for a slot, launching, or failed to launch.
+    const threadless: WorkflowSidebarThreadlessStep[] = [];
+    const addRowless = (step: WorkflowPhaseStepSummary, index: number, listed: boolean) => {
       rowlessStates.push(step.state);
-      if (step.state !== "pending") return;
-      queued.push({
+      if (!listed || step.state === "completed") return;
+      threadless.push({
         id: `${index}`,
         label: shortWorkflowStepLabel(phase.label, step.label),
         fullLabel: step.label,
+        state: step.state,
         modelSlot: step.modelSlot,
       });
     };
     let hasThreadStep = false;
     for (const [index, step] of phase.steps.entries()) {
       if (step.threadId === null) {
-        addRowless(step, index);
+        addRowless(step, index, true);
         continue;
       }
       hasThreadStep = true;
       if (claimed.has(step.threadId)) continue;
       claimed.add(step.threadId);
       // Snoozed threads are left out of the workflow's list; a review thread that hasn't been
-      // created yet isn't in it either.
+      // created yet isn't in it either, and only that one is listed.
       const thread = threadById.get(step.threadId);
       if (!thread) {
-        addRowless(step, index);
+        addRowless(step, index, !snoozedThreadIds.has(step.threadId));
         continue;
       }
       rows.push({
@@ -138,7 +144,9 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
         stepState: stepStateByThreadId.get(step.threadId) ?? step.state,
       });
     }
-    if (rows.length > 0) {
+    // A phase with thread steps is grouped while it has anything to list, even before its
+    // first thread exists (reviews are requested with reserved thread ids).
+    if (rows.length > 0 || (hasThreadStep && threadless.length > 0)) {
       groups.push({
         kind: "phase",
         id: phase.id,
@@ -151,7 +159,7 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
           ...rowlessStates,
         ]),
         rows,
-        queued,
+        threadless,
       });
     } else if (!hasThreadStep) {
       groups.push({
@@ -174,7 +182,7 @@ export function groupWorkflowThreadsByPhase<T extends { id: ThreadId }>(
       label,
       state: "completed",
       rows: [{ thread, label, fullLabel: label, stepState: null }],
-      queued: [],
+      threadless: [],
     });
   }
   return groups;

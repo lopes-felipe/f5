@@ -122,6 +122,8 @@ export interface SidebarWorkflowMeta {
 export interface ProjectSidebarLists<T extends ThreadListItem = ThreadListItem> {
   projectWorkflows: SidebarWorkflowEntry[];
   workflowThreadsByKey: Map<string, T[]>;
+  /** A workflow's snoozed threads, left out of `workflowThreadsByKey`. */
+  workflowSnoozedThreadIdsByKey: Map<string, ReadonlySet<ThreadId>>;
   workflowMetaByKey: Map<string, SidebarWorkflowMeta>;
   activeThreads: Array<T | Thread>;
   scheduledThreads: T[];
@@ -233,29 +235,36 @@ export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
     ]),
   );
 
-  const workflowThreadsByKey = new Map(
-    unsortedProjectWorkflows.map((entry) => [
-      workflowEntryKey(entry),
+  const threadsOfWorkflow = (entry: SidebarWorkflowEntry) =>
+    threads.filter((thread) => {
+      if (thread.projectId !== project.id) {
+        return false;
+      }
+      if (entry.type === "planning") {
+        return threadIdsForWorkflow(entry.workflow).includes(thread.id);
+      }
+      if (entry.type === "codeReview") {
+        return threadIdsForCodeReviewWorkflow(entry.workflow).includes(thread.id);
+      }
+      return threadIdsForInvestigationWorkflow(entry.workflow).includes(thread.id);
+    });
+  const workflowThreadsByKey = new Map<string, T[]>();
+  const workflowSnoozedThreadIdsByKey = new Map<string, ReadonlySet<ThreadId>>();
+  for (const entry of unsortedProjectWorkflows) {
+    const key = workflowEntryKey(entry);
+    const own = threadsOfWorkflow(entry);
+    workflowThreadsByKey.set(
+      key,
       orderThreadsByPipeline(
-        workflowMetaByKey.get(workflowEntryKey(entry))?.threadOrder ?? [],
-        threads.filter((thread) => {
-          if (thread.projectId !== project.id) {
-            return false;
-          }
-          if (isSnoozedThread(thread)) {
-            return false;
-          }
-          if (entry.type === "planning") {
-            return threadIdsForWorkflow(entry.workflow).includes(thread.id);
-          }
-          if (entry.type === "codeReview") {
-            return threadIdsForCodeReviewWorkflow(entry.workflow).includes(thread.id);
-          }
-          return threadIdsForInvestigationWorkflow(entry.workflow).includes(thread.id);
-        }),
+        workflowMetaByKey.get(key)?.threadOrder ?? [],
+        own.filter((thread) => !isSnoozedThread(thread)),
       ),
-    ]),
-  );
+    );
+    workflowSnoozedThreadIdsByKey.set(
+      key,
+      new Set(own.filter((thread) => isSnoozedThread(thread)).map((thread) => thread.id)),
+    );
+  }
   const projectWorkflows = sortWorkflowEntriesByActivity(unsortedProjectWorkflows, (entry) =>
     workflowActivityAt({
       updatedAt: entry.workflow.updatedAt,
@@ -344,6 +353,7 @@ export function buildProjectSidebarLists<T extends ThreadListItem>(input: {
   return {
     projectWorkflows,
     workflowThreadsByKey,
+    workflowSnoozedThreadIdsByKey,
     workflowMetaByKey,
     activeThreads: orderedActiveThreads,
     scheduledThreads,

@@ -4407,25 +4407,129 @@ describe("Thread sidebar", () => {
       expect(reviewsPhase.textContent).toContain("Reviews9");
       expect(reviewsPhase.getAttribute("aria-expanded")).toBe("true");
       await waitForSidebarThreadRow("A by B");
-      const queued = await vi.waitFor(() => {
+      const waiting = await vi.waitFor(() => {
         const rows = [
           ...document.querySelectorAll<HTMLElement>(
-            '[data-testid^="workflow-queued-step-reviews-"]',
+            '[data-testid^="workflow-threadless-step-reviews-"]',
           ),
         ];
         expect(rows).toHaveLength(5);
         return rows;
       });
       const labels = ["B by C", "C by A", "C by B", "B Self", "C Self"];
-      queued.forEach((row, index) => {
+      waiting.forEach((row, index) => {
         expect(row.textContent).toContain(labels[index]);
-        expect(row.textContent).toContain("Queued");
+        expect(row.textContent).toContain("Waiting");
+        // Not a tree row: there is nothing to open.
+        expect(row.closest("[data-sidebar-row]")).toBeNull();
+        expect(row.hasAttribute("data-sidebar-row")).toBe(false);
       });
-      // Nothing to open: clicking a queued review leaves the route alone.
-      const pathname = window.location.pathname;
-      queued[0]!.click();
+      // Screen readers hear the waiting steps from the phase row's description.
+      const descriptionId = reviewsPhase.getAttribute("aria-describedby");
+      expect(descriptionId).toBeTruthy();
+      expect(document.getElementById(descriptionId!)?.textContent).toBe(
+        labels.map((label) => `${label}: Waiting`).join(", "),
+      );
+      // Nothing to open: clicking a waiting review leaves the route and the phase alone.
+      const pathname = mounted.router.state.location.pathname;
+      waiting[0]!.click();
       await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(window.location.pathname).toBe(pathname);
+      expect(mounted.router.state.location.pathname).toBe(pathname);
+      expect(reviewsPhase.getAttribute("aria-expanded")).toBe("true");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups one started code review with a waiting one, under their model", async () => {
+    const at = "2026-03-11T12:00:00.000Z";
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = {
+      a: "waiting-cr-branch-a" as ThreadId,
+      b: "waiting-cr-branch-b" as ThreadId,
+      merge: "waiting-cr-merge" as ThreadId,
+      impl: "waiting-cr-impl" as ThreadId,
+      reviewA: "waiting-cr-review-a" as ThreadId,
+    };
+    const codeReview = (threadId: ThreadId, status: "running" | "pending") => ({
+      reviewerLabel: "Reviewer",
+      reviewerSlot: slot,
+      threadId,
+      status,
+      error: null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: at,
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${ids.impl}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...Object.values(ids).map((id) => createSnapshotThread({ id, title: `Thread ${id}` })),
+          ]),
+          planningWorkflows: [
+            createPlanningWorkflow({
+              id: "workflow-waiting-code-review",
+              title: "Waiting code review workflow",
+              branchAThreadId: ids.a,
+              branchBThreadId: ids.b,
+              branchA: { status: "revised" },
+              branchB: { status: "revised" },
+              merge: { status: "merged", threadId: ids.merge },
+              implementation: {
+                implementationSlot: slot,
+                threadId: ids.impl,
+                implementationTurnId: "waiting-cr-impl-turn",
+                revisionTurnId: null,
+                codeReviewEnabled: true,
+                codeReviews: [
+                  codeReview(ids.reviewA, "running"),
+                  // Reserved, but its thread hasn't been created yet.
+                  codeReview("waiting-cr-review-b" as ThreadId, "pending"),
+                ],
+                status: "code_reviews_requested",
+                error: null,
+                retryCount: 0,
+                lastRetryAt: null,
+                updatedAt: at,
+              },
+            }),
+          ],
+        };
+      },
+    });
+
+    try {
+      const phase = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="workflow-phase-row-code-review"]'),
+        "Code Review should stay a phase row while a reviewer waits.",
+      );
+      expect(phase.textContent).toContain("Code Review2");
+      expect(phase.getAttribute("aria-expanded")).toBe("true");
+      await waitForSidebarThreadRow("Code Review A");
+      const waiting = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-testid^="workflow-threadless-step-code-review-"]',
+          ),
+        "The waiting reviewer should be listed.",
+      );
+      expect(waiting.textContent).toContain("Code Review B");
+      expect(waiting.textContent).toContain("Waiting");
+      expect(waiting.querySelector('[title^="Codex"]')).not.toBeNull();
+
+      // Folding the phase hides both the started and the waiting reviewer.
+      phase.click();
+      await vi.waitFor(() => {
+        expect(querySidebarThreadRowByTitle("Code Review A")).toBeNull();
+        expect(
+          document.querySelector('[data-testid^="workflow-threadless-step-code-review-"]'),
+        ).toBeNull();
+      });
+      expect(phase.getAttribute("aria-expanded")).toBe("false");
     } finally {
       await mounted.cleanup();
     }

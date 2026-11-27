@@ -10,7 +10,7 @@ import {
   GitPullRequestIcon,
   LoaderIcon,
 } from "lucide-react";
-import type { HTMLAttributes, ReactNode } from "react";
+import { useId, type HTMLAttributes, type ReactNode } from "react";
 
 import { deleteWorkflow } from "../../archiveActions";
 import { readNativeApi } from "../../nativeApi";
@@ -58,7 +58,7 @@ import type { SidebarThreadActions } from "./useSidebarThreadActions";
 import { SidebarTreeParentContext, useSidebarTreeRowProps } from "./sidebarTreeRow";
 import {
   type WorkflowSidebarGroup,
-  type WorkflowSidebarQueuedStep,
+  type WorkflowSidebarThreadlessStep,
   type WorkflowSidebarRow,
   groupWorkflowThreadsByPhase,
   newestActivityThread,
@@ -343,9 +343,17 @@ function isNeedsYouStatus(status: ThreadStatusPill | null): boolean {
   return status?.label === "Pending Approval" || status?.label === "Awaiting Input";
 }
 
+/** What a step without a thread is doing, as its row says it. */
+const THREADLESS_STEP_STATUS_LABEL: Record<WorkflowSidebarThreadlessStep["state"], string> = {
+  pending: "Waiting",
+  active: "Starting",
+  error: "Failed",
+};
+
 /**
- * A phase of two or more steps with at least one thread: its state, label, step count
- * (queued steps included) and newest activity.
+ * A phase of two or more steps, or with steps that have no thread yet: its state, label, step
+ * count (threadless steps included) and newest activity. The threadless steps aren't tree
+ * rows, so screen readers get them from the phase row's description.
  * Clicking (or Enter, Right and Left in the tree) opens and closes its steps. A step that
  * waits on the user shows its status here too, so folding the phase can't hide it.
  */
@@ -360,12 +368,29 @@ function SidebarWorkflowPhaseRow(props: {
   const { group, expanded, needsYouStatus } = props;
   const treeRowProps = useSidebarTreeRowProps(props.rowId);
   const isTreeRow = "data-sidebar-row" in treeRowProps;
+  const descriptionId = useId();
   const newestThread = newestActivityThread(group.rows.map((row) => row.thread));
   const emphasized = needsYouStatus !== null || group.state === "active" || group.state === "error";
+  const hasThreadless = group.threadless.length > 0;
   return (
     <SidebarMenuSubItem className="w-full">
+      {hasThreadless ? (
+        <span id={descriptionId} className="sr-only">
+          {group.threadless
+            .map((step) => `${step.label}: ${THREADLESS_STEP_STATUS_LABEL[step.state]}`)
+            .join(", ")}
+        </span>
+      ) : null}
       <SidebarMenuSubButton
-        render={<div role="button" tabIndex={0} {...treeRowProps} aria-expanded={expanded} />}
+        render={
+          <div
+            role="button"
+            tabIndex={0}
+            {...treeRowProps}
+            aria-expanded={expanded}
+            aria-describedby={hasThreadless ? descriptionId : undefined}
+          />
+        }
         size="md"
         data-testid={`workflow-phase-row-${group.id}`}
         className={cn(
@@ -389,7 +414,7 @@ function SidebarWorkflowPhaseRow(props: {
         <span className="min-w-0 flex-1 truncate">
           {group.label}
           <span className="ms-1.5 text-2xs text-faint-foreground tabular-nums">
-            {group.rows.length + group.queued.length}
+            {group.rows.length + group.threadless.length}
             <span className="sr-only"> steps</span>
           </span>
         </span>
@@ -459,29 +484,32 @@ function SidebarWorkflowPendingRow({
 }
 
 /**
- * A step of an open phase that hasn't started and has no thread yet (a review waiting for a
- * slot): shown faint so the phase lists every step, but not a tree row, since there is
- * nothing to open. The phase row's count already includes it for screen readers.
+ * A step of an open phase with no thread yet (a review waiting for a slot, launching, or
+ * failed to launch): listed so the phase shows every step, but not a tree row, since there is
+ * nothing to open. Screen readers get it from the phase row's description instead.
  */
-function SidebarWorkflowQueuedStepRow({
+function SidebarWorkflowThreadlessStepRow({
   phaseId,
   step,
 }: {
   phaseId: string;
-  step: WorkflowSidebarQueuedStep;
+  step: WorkflowSidebarThreadlessStep;
 }) {
   return (
     <SidebarMenuSubItem className="w-full" aria-hidden="true">
       <div
-        data-testid={`workflow-queued-step-${phaseId}-${step.id}`}
+        data-testid={`workflow-threadless-step-${phaseId}-${step.id}`}
         className={cn(
-          "flex w-full items-center gap-2 px-2 text-ui text-muted-foreground opacity-60 select-none",
+          "flex w-full items-center gap-2 px-2 text-ui text-muted-foreground select-none",
           SIDEBAR_TREE_ROW_HEIGHT_CLASS_NAME,
+          step.state === "pending" && "opacity-60",
         )}
       >
-        <WorkflowStepGlyph state="pending" />
+        <WorkflowStepGlyph state={step.state} />
         <span className="min-w-0 flex-1 truncate">{step.label}</span>
-        <span className="shrink-0 text-2xs text-muted-foreground">Queued</span>
+        <span className="shrink-0 text-2xs text-muted-foreground">
+          {THREADLESS_STEP_STATUS_LABEL[step.state]}
+        </span>
         {step.modelSlot ? (
           <ModelChip model={step.modelSlot.model} provider={step.modelSlot.provider} iconOnly />
         ) : null}
@@ -510,6 +538,8 @@ function WorkflowTypeGlyph({
 export function SidebarWorkflowItem(props: {
   entry: SidebarWorkflowEntry;
   workflowThreads: readonly ThreadSummary[];
+  /** The workflow's snoozed threads, which `workflowThreads` leaves out. */
+  snoozedThreadIds?: ReadonlySet<ThreadId> | undefined;
   /** Role label per thread from the workflow's phases. */
   threadLabels: ReadonlyMap<ThreadId, string>;
   overallState: WorkflowOverallState;
@@ -581,6 +611,7 @@ export function SidebarWorkflowItem(props: {
       (entry.type === "planning"
         ? workflowThreadDisplayTitle(entry.workflow, thread.title)
         : thread.title),
+    props.snoozedThreadIds,
   );
   // The workflow's outcome: a finished workflow's last thread, or the implementation thread
   // once it has opened a PR while code review still runs.
@@ -616,7 +647,7 @@ export function SidebarWorkflowItem(props: {
   // Shift-click ranges follow the rows on screen: grouped, collapsed phases left out.
   const visibleThreadIds = groups.flatMap((group) =>
     group.kind === "pending" ||
-    (group.rows.length + group.queued.length > 1 && !isPhaseExpanded(group))
+    (group.rows.length + group.threadless.length > 1 && !isPhaseExpanded(group))
       ? []
       : group.rows.map((row) => row.thread.id),
   );
@@ -812,7 +843,7 @@ export function SidebarWorkflowItem(props: {
                 return <SidebarWorkflowPendingRow key={group.id} group={group} />;
               }
               // A phase of one step is that step's row, under its full label.
-              if (group.rows.length === 1 && group.queued.length === 0) {
+              if (group.rows.length === 1 && group.threadless.length === 0) {
                 const row = group.rows[0]!;
                 return renderThreadRow(row, row.fullLabel);
               }
@@ -828,8 +859,12 @@ export function SidebarWorkflowItem(props: {
                   onToggle={() => props.onToggleCollapsed(phaseKey, defaultPhaseExpanded(group))}
                 >
                   {group.rows.map((row) => renderThreadRow(row, row.label))}
-                  {group.queued.map((step) => (
-                    <SidebarWorkflowQueuedStepRow key={step.id} phaseId={group.id} step={step} />
+                  {group.threadless.map((step) => (
+                    <SidebarWorkflowThreadlessStepRow
+                      key={step.id}
+                      phaseId={group.id}
+                      step={step}
+                    />
                   ))}
                 </SidebarWorkflowPhaseRow>
               );
