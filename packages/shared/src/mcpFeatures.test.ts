@@ -20,6 +20,28 @@ describe("MCP feature data", () => {
       }).GitHub?.enabled,
     ).toBe(false);
   });
+  it("layers approved repository servers between common and project, with opt-outs", () => {
+    const merged = mergeMcpServerLayers({
+      common: {
+        Docs: { type: "stdio", command: "common-docs" },
+        search: { type: "stdio", command: "common-search" },
+      },
+      repository: {
+        docs: { type: "stdio", command: "repo-docs" },
+        lint: { type: "stdio", command: "repo-lint" },
+        Build: { type: "stdio", command: "repo-build" },
+      },
+      project: { build: { type: "stdio", command: "project-build" } },
+      disabledCommon: ["LINT"],
+    });
+    // A repository server replaces a common one of any spelling; a project one replaces it.
+    expect(merged).toEqual({
+      search: { type: "stdio", command: "common-search" },
+      docs: { type: "stdio", command: "repo-docs" },
+      lint: { type: "stdio", command: "repo-lint", enabled: false },
+      build: { type: "stdio", command: "project-build" },
+    });
+  });
   it("imports lossless TOML with inline tables, multiline strings, arrays, and OAuth inheritance", () => {
     const parsed = parseMcpImport(`mcp_oauth_callback_port = 3140
 [mcp_servers.remote]
@@ -132,15 +154,28 @@ env = { TEST = "first\\nsecond" }
     ).toHaveLength(300);
     const placeholder = "${f5-secret:00000000-0000-4000-8000-000000000000}";
     expect(mcpSecretId(placeholder)).toBeDefined();
+    expect(mcpSecretId(`prefix${placeholder}`)).toBeUndefined();
+    // References may sit inside env and header values, arguments and URLs.
     expect(() =>
       validateMcpSecretPlaceholders({
-        local: { type: "stdio", command: "node", env: { TOKEN: `prefix${placeholder}` } },
+        local: {
+          type: "stdio",
+          command: "node",
+          env: { TOKEN: `prefix${placeholder}` },
+          args: [`--token=${placeholder}`],
+        },
+        remote: { type: "http", url: `https://mcp.example/?key=${placeholder}` },
       }),
-    ).toThrow("entire value");
+    ).not.toThrow();
     expect(() =>
       validateMcpSecretPlaceholders({
-        local: { type: "stdio", command: "node", args: [placeholder] },
+        local: { type: "stdio", command: "node", args: ["${f5-secret:not-an-id}"] },
       }),
-    ).toThrow("only in env");
+    ).toThrow("valid secret id");
+    expect(() =>
+      validateMcpSecretPlaceholders({
+        local: { type: "stdio", command: placeholder },
+      }),
+    ).toThrow("only in env and header values, arguments and URLs");
   });
 });

@@ -12,6 +12,10 @@ import type {
   McpProjectConfigResult,
   McpServerStatusesResult,
   McpGetHubAuthStatusResult,
+  McpListActivityResult,
+  McpSearchCatalogResult,
+  McpRepositoryServersResult,
+  McpListToolPinsResult,
   McpGetHubStatusResult,
   McpStartHubSignInResult,
   McpReconnectServerResult,
@@ -29,6 +33,7 @@ import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { McpServersSettings } from "./McpServersSettings";
+import { toastManager } from "../ui/toast";
 
 const { copyToClipboard, nativeApiRef, hubMode } = vi.hoisted(() => ({
   copyToClipboard: vi.fn(),
@@ -188,6 +193,31 @@ function createNativeApiMock() {
     reconnected: 1,
   }));
   const signOutHubServer = vi.fn(async () => ({ signedOut: true }));
+  const listToolPins = vi.fn(async (): Promise<McpListToolPinsResult> => ({ tools: [] }));
+  const acceptToolChanges = vi.fn(async () => ({ accepted: 1 }));
+  const searchCatalog = vi.fn(async (): Promise<McpSearchCatalogResult> => ({ entries: [] }));
+  const getRepositoryServers = vi.fn(
+    async (): Promise<McpRepositoryServersResult> => ({
+      projectId: PROJECT_ID,
+      found: false,
+      servers: [],
+      issues: [],
+    }),
+  );
+  const setRepositoryServerTrust = vi.fn(
+    async (): Promise<McpRepositoryServersResult> => ({
+      projectId: PROJECT_ID,
+      found: false,
+      servers: [],
+      issues: [],
+    }),
+  );
+  const listActivity = vi.fn(
+    async (): Promise<McpListActivityResult> => ({
+      calls: [],
+      last24h: { calls: 0, errors: 0 },
+    }),
+  );
   const reconnectServer = vi.fn(
     async (): Promise<McpReconnectServerResult> => ({
       settingsConnectionReloaded: false,
@@ -268,6 +298,12 @@ function createNativeApiMock() {
       startHubSignIn,
       completeHubSignIn,
       signOutHubServer,
+      listToolPins,
+      acceptToolChanges,
+      listActivity,
+      searchCatalog,
+      getRepositoryServers,
+      setRepositoryServerTrust,
       inspectServer,
       onStatusUpdated,
     },
@@ -284,6 +320,12 @@ function createNativeApiMock() {
     startHubSignIn,
     completeHubSignIn,
     signOutHubServer,
+    listToolPins,
+    acceptToolChanges,
+    listActivity,
+    searchCatalog,
+    getRepositoryServers,
+    setRepositoryServerTrust,
     replaceCommonConfig,
     getCommonConfig,
     getProjectConfig,
@@ -2266,7 +2308,14 @@ it("masks stored secrets without putting placeholders or resolved values in edit
   }
 });
 
-it("tool switches respect allowlists and save only the denylist", async () => {
+function toolPolicy(tool: string, choice: "Allow" | "Ask" | "Block") {
+  return page.getByRole("group", { name: `Policy for ${tool}` }).getByRole("button", {
+    name: choice,
+    exact: true,
+  });
+}
+
+it("tool policies respect allowlists and store Block as the denylist", async () => {
   const mocks = createNativeApiMock();
   mocks.getProjectConfig.mockResolvedValue({
     ...projectConfig,
@@ -2282,7 +2331,7 @@ it("tool switches respect allowlists and save only the denylist", async () => {
   const { screen, queryClient } = await renderSettings();
   try {
     await openServer("project-server", "Tools");
-    await page.getByRole("switch", { name: "Enable tool read" }).click();
+    await toolPolicy("read", "Allow").click();
     await vi.waitFor(() =>
       expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2291,7 +2340,6 @@ it("tool switches respect allowlists and save only the denylist", async () => {
               type: "stdio",
               command: "node",
               enabledTools: ["read"],
-              disabledTools: [],
             },
           },
         }),
@@ -2443,6 +2491,305 @@ it("keeps legacy key-only lines intact", async () => {
     await screen.unmount();
   }
 });
+it("sets Ask per tool and as the default, and accepts a changed tool after review", async () => {
+  const mocks = createNativeApiMock();
+  mocks.getProjectConfig.mockResolvedValue({
+    ...projectConfig,
+    servers: { "project-server": { type: "stdio", command: "node" } },
+  });
+  mocks.listToolPins.mockResolvedValue({
+    tools: [
+      {
+        serverName: "project-server",
+        identity: "identity-1",
+        identityLabel: "node",
+        toolName: "read",
+        state: "changed",
+        firstSeenAt: "2026-11-01T00:00:00.000Z",
+        acceptedAt: "2026-11-01T00:00:00.000Z",
+        accepted: '{\n  "description": "Read metadata"\n}',
+        observed: '{\n  "description": "Read metadata and upload it"\n}',
+      },
+    ],
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openServer("project-server", "Tools");
+    const review = page.getByRole("region", { name: "Tools to review" });
+    await expect.element(review).toHaveTextContent("1 tool needs review.");
+    await expect.element(review).toHaveTextContent("Read metadata and upload it");
+    await review.getByRole("button", { name: "Accept change", exact: true }).click();
+    await vi.waitFor(() =>
+      expect(mocks.acceptToolChanges).toHaveBeenCalledWith({
+        serverName: "project-server",
+        identity: "identity-1",
+        // The definition shown, so a tool that changed again since is not accepted.
+        reviewed: [
+          { toolName: "read", definition: '{\n  "description": "Read metadata and upload it"\n}' },
+        ],
+      }),
+    );
+
+    await toolPolicy("read", "Ask").click();
+    await vi.waitFor(() =>
+      expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          servers: {
+            "project-server": { type: "stdio", command: "node", toolPolicy: { read: "ask" } },
+          },
+        }),
+      ),
+    );
+    await page
+      .getByRole("group", { name: "Default tool policy" })
+      .getByRole("button", { name: "Ask", exact: true })
+      .click();
+    // Read's own Ask now matches the default, so it keeps no entry of its own.
+    await vi.waitFor(() =>
+      expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          servers: {
+            "project-server": { type: "stdio", command: "node", defaultToolPolicy: "ask" },
+          },
+        }),
+      ),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("fills the Add form from a catalog entry, asking for its secret before saving", async () => {
+  const mocks = createNativeApiMock();
+  mocks.searchCatalog.mockImplementation(async (input?: { query?: string }) => ({
+    entries: [
+      {
+        name: "io.github.acme/mcp-server-project-server",
+        title: input?.query ? `Notes for ${input.query}` : "Notes",
+        description: "Notes for agents",
+        version: "1.2.0",
+        remotes: [],
+        packages: [
+          {
+            registryType: "npm",
+            identifier: "@acme/notes",
+            version: "1.2.0",
+            environmentVariables: [{ name: "NOTES_TOKEN", required: true, secret: true }],
+            packageArguments: [],
+            runtimeArguments: [],
+          },
+        ],
+      },
+    ],
+  }));
+  const toastAdd = vi.spyOn(toastManager, "add");
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openAddServer("Catalog");
+    await page.getByRole("searchbox", { name: "Search the MCP Registry" }).fill("acme");
+    await vi.waitFor(() =>
+      expect(mocks.searchCatalog).toHaveBeenCalledWith({ query: "acme" }, expect.anything()),
+    );
+    await page.getByRole("button", { name: "Use Notes for acme: npm package" }).click();
+
+    // The scope already has `project-server`, so the catalog's name gets a suffix.
+    await expect.element(page.getByRole("tab", { name: "Form", selected: true })).toBeVisible();
+    await expect
+      .element(page.getByLabelText("Name", { exact: true }))
+      .toHaveValue("project-server-2");
+    await expect.element(page.getByLabelText("Command", { exact: true })).toHaveValue("npx");
+    await expect
+      .element(page.getByLabelText("Argument 2", { exact: true }))
+      .toHaveValue("@acme/notes@1.2.0");
+    await expect
+      .element(page.getByLabelText("Environment key 1", { exact: true }))
+      .toHaveValue("NOTES_TOKEN");
+    await expect.element(page.getByRole("checkbox", { name: "Secret" })).toBeChecked();
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Review project-server-2 before saving",
+        description: "Store a secret for NOTES_TOKEN. Nothing runs until you save.",
+      }),
+    );
+    expect(mocks.replaceProjectConfig).not.toHaveBeenCalled();
+
+    // Choosing again over unsaved edits asks first; Keep editing keeps them.
+    const toastsBefore = toastAdd.mock.calls.length;
+    await page.getByLabelText("Name", { exact: true }).fill("my-notes");
+    await page.getByRole("tab", { name: "Catalog", exact: true }).click();
+    await page.getByRole("searchbox", { name: "Search the MCP Registry" }).fill("acme");
+    await page.getByRole("button", { name: "Use Notes for acme: npm package" }).click();
+    await expect
+      .element(page.getByRole("alertdialog"))
+      .toHaveTextContent("Discard unsaved MCP changes?");
+    await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+    expect(toastAdd.mock.calls.length).toBe(toastsBefore);
+    await page.getByRole("tab", { name: "Form", exact: true }).click();
+    await expect.element(page.getByLabelText("Name", { exact: true })).toHaveValue("my-notes");
+  } finally {
+    toastAdd.mockRestore();
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("lists .mcp.json servers and approves the reviewed definition", async () => {
+  const mocks = createNativeApiMock();
+  const pending = {
+    name: "repo-docs",
+    server: { type: "stdio" as const, command: "npx", args: ["-y", "docs-mcp"] },
+    definitionHash: "hash-1",
+    state: "needs-approval" as const,
+    overridden: false,
+    disabled: false,
+  };
+  mocks.getRepositoryServers.mockResolvedValue({
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [
+      pending,
+      { ...pending, name: "old-tool", definitionHash: "hash-2", state: "changed" },
+    ],
+    issues: ["leak: Secret references cannot be imported."],
+  });
+  const approved = {
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [{ ...pending, state: "approved" as const }],
+    issues: [],
+  };
+  mocks.setRepositoryServerTrust.mockImplementation(async () => {
+    mocks.getRepositoryServers.mockResolvedValue(approved);
+    return approved;
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    const section = page.getByRole("region", { name: "Repository servers" });
+    await expect.element(section).toHaveTextContent("/repo/.mcp.json");
+    await expect.element(section).toHaveTextContent("Needs approval");
+    await expect.element(section).toHaveTextContent("Changed");
+    await expect.element(section).toHaveTextContent("leak: Secret references cannot be imported.");
+
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Approve repo-docs?" });
+    await expect.element(dialog).toHaveTextContent("npx");
+    await expect.element(dialog).toHaveTextContent("-y");
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    expect(mocks.setRepositoryServerTrust).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      serverName: "repo-docs",
+      trusted: true,
+      definitionHash: "hash-1",
+    });
+    await expect.element(section).toHaveTextContent("Approved");
+    await expect.element(section.getByRole("button", { name: "Revoke" })).toBeVisible();
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("closes a stale review when .mcp.json changed under it", async () => {
+  const mocks = createNativeApiMock();
+  const pending = {
+    name: "repo-docs",
+    server: { type: "stdio" as const, command: "npx", args: ["-y", "docs-mcp"] },
+    definitionHash: "hash-1",
+    state: "needs-approval" as const,
+    overridden: false,
+    disabled: false,
+  };
+  const listing = (
+    server: Omit<typeof pending, "state"> & { state: "needs-approval" | "approved" },
+  ) => ({
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [server],
+    issues: [],
+  });
+  mocks.getRepositoryServers.mockResolvedValue(listing(pending));
+  mocks.setRepositoryServerTrust.mockImplementation(async () => {
+    mocks.getRepositoryServers.mockResolvedValue(
+      listing({
+        ...pending,
+        server: { ...pending.server, args: ["--write"] },
+        definitionHash: "hash-2",
+      }),
+    );
+    throw new Error("'repo-docs' changed in .mcp.json since you reviewed it. Review it again.");
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    const section = page.getByRole("region", { name: "Repository servers" });
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Approve repo-docs?" });
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    await expect.element(dialog).not.toBeInTheDocument();
+    await expect.element(section).toHaveTextContent("since you reviewed it");
+    await expect.element(section).toHaveTextContent("--write");
+
+    // A new review shows the refreshed definition and approves its hash.
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    await expect.element(dialog).toHaveTextContent("--write");
+    mocks.setRepositoryServerTrust.mockResolvedValue(
+      listing({ ...pending, state: "approved" as const }),
+    );
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    expect(mocks.setRepositoryServerTrust).toHaveBeenLastCalledWith(
+      expect.objectContaining({ definitionHash: "hash-2" }),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("shows a server's recent calls, error rate, latency and stderr", async () => {
+  const mocks = createNativeApiMock();
+  mocks.listActivity.mockResolvedValue({
+    calls: [
+      {
+        id: "call-1",
+        createdAt: "2026-11-25T10:00:00.000Z",
+        threadId: ThreadId.make("thread-1"),
+        provider: "codex",
+        serverName: "project-server",
+        toolName: "read",
+        outcome: "error",
+        durationMs: 1500,
+        approval: "asked",
+        errorSummary: "Rate limited",
+      },
+    ],
+    last24h: { calls: 4, errors: 1, p50Ms: 120, p95Ms: 1500 },
+    stderrTail: "server started",
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openServer("project-server", "Activity");
+    const summary = page.getByRole("definition").first();
+    await expect.element(summary).toHaveTextContent("4");
+    await expect.element(page.getByText("25%", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("120 ms", { exact: true })).toBeVisible();
+    const calls = page.getByRole("list", { name: "Recent calls" });
+    await expect.element(calls).toHaveTextContent("Error · 1.5 s");
+    await expect.element(calls).toHaveTextContent("Rate limited");
+    await expect.element(calls).toHaveTextContent("Asked");
+    await expect.element(page.getByText("Server output (stderr)")).toBeVisible();
+    expect(mocks.listActivity).toHaveBeenCalledWith(
+      { serverName: "project-server", projectId: PROJECT_ID },
+      expect.anything(),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
 it("retains disabled tools in a single list when the live listing omits them", async () => {
   const mocks = createNativeApiMock();
   mocks.getProjectConfig.mockResolvedValue({
@@ -2454,16 +2801,14 @@ it("retains disabled tools in a single list when the live listing omits them", a
   const { screen, queryClient } = await renderSettings();
   try {
     await openServer("project-server", "Tools");
-    await expect
-      .element(page.getByRole("switch", { name: "Enable tool hidden" }))
-      .not.toBeChecked();
+    await expect.element(toolPolicy("hidden", "Block")).toHaveAttribute("aria-pressed", "true");
     await expect.element(page.getByText("read", { exact: true })).toBeVisible();
-    await page.getByRole("switch", { name: "Enable tool hidden" }).click();
+    await toolPolicy("hidden", "Allow").click();
     await vi.waitFor(() =>
       expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
         expect.objectContaining({
           servers: {
-            "project-server": { type: "stdio", command: "node", disabledTools: [] },
+            "project-server": { type: "stdio", command: "node" },
           },
         }),
       ),
@@ -2489,7 +2834,7 @@ it("opens probe tools and saves switches in common settings without a project", 
     await openServer("common-server");
     await page.getByRole("button", { name: "Test", exact: true }).click();
     await page.getByRole("button", { name: "1 tools", exact: true }).click();
-    await page.getByRole("switch", { name: "Enable tool probe-tool" }).click();
+    await toolPolicy("probe-tool", "Block").click();
     await vi.waitFor(() =>
       expect(mocks.replaceCommonConfig).toHaveBeenCalledWith(
         expect.objectContaining({

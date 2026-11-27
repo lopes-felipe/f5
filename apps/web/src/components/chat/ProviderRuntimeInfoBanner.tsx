@@ -2,8 +2,14 @@ import { Link } from "@tanstack/react-router";
 import { createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { Popover, PopoverTrigger, PopoverPopup } from "../ui/popover";
-import { useQuery } from "@tanstack/react-query";
-import { mcpEffectiveConfigQueryOptions } from "../../lib/mcpReactQuery";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  mcpEffectiveConfigQueryOptions,
+  mcpQueryKeys,
+  mcpThreadServersQueryOptions,
+} from "../../lib/mcpReactQuery";
+import { ensureNativeApi } from "../../nativeApi";
+import { Switch } from "../ui/switch";
 import {
   type ProjectId,
   type CompactMcpStatusActivityPayload,
@@ -163,6 +169,48 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
   );
 });
 
+/**
+ * Turns a server F5 serves off (or back on) for this conversation only. The agent
+ * stops seeing its tools at once; no restart.
+ */
+function McpThreadServerSwitch(props: {
+  readonly threadId: ThreadId;
+  readonly serverName: string;
+  readonly enabled: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="space-y-0.5">
+      <label className="flex items-center gap-2">
+        <Switch
+          aria-label={`Use ${props.serverName} in this conversation`}
+          checked={props.enabled}
+          disabled={saving}
+          onCheckedChange={(checked) => {
+            setSaving(true);
+            setError(null);
+            void ensureNativeApi()
+              .mcp.setThreadServerEnabled({
+                threadId: props.threadId,
+                serverName: props.serverName,
+                enabled: !!checked,
+              })
+              .then((result) =>
+                queryClient.setQueryData(mcpQueryKeys.threadServers(props.threadId), result),
+              )
+              .catch(() => setError("Could not change this server for the conversation."))
+              .finally(() => setSaving(false));
+          }}
+        />
+        <span>{props.enabled ? "On in this conversation" : "Off in this conversation"}</span>
+      </label>
+      {error ? <p className="text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
 function McpRuntimeChip({
   summary,
   servers,
@@ -188,6 +236,12 @@ function McpRuntimeChip({
     config.isSuccess && !config.isFetching
       ? createMcpDiagnosticsSanitizer(config.data.servers)
       : null;
+  const threadServers = useQuery(
+    mcpThreadServersQueryOptions({ threadId: threadId ?? null, enabled: open }),
+  );
+  const disabledHere = new Set(
+    (threadServers.data?.disabledServers ?? []).map((name) => mcpServerNameKey(name)),
+  );
   // Only servers saved in F5 have a settings panel to open.
   const savedNames = new Set(Object.keys(config.data?.servers ?? {}).map(mcpServerNameKey));
   const needsSignIn = servers.filter((server) => server.status === "needs-auth").length;
@@ -242,6 +296,13 @@ function McpRuntimeChip({
                     </Link>
                   ) : null}
                 </p>
+                {threadId && server.name && hubServerNames?.has(mcpServerNameKey(server.name)) ? (
+                  <McpThreadServerSwitch
+                    threadId={threadId}
+                    serverName={server.name}
+                    enabled={!disabledHere.has(mcpServerNameKey(server.name))}
+                  />
+                ) : null}
                 {server.error ? (
                   <p className="whitespace-pre-wrap break-words">
                     {sanitizer

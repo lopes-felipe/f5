@@ -34,6 +34,7 @@ import {
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   PR_HUB_WS_METHODS,
   type OrchestrationFileChange,
   type OrchestrationGetThreadCommandExecutionResult,
@@ -8681,6 +8682,137 @@ describe("ChatView timeline (full app)", () => {
       await page.elementLocator(editor).fill("Look in /Users/me/project");
       await vi.waitFor(() =>
         expect(document.querySelector("[data-composer-command-drawer]")).toBeNull(),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("inserts an MCP prompt for review and sends a chosen MCP resource's text with the message", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-mcp-composer" as MessageId,
+        targetText: "mcp composer",
+      }),
+      configureFixture: (current) => {
+        current.resolveWsRequest = (body) => {
+          if (body._tag === WS_METHODS.mcpListComposerPrompts)
+            return {
+              type: "result",
+              result: {
+                servers: [
+                  {
+                    serverName: "docs",
+                    prompts: [
+                      {
+                        name: "summarize",
+                        title: "Summarize a topic",
+                        arguments: [{ name: "topic", required: true }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            };
+          if (body._tag === WS_METHODS.mcpCompleteComposerPrompt)
+            return { type: "result", result: { values: ["release notes"] } };
+          if (body._tag === WS_METHODS.mcpGetComposerPrompt)
+            return {
+              type: "result",
+              result: {
+                text: `Summarize ${(body as { arguments?: { topic?: string } }).arguments?.topic}`,
+                omitted: 0,
+              },
+            };
+          if (body._tag === WS_METHODS.mcpListComposerResources)
+            return {
+              type: "result",
+              result: {
+                servers: [
+                  {
+                    serverName: "docs",
+                    resources: [{ uri: "doc://guide", name: "guide", title: "Style guide" }],
+                    truncated: false,
+                  },
+                ],
+              },
+            };
+          if (body._tag === WS_METHODS.mcpReadComposerResource)
+            return {
+              type: "result",
+              result: {
+                contents: [
+                  {
+                    kind: "text",
+                    uri: "doc://guide",
+                    // Larger than a whole message: cut to fit instead of blocking the send.
+                    text: `Use short sentences.\n${"x".repeat(150_000)}`,
+                    truncated: false,
+                  },
+                ],
+                omitted: 0,
+              },
+            };
+          return null;
+        };
+      },
+    });
+
+    try {
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("/docs:sum");
+      const commands = page.getByRole("listbox", { name: "Commands" });
+      await expect.element(commands.getByText("/docs:summarize")).toBeVisible();
+      await commands.getByText("/docs:summarize").click();
+
+      const dialog = page.getByRole("dialog", { name: "/docs:summarize" });
+      await expect.element(dialog).toBeVisible();
+      await dialog.getByLabelText(/topic/).fill("release notes");
+      await vi.waitFor(() =>
+        expect(wsRequests).toContainEqual(
+          expect.objectContaining({
+            _tag: WS_METHODS.mcpCompleteComposerPrompt,
+            serverName: "docs",
+            argument: "topic",
+          }),
+        ),
+      );
+      await dialog.getByRole("button", { name: "Insert prompt" }).click();
+      await expect.element(dialog).not.toBeInTheDocument();
+      // The prompt is put in the composer for review, never sent.
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "Summarize release notes",
+        ),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+
+      await page.elementLocator(editor).fill("Follow @sty");
+      const files = page.getByRole("listbox", { name: "Files and folders" });
+      await expect.element(files.getByText("Style guide")).toBeVisible();
+      await files.getByText("Style guide").click();
+      await expect.element(page.getByText("docs: Style guide", { exact: true })).toBeVisible();
+
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false));
+      sendButton.click();
+      await vi.waitFor(
+        () => {
+          const command = getDispatchCommandRequests("thread.turn.start")[0]?.command as
+            | { message?: { text?: string } }
+            | undefined;
+          expect(command?.message?.text).toContain(
+            "Follow [@docs: Style guide](mcp-resource://docs/",
+          );
+          const text = command?.message?.text ?? "";
+          expect(text).toContain(
+            "MCP resource doc://guide from docs:\n```\nUse short sentences.\n",
+          );
+          expect(text).toContain("[Truncated: the rest did not fit in the message.]");
+          expect(text.length).toBeLessThanOrEqual(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+        },
+        { timeout: 8_000, interval: 16 },
       );
     } finally {
       await mounted.cleanup();

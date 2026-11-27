@@ -16,6 +16,8 @@ export interface NativeUsageRecord {
   readonly totals: NativeUsageTotals;
   readonly reportedCostUsd: number | null;
   readonly dedupeKey: string | null;
+  /** The directory name of a retained Antigravity profile. */
+  readonly retiredAntigravityProfile?: string;
 }
 
 export function totalTokens(totals: NativeUsageTotals): number {

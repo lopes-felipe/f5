@@ -135,6 +135,7 @@ export function expandCollapsedComposerCursor(
       segment.type === "mention" ||
       segment.type === "pull-request" ||
       segment.type === "thread-reference" ||
+      segment.type === "mcp-resource" ||
       segment.type === "model-reference" ||
       segment.type === "assistant-quote"
     ) {
@@ -217,6 +218,7 @@ export function collapseExpandedComposerCursor(
       segment.type === "mention" ||
       segment.type === "pull-request" ||
       segment.type === "thread-reference" ||
+      segment.type === "mcp-resource" ||
       segment.type === "model-reference" ||
       segment.type === "assistant-quote"
     ) {

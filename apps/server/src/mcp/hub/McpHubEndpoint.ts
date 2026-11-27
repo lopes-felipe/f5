@@ -21,11 +21,37 @@ import {
   McpError,
   ReadResourceRequestSchema,
   type CallToolResult,
+  type CompleteRequest,
+  type CompleteResult,
+  type GetPromptRequest,
+  type GetPromptResult,
+  type ListPromptsRequest,
+  type ListPromptsResult,
+  type ListResourcesRequest,
+  type ListResourcesResult,
+  type ListResourceTemplatesRequest,
+  type ListResourceTemplatesResult,
+  type ReadResourceRequest,
   type ReadResourceResult,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { ThreadId } from "@t3tools/contracts";
+import type {
+  McpServerDefinition,
+  McpToolCallApproval,
+  McpToolCallOutcome,
+  ProjectId,
+  ProviderKind,
+  ThreadId,
+} from "@t3tools/contracts";
+import { mcpToolPolicy } from "@t3tools/shared/mcpTools";
 
+import {
+  mcpServerIdentity,
+  summarizeToolError,
+  type McpHubGovernance,
+  type McpServerIdentity,
+  type McpToolApprovalReason,
+} from "./McpHubGovernance.ts";
 import type { McpHubUpstream } from "./McpHubUpstream.ts";
 
 /** A provider rarely holds more than one connection per endpoint; reconnects replace it. */
@@ -43,27 +69,187 @@ export interface McpHubSlotOptions {
   readonly token: string;
   readonly serverName: string;
   readonly threadId: ThreadId;
+  readonly provider: ProviderKind;
+  readonly projectId?: ProjectId | undefined;
   readonly upstream: McpHubUpstream;
+  /** This session's definition: its tool policy can differ from a shared upstream's. */
+  readonly definition: McpServerDefinition;
+  readonly governance?: McpHubGovernance | undefined;
 }
 
 export class McpHubSlot {
   readonly id: string;
   readonly serverName: string;
   readonly threadId: ThreadId;
+  readonly provider: ProviderKind;
+  private readonly projectId: ProjectId | undefined;
   private current: McpHubUpstream | undefined;
+  private definition: McpServerDefinition;
+  private identity: McpServerIdentity;
+  private readonly governance: McpHubGovernance | undefined;
   private readonly token: Buffer;
   private readonly connections = new Map<string, DownstreamConnection>();
   private readonly pending = new Set<DownstreamConnection>();
   private unsubscribe: () => void = () => undefined;
+  private readonly unsubscribeThread: () => void;
   private closed = false;
   private generation = 0;
+  /** The tool list last pinned, so an unchanged cached list is not observed again. */
+  private observedTools: ReadonlyArray<Tool> | undefined;
 
   constructor(options: McpHubSlotOptions) {
     this.id = options.id;
     this.serverName = options.serverName;
     this.threadId = options.threadId;
+    this.provider = options.provider;
+    this.projectId = options.projectId;
+    this.governance = options.governance;
     this.token = Buffer.from(options.token);
+    this.definition = options.definition;
+    this.identity = mcpServerIdentity(options.serverName, options.definition);
     this.bind(options.upstream);
+    // A server turned off (or on) for this conversation lists again without a restart.
+    this.unsubscribeThread =
+      options.governance?.onThreadServersChanged((threadId) => {
+        if (threadId !== this.threadId) return;
+        for (const change of ["tools", "resources", "prompts"] as const) this.notify(change);
+      }) ?? (() => undefined);
+  }
+
+  /** Applies a saved definition's tool policy; connection changes go through `rebind`. */
+  setDefinition(definition: McpServerDefinition): void {
+    this.definition = definition;
+    this.identity = mcpServerIdentity(this.serverName, definition);
+  }
+
+  /** The conversation's project, for refreshing tool policy when its settings are saved. */
+  get sessionProjectId(): ProjectId | undefined {
+    return this.projectId;
+  }
+
+  /**
+   * Takes only the tool policy from a saved definition, so a save reaches a live
+   * session without Apply. Connection settings keep waiting for Apply or a restart.
+   */
+  setToolPolicy(
+    source: Pick<
+      McpServerDefinition,
+      "toolPolicy" | "defaultToolPolicy" | "enabledTools" | "disabledTools"
+    >,
+  ): void {
+    // A saved policy change ends "Allow in this conversation" for this server, so an
+    // Ask → Allow → Ask round trip asks again.
+    if (
+      JSON.stringify([source.toolPolicy, source.defaultToolPolicy]) !==
+      JSON.stringify([this.definition.toolPolicy, this.definition.defaultToolPolicy])
+    )
+      this.governance?.clearSessionAllowances?.(this.threadId, this.serverName);
+    const {
+      toolPolicy: _toolPolicy,
+      defaultToolPolicy: _defaultToolPolicy,
+      enabledTools: _enabledTools,
+      disabledTools: _disabledTools,
+      ...rest
+    } = this.definition;
+    this.definition = {
+      ...rest,
+      ...(source.toolPolicy ? { toolPolicy: source.toolPolicy } : {}),
+      ...(source.defaultToolPolicy ? { defaultToolPolicy: source.defaultToolPolicy } : {}),
+      // Block takes effect at once too: the tool leaves the list and its calls are refused.
+      ...(source.enabledTools ? { enabledTools: source.enabledTools } : {}),
+      ...(source.disabledTools ? { disabledTools: source.disabledTools } : {}),
+    } as McpServerDefinition;
+    this.notify("tools");
+  }
+
+  /** The connection's own filters plus this session's latest saved Block list. */
+  private toolAllowed(upstream: McpHubUpstream, toolName: string): boolean {
+    if (!upstream.isToolAllowed(toolName)) return false;
+    const { enabledTools, disabledTools } = this.definition;
+    if (enabledTools && !enabledTools.includes(toolName)) return false;
+    return !disabledTools?.includes(toolName);
+  }
+
+  private disabledHere(): boolean {
+    return this.governance?.isServerDisabled(this.threadId, this.serverName) ?? false;
+  }
+
+  /** Why F5 asks before running `toolName` in this conversation; undefined when it runs at once. */
+  private approvalReason(toolName: string): McpToolApprovalReason | undefined {
+    // A changed tool, or one added after the first listing, asks until it is reviewed.
+    const pin = this.governance?.pinState(this.serverName, this.identity, toolName);
+    if (pin === "changed" || pin === "new") return pin;
+    if (mcpToolPolicy(this.definition, toolName) !== "ask") return undefined;
+    if (
+      this.governance?.allowedForSession(
+        this.threadId,
+        this.serverName,
+        toolName,
+        this.identity.key,
+      )
+    )
+      return undefined;
+    return "policy";
+  }
+
+  /**
+   * True when F5 will ask before running this tool, so a provider's own prompt for the
+   * same call can be answered without showing it.
+   */
+  asksBeforeCall(toolName: string): boolean {
+    const upstream = this.current;
+    if (!upstream || this.disabledHere() || !this.toolAllowed(upstream, toolName)) return false;
+    return this.approvalReason(toolName) !== undefined;
+  }
+
+  private record(
+    toolName: string,
+    outcome: McpToolCallOutcome,
+    approval: McpToolCallApproval,
+    startedAt: number,
+    errorSummary?: string,
+  ): void {
+    this.governance?.recordCall({
+      threadId: this.threadId,
+      projectId: this.projectId,
+      provider: this.provider,
+      serverName: this.serverName,
+      toolName,
+      outcome,
+      durationMs: Math.max(0, Math.round(Date.now() - startedAt)),
+      approval,
+      ...(errorSummary ? { errorSummary: summarizeToolError(errorSummary) } : {}),
+    });
+  }
+
+  /** Lists through the upstream's filters and pins what the server reported. */
+  private async listAllowedTools(upstream: McpHubUpstream): Promise<Tool[]> {
+    const tools = await this.observeCurrentTools(upstream);
+    return tools
+      .filter((tool) => this.toolAllowed(upstream, tool.name))
+      .map((tool) => {
+        // Until a change is reviewed, the model sees the accepted description, since a
+        // description is where a redefined tool would carry new instructions.
+        const accepted = this.governance?.acceptedDescription?.(this.identity, tool.name);
+        if (accepted === undefined) return tool;
+        const { description: _description, ...rest } = tool;
+        return accepted ? { ...rest, description: accepted } : rest;
+      });
+  }
+
+  /**
+   * The server's current tools, pinned. Called before each tool call as well, so a call
+   * after `tools/list_changed` is checked against the new definitions even when the
+   * provider never listed again. The upstream caches its list until the server says it
+   * changed, so this re-lists only then.
+   */
+  private async observeCurrentTools(upstream: McpHubUpstream): Promise<ReadonlyArray<Tool>> {
+    const tools = await upstreamCall(upstream, () => upstream.listTools());
+    if (this.observedTools !== tools) {
+      this.governance?.observeTools(this.serverName, this.identity, tools);
+      this.observedTools = tools;
+    }
+    return tools;
   }
 
   /** The upstream this endpoint forwards to; none once its server was removed. */
@@ -114,6 +300,7 @@ export class McpHubSlot {
   /** The current upstream, or an error explaining that the server was removed. */
   private requireUpstream(): McpHubUpstream {
     if (this.closed) throw new McpError(ErrorCode.InvalidRequest, "This MCP endpoint is closed.");
+    if (this.disabledHere()) throw new McpError(ErrorCode.InvalidRequest, this.turnedOffMessage());
     if (this.current) return this.current;
     throw new McpError(
       ErrorCode.InvalidRequest,
@@ -127,29 +314,39 @@ export class McpHubSlot {
 
   /** MCP Apps: the tools this session's provider sees, read from the hub directly. */
   async appListTools(): Promise<Tool[]> {
-    if (!this.current) return [];
+    if (!this.current || this.disabledHere()) return [];
     const upstream = this.requireUpstream();
-    return upstream.filterTools(await upstreamCall(upstream, () => upstream.listTools()));
+    return this.listAllowedTools(upstream);
   }
 
-  /** MCP Apps: one tool call on this session's connection, with the server's own timeout. */
+  /**
+   * MCP Apps: one tool call on this session's connection, with the server's own timeout.
+   * The user drives these from the app's own view, so F5 does not ask again.
+   */
   async appCallTool(
     name: string,
     args: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<CallToolResult> {
     const upstream = this.requireUpstream();
-    if (!upstream.isToolAllowed(name))
+    if (!this.toolAllowed(upstream, name))
       throw new McpError(
         ErrorCode.InvalidRequest,
         `The tool '${name}' is turned off in F5's MCP settings.`,
       );
-    const client = await upstreamClient(upstream);
+    const startedAt = Date.now();
+    let client;
+    try {
+      client = await upstreamClient(upstream);
+    } catch (error) {
+      this.record(name, "error", "policy", startedAt, upstream.redact(messageOf(error)));
+      throw error;
+    }
     // Tracked like a provider call, so a question the server asks meanwhile is never
     // forwarded to another conversation (an app has no way to answer it, so it is declined).
-    const release = upstream.trackCall({ threadId: this.threadId, startedAt: Date.now() });
+    const release = upstream.trackCall({ threadId: this.threadId, startedAt });
     try {
-      return await upstreamCall(
+      const result = await upstreamCall(
         upstream,
         async () =>
           (await client.callTool({ name, arguments: args }, undefined, {
@@ -158,18 +355,100 @@ export class McpHubSlot {
             resetTimeoutOnProgress: true,
           })) as CallToolResult,
       );
+      this.record(name, result.isError ? "error" : "ok", "policy", startedAt);
+      return result;
+    } catch (error) {
+      this.record(
+        name,
+        signal.aborted ? "cancelled" : "error",
+        "policy",
+        startedAt,
+        upstream.redact(messageOf(error)),
+      );
+      throw error;
     } finally {
       release();
     }
   }
 
+  private turnedOffMessage(): string {
+    return `'${this.serverName}' is turned off for this conversation.`;
+  }
+
   /** MCP Apps: reads a `ui://` resource on this session's connection. */
   async appReadResource(uri: string, signal: AbortSignal): Promise<ReadResourceResult> {
+    return this.readResource({ uri }, signal);
+  }
+
+  /*
+   * Prompts and resources, for the provider and for the composer alike. A server
+   * turned off for this conversation offers none, and refuses reads.
+   */
+
+  async listPrompts(
+    params: ListPromptsRequest["params"],
+    signal: AbortSignal,
+  ): Promise<ListPromptsResult> {
+    if (!this.current || this.disabledHere()) return { prompts: [] };
+    const upstream = this.current;
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.prompts) return { prompts: [] };
+    return upstreamCall(upstream, () => client.listPrompts(params, { signal }));
+  }
+
+  async getPrompt(
+    params: GetPromptRequest["params"],
+    signal: AbortSignal,
+  ): Promise<GetPromptResult> {
     const upstream = this.requireUpstream();
+    if (this.disabledHere()) throw new McpError(ErrorCode.InvalidRequest, this.turnedOffMessage());
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.prompts)
+      throw new McpError(ErrorCode.MethodNotFound, "This server has no prompts.");
+    return upstreamCall(upstream, () => client.getPrompt(params, { signal }));
+  }
+
+  async complete(params: CompleteRequest["params"], signal: AbortSignal): Promise<CompleteResult> {
+    if (this.disabledHere()) return { completion: { values: [], hasMore: false } };
+    const upstream = this.requireUpstream();
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.completions)
+      return { completion: { values: [], hasMore: false } };
+    return upstreamCall(upstream, () => client.complete(params, { signal }));
+  }
+
+  async listResources(
+    params: ListResourcesRequest["params"],
+    signal: AbortSignal,
+  ): Promise<ListResourcesResult> {
+    if (!this.current || this.disabledHere()) return { resources: [] };
+    const upstream = this.current;
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.resources) return { resources: [] };
+    return upstreamCall(upstream, () => client.listResources(params, { signal }));
+  }
+
+  async listResourceTemplates(
+    params: ListResourceTemplatesRequest["params"],
+    signal: AbortSignal,
+  ): Promise<ListResourceTemplatesResult> {
+    if (!this.current || this.disabledHere()) return { resourceTemplates: [] };
+    const upstream = this.current;
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.resources) return { resourceTemplates: [] };
+    return upstreamCall(upstream, () => client.listResourceTemplates(params, { signal }));
+  }
+
+  async readResource(
+    params: ReadResourceRequest["params"],
+    signal: AbortSignal,
+  ): Promise<ReadResourceResult> {
+    const upstream = this.requireUpstream();
+    if (this.disabledHere()) throw new McpError(ErrorCode.InvalidRequest, this.turnedOffMessage());
     const client = await upstreamClient(upstream);
     if (!client.getServerCapabilities()?.resources)
       throw new McpError(ErrorCode.MethodNotFound, "This server has no resources.");
-    return upstreamCall(upstream, () => client.readResource({ uri }, { signal }));
+    return upstreamCall(upstream, () => client.readResource(params, { signal }));
   }
 
   authorizes(token: string | null | undefined): boolean {
@@ -246,6 +525,7 @@ export class McpHubSlot {
     if (this.closed) return;
     this.closed = true;
     this.unsubscribe();
+    this.unsubscribeThread();
     const connections = [...this.connections.values(), ...this.pending];
     this.connections.clear();
     this.pending.clear();
@@ -272,28 +552,95 @@ export class McpHubSlot {
     // Handlers read the upstream per request, so a re-bound endpoint serves the new one.
     server.setRequestHandler(ListToolsRequestSchema, async () => {
       const upstream = this.current;
-      if (!upstream) return { tools: [] };
-      const tools = await upstreamCall(upstream, () => upstream.listTools());
-      return { tools: upstream.filterTools(tools) };
+      if (!upstream || this.disabledHere()) return { tools: [] };
+      return { tools: await this.listAllowedTools(upstream) };
     });
 
     server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-      const upstream = this.current;
       const name = request.params.name;
-      if (!upstream) return toolError(`'${this.serverName}' was removed from F5's MCP settings.`);
-      if (!upstream.isToolAllowed(name))
-        return toolError(`The tool '${name}' is turned off in F5's MCP settings.`);
+      const receivedAt = Date.now();
+      // Checked on arrival and again after any wait for approval: the user may have
+      // turned the server off, blocked the tool or removed the server meanwhile.
+      const refusal = (): CallToolResult | undefined => {
+        const current = this.current;
+        if (!current) return toolError(`'${this.serverName}' was removed from F5's MCP settings.`);
+        if (this.disabledHere()) {
+          this.record(name, "turned-off", "policy", receivedAt);
+          return toolError(this.turnedOffMessage());
+        }
+        if (!this.toolAllowed(current, name)) {
+          this.record(name, "blocked", "policy", receivedAt);
+          return toolError(`The tool '${name}' is turned off in F5's MCP settings.`);
+        }
+        return undefined;
+      };
+      const ask = async (reason: McpToolApprovalReason): Promise<CallToolResult | undefined> => {
+        if (!this.governance) {
+          this.record(name, "declined", "asked", receivedAt);
+          return toolError(
+            `F5 asks before running '${name}', but cannot ask in this conversation, so the call was not run.`,
+          );
+        }
+        const decision = await this.governance.requestApproval({
+          threadId: this.threadId,
+          provider: this.provider,
+          serverName: this.serverName,
+          toolName: name,
+          reason,
+          signal: AbortSignal.any([extra.signal, AbortSignal.timeout(MCP_HUB_APPROVAL_WAIT_MS)]),
+        });
+        if (decision !== "accept" && decision !== "acceptForSession") {
+          this.record(name, decision === "cancel" ? "cancelled" : "declined", "asked", receivedAt);
+          if (extra.signal.aborted) throw new McpError(ErrorCode.RequestTimeout, "Cancelled.");
+          return toolError(
+            decision === "cancel"
+              ? `The call to '${name}' was cancelled before it ran.`
+              : `The user declined the call to '${name}'.`,
+          );
+        }
+        if (decision === "acceptForSession" && reason === "policy")
+          this.governance.allowForSession(this.threadId, this.serverName, name, this.identity.key);
+        return refusal();
+      };
+      const refused = refusal();
+      if (refused) return refused;
+      let approval: McpToolCallApproval =
+        mcpToolPolicy(this.definition, name) === "ask" ? "session" : "policy";
+      // Ask first when policy says so: a declined call never starts or connects the server.
+      let asked: McpToolApprovalReason | undefined = this.approvalReason(name);
+      if (asked) {
+        const answer = await ask(asked);
+        if (answer) return answer;
+        approval = "asked";
+      }
+      const upstream = this.current!;
       let client;
       try {
         client = await upstream.ensureConnected();
+        // Pins are checked against the server's current definitions, not the last list
+        // the provider happened to request.
+        await this.observeCurrentTools(upstream);
       } catch (error) {
-        return toolError(upstream.redact(messageOf(error)));
+        const message = upstream.redact(messageOf(error));
+        this.record(name, "error", approval, receivedAt, message);
+        return toolError(message);
       }
+      const reason = this.approvalReason(name);
+      if ((reason === "changed" || reason === "new") && asked !== reason) {
+        asked = reason;
+        const answer = await ask(reason);
+        if (answer) return answer;
+        approval = "asked";
+      } else if (reason && !asked) {
+        const answer = await ask(reason);
+        if (answer) return answer;
+        approval = "asked";
+      }
+      const startedAt = Date.now();
       const progressToken = request.params._meta?.progressToken;
       const elicitation = server.getClientCapabilities()?.elicitation as
         | { readonly url?: object }
         | undefined;
-      const startedAt = Date.now();
       const release = upstream.trackCall({
         threadId: this.threadId,
         startedAt,
@@ -301,6 +648,7 @@ export class McpHubSlot {
           ? {
               elicit: async (params, signal) => {
                 if (params.mode === "url" && !elicitation.url) return { action: "decline" };
+                params = withoutProviderMeta(params);
                 // A person may take a while: the question may use the call's remaining
                 // time, not the SDK's 60 s request default.
                 const remaining = startedAt + upstream.toolTimeoutMs() - Date.now();
@@ -323,7 +671,7 @@ export class McpHubSlot {
           : {}),
       });
       try {
-        return (await client.callTool(request.params, undefined, {
+        const result = (await client.callTool(request.params, undefined, {
           signal: extra.signal,
           timeout: upstream.toolTimeoutMs(),
           resetTimeoutOnProgress: true,
@@ -340,80 +688,74 @@ export class McpHubSlot {
               }
             : {}),
         })) as CallToolResult;
+        this.record(
+          name,
+          result.isError ? "error" : "ok",
+          approval,
+          startedAt,
+          result.isError ? upstream.redact(toolErrorText(result)) : undefined,
+        );
+        return result;
       } catch (error) {
         // A lost session or revoked credential drops the connection for recovery; the
         // call itself is not replayed, since it may have had side effects.
         upstream.noteRequestFailure(client, error);
+        const message = upstream.redact(messageOf(error));
+        this.record(
+          name,
+          extra.signal.aborted ? "cancelled" : "error",
+          approval,
+          startedAt,
+          message,
+        );
         if (extra.signal.aborted) throw error;
-        return toolError(upstream.redact(messageOf(error)));
+        return toolError(message);
       } finally {
         release();
       }
     });
 
-    server.setRequestHandler(ListResourcesRequestSchema, async (request, extra) => {
-      if (!this.current) return { resources: [] };
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.resources) return { resources: [] };
-      return upstreamCall(upstream, () =>
-        client.listResources(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(ListResourceTemplatesRequestSchema, async (request, extra) => {
-      if (!this.current) return { resourceTemplates: [] };
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.resources) return { resourceTemplates: [] };
-      return upstreamCall(upstream, () =>
-        client.listResourceTemplates(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(ReadResourceRequestSchema, async (request, extra) => {
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.resources)
-        throw new McpError(ErrorCode.MethodNotFound, "This server has no resources.");
-      return upstreamCall(upstream, () =>
-        client.readResource(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(ListPromptsRequestSchema, async (request, extra) => {
-      if (!this.current) return { prompts: [] };
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.prompts) return { prompts: [] };
-      return upstreamCall(upstream, () =>
-        client.listPrompts(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(GetPromptRequestSchema, async (request, extra) => {
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.prompts)
-        throw new McpError(ErrorCode.MethodNotFound, "This server has no prompts.");
-      return upstreamCall(upstream, () =>
-        client.getPrompt(request.params, { signal: extra.signal }),
-      );
-    });
-
-    server.setRequestHandler(CompleteRequestSchema, async (request, extra) => {
-      const upstream = this.requireUpstream();
-      const client = await upstreamClient(upstream);
-      if (!client.getServerCapabilities()?.completions)
-        return { completion: { values: [], hasMore: false } };
-      return upstreamCall(upstream, () =>
-        client.complete(request.params, { signal: extra.signal }),
-      );
-    });
+    server.setRequestHandler(ListResourcesRequestSchema, (request, extra) =>
+      this.listResources(request.params, extra.signal),
+    );
+    server.setRequestHandler(ListResourceTemplatesRequestSchema, (request, extra) =>
+      this.listResourceTemplates(request.params, extra.signal),
+    );
+    server.setRequestHandler(ReadResourceRequestSchema, (request, extra) =>
+      this.readResource(request.params, extra.signal),
+    );
+    server.setRequestHandler(ListPromptsRequestSchema, (request, extra) =>
+      this.listPrompts(request.params, extra.signal),
+    );
+    server.setRequestHandler(GetPromptRequestSchema, (request, extra) =>
+      this.getPrompt(request.params, extra.signal),
+    );
+    server.setRequestHandler(CompleteRequestSchema, (request, extra) =>
+      this.complete(request.params, extra.signal),
+    );
 
     return server;
   }
 }
+
+/**
+ * A server's question without `_meta` keys a provider reserves for its own prompts
+ * (Codex marks its tool-call consent with `codex_approval_kind`), so a server can never
+ * pass its question off as the provider's consent, which F5 may answer unseen.
+ */
+export function withoutProviderMeta<T extends { _meta?: Record<string, unknown> | undefined }>(
+  params: T,
+): T {
+  const meta = params._meta;
+  if (!meta || !Object.keys(meta).some((key) => key.startsWith("codex_"))) return params;
+  const kept = Object.fromEntries(
+    Object.entries(meta).filter(([key]) => !key.startsWith("codex_")),
+  );
+  return { ...params, _meta: kept };
+}
+
+/** How long a tool call waits for the user's answer before it is cancelled. */
+export const MCP_HUB_APPROVAL_WAIT_MS = 10 * 60_000;
 
 async function upstreamClient(upstream: McpHubUpstream) {
   return upstreamCall(upstream, () => upstream.ensureConnected());
@@ -436,6 +778,14 @@ async function upstreamCall<T>(upstream: McpHubUpstream, run: () => Promise<T>):
 
 function toolError(text: string): CallToolResult {
   return { content: [{ type: "text", text }], isError: true };
+}
+
+/** The first text block of an error result, for the call log's summary. */
+function toolErrorText(result: CallToolResult): string {
+  const block = result.content?.find((entry) => entry.type === "text");
+  return block && "text" in block && typeof block.text === "string"
+    ? block.text
+    : "The tool reported an error.";
 }
 
 function messageOf(error: unknown): string {

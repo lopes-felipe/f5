@@ -16,12 +16,15 @@ The page follows the settings scope switcher: **Global** edits common servers, a
 Select a server to open its panel:
 
 - **Overview**: live status for F5's connections and for the observed Codex or Claude account, a connection **Test**, the [provider matrix](#provider-support), and the sessions using the server, with **Apply to live sessions**.
-- **Tools**: per-tool switches (see [Tools](#tools)).
+- **Tools**: Allow, Ask or Block per tool, the default for the rest, and tools to review (see [Tools](#tools)).
+- **Activity**: recent calls through F5, the last day's error rate and latency, and the server's stderr (see [Activity](#activity)).
 - **Prompts and resources**: prompt and resource counts from the last connection test and from F5's own connection, and resource metadata from the observed account.
 - **Sign-in**: F5's sign-in (see [Sign in with F5](#sign-in-with-f5)), and, with [native passthrough](#native-passthrough), sign-in for the observed Codex or Claude account.
 - **Configuration**: the form, and the saved JSON with **Copy JSON**.
 
-**Add server** opens a dialog with three tabs: **Form**, **Paste JSON or TOML**, and **Import** (see [Import](#import)). Adding a server from the form opens its panel.
+**Add server** opens a dialog with four tabs: **Form**, **Catalog** (see [Catalog](#catalog)), **Paste JSON or TOML**, and **Import** (see [Import](#import)). Adding a server from the form opens its panel.
+
+In a project, servers listed in the repository's `.mcp.json` appear under **From this repository** (see [Repository servers](#repository-servers)).
 
 Above the server list, **Codex and Claude connect through F5** explains how Codex and Claude reach your servers and has the [native passthrough](#native-passthrough) switch. When a remote server is configured, it also says that sign-ins Codex and Claude saved earlier are not carried over.
 
@@ -34,6 +37,12 @@ Servers Codex or Claude configure themselves, F5's built-in servers, and servers
 MCP settings store server definitions in a common scope and a project scope. Common entries are inherited by every project and appear in a project under **Inherited from common**. There, the switch (**Use <name> in this project**) opts out of an inherited server without changing other projects, and **Override** opens the Add dialog with the common definition so you can save a project version.
 
 New and renamed servers may use letters, numbers, `_` and `-` (up to 128 characters), and must not start with `f5_` or `__f5`; tool names are built from the server name, and providers rewrite other characters. Saved servers with older names keep working and show a rename warning. Names are trimmed and compared without case. An exact-name project entry replaces the entire common definition; a differently cased alias is a conflict. Each scope accepts 16 entries, with at most 32 effective entries and four reserved slots for F5's built-in servers. An oversized legacy layer stays intact while you repair or remove entries; it cannot accept new names.
+
+### Repository servers
+
+A project can list servers in `.mcp.json` at its root folder (the same file Claude Code reads). F5 reads it from the project root only, not from each conversation's worktree, so there is one decision per project. These servers sit between common and project servers: a repository server replaces a common one of the same name, and a project server replaces a repository one. **Use <name> in this project** opt-outs apply to them too.
+
+A repository server never starts until you approve it. **From this repository** lists each server as **Needs approval**, **Approved** or **Changed**. **Review** shows every field of the definition (command, arguments, environment, or URL and headers, then every other setting), and **Approve** approves that definition for this project. Review also lists, above the definition, every value it would send from your environment: each `${env:NAME}` reference and where it goes, and a bearer token environment variable with the host it is sent to. If the file later changes a server's definition, it is marked **Changed** and stops being used until you review and approve it again. **Revoke** withdraws an approval, and running conversations stop reaching the server at once, through their agent and the composer alike. F5 does not watch the file, so a server edited or removed in `.mcp.json` is cut off from running conversations the next time settings change, and is never started again until approved. Approved servers count toward the 32-server limit. Entries F5 cannot use are listed with the reason: invalid entries, entries with stored-secret references, and a `.mcp.json` that is a symbolic link. Like any added server, a newly approved one reaches running Codex and Claude conversations after [Apply](#apply-reconnect-and-test).
 
 Opt-outs compare names without case and remain recorded when a common server is removed. Reusing that name keeps the project opted out; explicitly enable it in that project if desired.
 
@@ -136,6 +145,12 @@ After saving, the banner says: **Saved. Codex and Claude sessions pick up MCP ch
 
 **Reconnect** is in a row's menu, and on a panel's Overview, for a failed, signed-out, or unknown server. A failed F5 connection is reconnected first. For a server F5 serves, Reconnect reconnects F5's connections to it. Otherwise (a server Codex or Claude configures itself, or native passthrough) it recovers connections used by running sessions for the selected project and account. Claude reconnects the selected owned server; Codex reloads its settings connection and applies through the normal session path, which can reload every MCP server in the affected sessions. The result distinguishes reconnected sessions, no running session using the server, and failures. Reconnect does not perform sign-in; use **Sign in** instead. A pending sign-in can be reopened without cancelling it if the browser fails to open.
 
+## Catalog
+
+The **Catalog** tab searches the official [MCP Registry](https://registry.modelcontextprotocol.io). F5 asks the registry only when you open the tab or search, and reuses results for an hour. Anyone can publish to the registry, so check a server (its **Source** link) before adding it. Results list the ways each server can be added: **Remote (HTTP)** or **Remote (SSE)**, **npm package** (`npx -y <package>@<version>`), **PyPI package** (`uvx <package>==<version>`), or **Container image** (`docker run -i --rm`). Other package types are not listed.
+
+Choosing one fills the form and switches to it; nothing is saved or started until you save. Declared arguments and environment variables are filled in where the registry gives a value, and required ones without a value are left for you to complete (arguments show a `<placeholder>`). Secret environment variables and headers become secret rows, so the form asks you to store each secret before it can save. Options a package listing asks to pass to `npx`, `uvx` or `docker` itself (for example `-v /data:/data`) are left out, because the launcher would act on them; the notice after choosing lists them, so you can add the ones you trust to the arguments. Only http(s) **Source** links are shown. If the scope already has the server's name, a suffix such as `-2` is added. Choosing an entry while the form has unsaved changes asks before replacing them.
+
 ## Import
 
 In the Add server dialog, **Paste JSON or TOML** previews pasted F5/Claude JSON, Codex JSON, Codex TOML, VS Code JSON (`servers`), or OpenCode JSON (`mcp`). JSON with comments and trailing commas is accepted. **Import → Detect configurations** explicitly reads:
@@ -151,7 +166,34 @@ Files must be regular files of at most 1 MiB, and symbolic links are not followe
 
 ## Tools
 
-A server's **Tools** tab lets you disable individual tools. Switches change the disabled-tools list. Leave enabled tools empty to allow all tools. A disabled-tools entry takes precedence when a tool is listed in both lists. A non-empty enabled-tools list still restricts availability and cannot be broadened by a switch; edit that list under Advanced. Live tool data is preferred, with the last connection test as a fallback. Saving does not prove that a running conversation has applied the configuration. Apply to all live sessions to reconcile immediately, or let sessions pick up the saved version at their next message. Readiness and the applied configuration version are separate observations.
+A server's **Tools** tab sets each tool to **Allow**, **Ask** or **Block**:
+
+- **Allow** runs the tool when the agent calls it (the agent's own approval rules still apply).
+- **Ask** shows an approval in the conversation before every call, for every agent and in every mode, including Full access. Choose **Allow once**, **Allow in this conversation**, or **Deny**. When Codex or Claude would ask about the same call, F5 answers their prompt for you, so you are asked once, except in read-only workflow stages and plan mode without approvals, which still refuse the call. An approval waits up to ten minutes; Codex and Claude wait that much longer for hub tools, so the time you take does not count against the tool's timeout. The server is started or connected only after you allow the call. If you turn the server off, block the tool or remove the server while the approval is open, the call is refused even if you then allow it. Saving a policy change ends **Allow in this conversation** for that server, and so does a change of its URL or command.
+- **Block** hides the tool from agents and refuses its calls, in running conversations too. It is stored in the disabled-tools list.
+
+**Tools without their own setting** sets the default, Allow or Ask, for every tool you have not set yourself. A non-empty enabled-tools list still restricts availability and cannot be broadened here; edit that list under Advanced. A disabled-tools entry takes precedence when a tool is in both lists. Live tool data is preferred, with the last connection test as a fallback.
+
+Policy is enforced by F5's hub, so it covers every agent that reaches the server through F5 (see [How agents connect](#how-agents-connect)). With [native passthrough](#native-passthrough), Codex and Claude reach servers themselves and only Block applies to them. Saving a policy change reaches running conversations at once, without Apply or reconnecting the server; other changes still follow [Apply](#apply-reconnect-and-test).
+
+### Tool review
+
+The first time F5 lists a server's tools, it records each tool's name, description and input schema. If a server later changes any of them, the tool is marked **Changed** and F5 asks before every call to it, even if it is set to Allow, until you review it. **Tools to review** shows what was accepted next to what the server reports now; **Accept change** records the new definition. Until a change is accepted, agents see the tool with its accepted description. Tools that appear after the first listing are marked **New**, and F5 asks before every call to them until you mark them reviewed. F5 checks a call against the tools the server reports now, so a tool redefined after the agent last listed tools still asks. Accepting records the definition you reviewed; if the tool changed again before you clicked, F5 keeps asking and you review it again. A server whose URL or command changes starts a new record; a stored secret in that URL or command is not part of the record, so rotating it keeps your reviews and is never shown.
+
+## Activity
+
+The **Activity** tab lists calls that went through F5 (in a project scope, only that project's): time, agent, tool, outcome, duration, how the call was approved, and a short, redacted error summary. Arguments and results are never stored. It also shows, for the last 24 hours, the number of calls that reached the server, their error rate, and median and 95th-percentile latency (refused and declined calls are not counted), and the server's recent stderr output (redacted). F5 keeps 30 days of calls, and at most 50,000. **Refresh** reads the latest calls.
+
+## Turning a server off for one conversation
+
+In the chat's MCP details, each server F5 serves has an **On in this conversation** switch. Turning it off hides the server's tools, prompts and resources from that conversation and refuses its calls at once, without restarting the agent. Other conversations are not affected, and the choice is kept for the conversation.
+
+## Prompts and resources in the composer
+
+In a conversation, the composer offers prompts and resources from the servers F5 serves to it. They come from the conversation's running session, so start or resume the conversation first.
+
+- **Prompts**: type `/` to see **MCP prompts** as `/<server>:<prompt>`. A prompt with arguments opens a short form, with suggestions from the server where it offers them. The prompt's text is inserted into the composer for you to review and edit; it is not sent. Images, audio and binary parts of a prompt are left out with a notice.
+- **Resources**: type `@` to see each server's resources (up to 200 per server) next to files and folders; typing filters them. A chosen text resource becomes a chip, and its current contents are read when you send and added after your message as fenced blocks; your message in the conversation shows the chips, not the contents. All resources in one message share 256 KiB of text, and never more than what the rest of the message leaves under the message limit; the rest is cut, with a note. Resource links inside an inserted MCP prompt are not read; only resources you choose from the menu are. Choosing an image resource attaches the image like a pasted one. Other binary content is left out with a notice.
 
 ## Environment variables
 
@@ -159,7 +201,9 @@ The command, arguments, environment values, working directory, URL, and header v
 
 ## Stored secrets
 
-Environment and header values can be marked **Secret**, then stored explicitly. F5 replaces each value with a whole-value `${f5-secret:<uuid>}` reference. Replacing a secret creates a new UUID. Stored values are masked in the editor and omitted from MCP JSON exports. Imports reject these references because they cannot transfer the underlying secret.
+Environment and header values can be marked **Secret**, then stored explicitly. F5 replaces each value with a `${f5-secret:<uuid>}` reference. Replacing a secret creates a new UUID. Stored values are masked in the editor and omitted from MCP JSON exports. Imports reject these references because they cannot transfer the underlying secret.
+
+A reference can also sit inside a longer value, such as `Bearer ${f5-secret:<uuid>}`, and in arguments and the URL. **Store a secret for an argument or URL**, under the arguments or the URL, stores a value and gives you its reference to paste. References are allowed only in environment and header values, arguments and URLs. Secrets in arguments and URLs are redacted from F5's own error messages and stderr.
 
 Secrets live in permission-restricted files in the profile's secrets directory (directory mode 0700, file mode 0600). The backup system includes that directory only when you explicitly choose password-encrypted secret backups. MCP secrets and OAuth tokens are encrypted at rest with AES-256-GCM under a profile key. In the desktop app, the key is protected by the operating system's keychain and handed to the backend when it starts. A headless server keeps the key in a `secret-store-key.bin` file (mode 0600) in the same directory, which protects against copies of individual secret files but not against someone who can read the whole directory. Values written by older versions are re-encrypted the first time they are read. Encryption is not a full credential vault: the running backend can decrypt every value. Plaintext values in the configuration stay unchanged until you store them as secrets. On Linux, the desktop app hands the key to the backend in its environment, which the backend clears at startup but which other processes of the same user can still read from `/proc/<pid>/environ`, as with the backend's auth token. A password-encrypted backup holds secret values decrypted, so a restore on another machine re-encrypts them with that machine's key. Codex receives MCP servers on its command line, which other local users can see with `ps`: a header or environment value that uses a stored secret or `${env:…}` appears there expanded, so put header tokens in a bearer token environment variable instead. Stored secrets are substituted before `${env:…}` references are expanded, so a secret value that itself contains `${env:NAME}` is expanded too.
 

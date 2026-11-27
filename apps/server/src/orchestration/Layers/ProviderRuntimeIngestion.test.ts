@@ -2,6 +2,11 @@ import { backgroundWorkSessionIdentity } from "../../provider/backgroundWorkIden
 import { withProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
 import { makeOrphanedSessionExitedEvent } from "../../provider/orphanedTurnRecovery.ts";
 import { acpFileChanges } from "../../provider/acp/AcpFileChanges.ts";
+import {
+  ACP_HIDDEN_TOOL_INPUTS_DETAIL,
+  acpReadOnlyRefusalDetail,
+  acpRequestWithoutToolCallId,
+} from "../../provider/acp/AcpReadOnlyWorkflowPolicy.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { CodexAppServerManager } from "../../codexAppServerManager.ts";
 import { makeCodexAdapter } from "../../provider/Layers/CodexAdapter.ts";
@@ -6589,18 +6594,126 @@ describe("ProviderRuntimeIngestion", () => {
       ]);
       expect(refusals[0]?.summary).toBe("Command refused in a read-only stage");
 
-      emitRequest(harness, turnId, "req-soft-3", "git push origin main", true);
+      // A model that tries something else after each refusal keeps going: 14 different refused
+      // operations leave the turn running, and the 15th fails it.
+      for (let index = 3; index <= 14; index += 1)
+        emitRequest(harness, turnId, `req-soft-${index}`, `touch file-${index}`, true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+      expect(harness.interruptedTurns).toEqual([]);
+
+      emitRequest(harness, turnId, "req-soft-15", "git push origin main", true);
       const failed = await waitForThread(
         harness.engine,
         (thread) => thread.session?.status === "error",
       );
-      expect(failed.session?.lastError).toContain("attempted 3 operations");
+      expect(failed.session?.lastError).toContain("attempted 15 operations");
       expect(failed.session?.lastError).toContain("git push origin main");
       expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
       expect(harness.requestResponses).toEqual([]);
       expect(harness.interruptedTurns).toEqual([
         expect.objectContaining({ threadId: "thread-1", turnId }),
       ]);
+    });
+
+    it("fails a turn that asks for the same refused operation three times", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-stuck");
+      await startProfiledTurn(harness, turnId);
+      const refused = "touch marker (`touch` is not on the read-only allowlist)";
+
+      emitRequest(harness, turnId, "req-stuck-1", refused, true);
+      emitRequest(harness, turnId, "req-other", "rm -rf build", true);
+      emitRequest(harness, turnId, "req-stuck-2", refused, true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+
+      emitRequest(harness, turnId, "req-stuck-3", refused, true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("asked 3 times for the same operation");
+      expect(failed.session?.lastError).toContain(refused);
+      expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
+      expect(harness.interruptedTurns).toEqual([
+        expect.objectContaining({ threadId: "thread-1", turnId }),
+      ]);
+    });
+
+    it("does not take refusals with hidden inputs for the same operation", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-hidden-inputs");
+      await startProfiledTurn(harness, turnId);
+
+      // Every refused computer-control request carries this one text, whatever it asked for.
+      for (const id of ["a", "b", "c", "d"])
+        emitRequest(harness, turnId, `req-hidden-${id}`, ACP_HIDDEN_TOOL_INPUTS_DETAIL, true);
+      await harness.drain();
+      const running = await readThread(harness);
+      expect(running?.session?.status).toBe("running");
+      expect(running?.session?.lastError ?? null).toBeNull();
+      expect(harness.interruptedTurns).toEqual([]);
+
+      // They still count toward the turn's limit.
+      for (let index = 5; index <= 14; index += 1)
+        emitRequest(harness, turnId, `req-hidden-${index}`, ACP_HIDDEN_TOOL_INPUTS_DETAIL, true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+      emitRequest(harness, turnId, "req-hidden-15", ACP_HIDDEN_TOOL_INPUTS_DETAIL, true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("attempted 15 operations");
+    });
+
+    it("recognises a repeated request that names no command by its parameters", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-params-detail");
+      await startProfiledTurn(harness, turnId);
+      // What the ACP adapters record for such a request: its parameters without the tool
+      // call's id, which is new on every request.
+      const detailOf = (toolCallId: string) =>
+        acpReadOnlyRefusalDetail(
+          JSON.stringify(
+            acpRequestWithoutToolCallId({
+              sessionId: "session-1",
+              toolCall: { toolCallId, kind: "other", title: "Do something" },
+            }),
+          ),
+          "other operations are not allowed in a read-only stage",
+        );
+      expect(detailOf("call-1")).toBe(detailOf("call-2"));
+      expect(detailOf("call-1")).not.toContain("call-1");
+
+      emitRequest(harness, turnId, "req-params-1", detailOf("call-1"), true);
+      emitRequest(harness, turnId, "req-params-2", detailOf("call-2"), true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+
+      emitRequest(harness, turnId, "req-params-3", detailOf("call-3"), true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("asked 3 times for the same operation");
+    });
+
+    it("keeps the reason when the refused command is long", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-long-command");
+      await startProfiledTurn(harness, turnId);
+      const refused = `cat ${"very/long/path/".repeat(40)}x > out (output may only be redirected to /dev/null)`;
+
+      for (const id of ["a", "b", "c"])
+        emitRequest(harness, turnId, `req-long-${id}`, refused, true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("cat very/long/path/");
+      expect(failed.session?.lastError).toContain("(output may only be redirected to /dev/null)");
     });
 
     it("keeps the first violation instead of overwriting it with later ones", async () => {

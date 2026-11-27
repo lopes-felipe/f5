@@ -91,6 +91,7 @@ import { ProviderUpdateAdvisor } from "./provider/Services/ProviderUpdateAdvisor
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
 import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime";
 import { ProjectMcpConfigServiceLive } from "./mcp/ProjectMcpConfigService";
+import { McpRepositoryServersLive } from "./mcp/McpRepositoryServers";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./mcp/McpRuntimeService";
 import { McpRuntimeDiagnosticsLive } from "./mcp/McpRuntimeDiagnostics";
@@ -105,6 +106,7 @@ import {
 } from "./mcp/PreviewMcpHttpServer";
 import { McpHub, McpHubLive } from "./mcp/hub/McpHub";
 import { McpHubAuth, McpHubAuthLive } from "./mcp/hub/McpHubAuth";
+import { McpHubGovernanceLive } from "./mcp/hub/McpHubGovernanceLive";
 import { StorageMaintenanceLive } from "./storage/StorageMaintenance";
 import { PrHubAdvisoryServiceLive } from "./prHub/Layers/PrHubAdvisoryService";
 import { PrHubFederationLive, PrHubFederatedServiceLive } from "./prHub/Layers/PrHubFederation";
@@ -211,9 +213,13 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
     const projectMcpConfigRepositoryLayer = ProjectMcpConfigRepositoryLive;
+    const mcpRepositoryServersLayer = McpRepositoryServersLive.pipe(
+      Layer.provide(ProjectionProjectRepositoryLive),
+    );
     const projectMcpConfigServiceLayer = ProjectMcpConfigServiceLive.pipe(
       Layer.provide(projectMcpConfigRepositoryLayer),
       Layer.provide(ServerSecretStoreLive),
+      Layer.provide(mcpRepositoryServersLayer),
     );
     const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, {
       native: nativeEventLogger,
@@ -234,11 +240,16 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(previewAutomationBrokerLayer),
     );
     const codexMcpEventBusLayer = CodexMcpEventBusLive;
+    // Ask policy, tool pins, conversation toggles and the call log; the provider
+    // service shows its approvals and routes the answers back.
+    const mcpHubGovernanceLayer = McpHubGovernanceLive.pipe(Layer.provide(codexMcpEventBusLayer));
     // Mounted on the same loopback listener; pushes status over the MCP event bus.
     const mcpHubLayer = McpHubLive.pipe(
       Layer.provide(previewMcpHttpServerLayer),
       Layer.provide(codexMcpEventBusLayer),
       Layer.provide(ServerSecretStoreLive),
+      Layer.provide(mcpHubGovernanceLayer),
+      Layer.provide(projectMcpConfigServiceLayer),
     );
     // Sign-in shares the hub's token storage, so a new token reaches open connections.
     const mcpHubAuthLayer = McpHubAuthLive.pipe(
@@ -288,6 +299,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(projectMcpConfigServiceLayer),
       Layer.provide(computerAutomationBrokerLayer),
       Layer.provide(previewAutomationBrokerLayer),
+      Layer.provide(mcpHubGovernanceLayer),
     );
     const providerUpdateAdvisorLayer = ProviderUpdateAdvisorLive.pipe(
       Layer.provide(providerRegistryLayer),
@@ -344,11 +356,13 @@ export function makeServerProviderLayer(): Layer.Layer<
       codexOAuthManagerLayer,
       mcpRuntimeServiceLayer,
       projectMcpConfigServiceLayer,
+      mcpRepositoryServersLayer,
       previewAutomationBrokerLayer,
       computerAutomationBrokerLayer,
       previewMcpHttpServerLayer,
       mcpHubLayer,
       mcpHubAuthLayer,
+      mcpHubGovernanceLayer,
       ThreadMcpBrokerLive,
     );
   }).pipe(Effect.provide(ProviderTerminalEventRepositoryLive), Layer.unwrap);

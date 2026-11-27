@@ -22,7 +22,7 @@ import {
   type McpHubAttachment,
   type McpHubAttachmentUpdate,
 } from "../../mcp/hub/McpHub.ts";
-import { hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
+import { hubAsksForClaudeTool, hubEndpointsForClaude } from "../../mcp/hub/providerHubServers.ts";
 import { isF5ReadOnlyThreadTool, makeClaudeThreadMcpServer } from "./claudeThreadTools.ts";
 import {
   makeClaudeAssistantText,
@@ -6117,6 +6117,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               );
               if (mandatoryDenial)
                 return { behavior: "deny", message: mandatoryDenial } satisfies PermissionResult;
+              // F5's hub asks before this call itself (Ask policy or a changed tool);
+              // allowing Claude's prompt keeps it to one question. Never ahead of a check
+              // that would deny it: read-only workflow stages, removal safety, and plan mode
+              // without approvals still decide below.
+              if (
+                !input.workflowExecutionProfile &&
+                !(
+                  context.configuredBase?.permissionMode === "plan" &&
+                  input.approvalPolicy === "never"
+                ) &&
+                !claudeRemovalSafetyDenial(
+                  toolName,
+                  context.configuredBase?.permissionMode ?? context.basePermissionMode,
+                  callbackOptions,
+                ) &&
+                hubAsksForClaudeTool(context.mcpHubAttachment, toolName, callbackOptions.mcpServer)
+              )
+                return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
               const dynamicDenial = yield* evaluateAgentBrowserToolPolicy(threadId, toolName, {
                 input: toolInput,
                 mcpServer: callbackOptions.mcpServer,
