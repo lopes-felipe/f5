@@ -826,6 +826,15 @@ export function splitUtf8Chunks(text: string, maxBytes: number, level = 0): stri
  * entry only when its value changes. Sections over the per-entry cap are split
  * into zero-padded `_01`, `_02`, ... keys so they keep their order.
  */
+/**
+ * Sent to a policy-enforced Codex read-only stage. Where Codex's sandbox can't start, Codex asks
+ * to rerun only its own safe commands outside it; any other command fails unless the model
+ * escalates it (docs/reviews/cursor-live-gates.md, gate G3b). Harmless when Codex asks before
+ * every command anyway.
+ */
+export const CODEX_READ_ONLY_ESCALATION_HINT =
+  'If a shell command fails because the sandbox can\'t start, rerun it with `sandbox_permissions: "require_escalated"` and a short justification; F5 approves read-only commands and refuses the rest.';
+
 export function buildCodexAdditionalContext(
   input: SharedInstructionInput,
 ): Record<string, CodexAdditionalContextEntry> {
@@ -836,6 +845,12 @@ export function buildCodexAdditionalContext(
     [CODEX_RESUMED_CONTEXT_KEY, buildResumedContextSection(input)],
     ["f5_runtime_context", buildRuntimeContextSection(input)],
     ["f5_workflow_contract", buildWorkflowHostContract(input.workflowExecutionProfile)],
+    [
+      "f5_workflow_escalation",
+      input.workflowExecutionProfile && input.readOnlyEnforcement === "policy"
+        ? CODEX_READ_ONLY_ESCALATION_HINT
+        : undefined,
+    ],
   ];
   const context: Record<string, CodexAdditionalContextEntry> = {};
   for (const [key, value] of sections) {
