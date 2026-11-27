@@ -6,8 +6,8 @@
 // It runs under Bun, which loads F5's TypeScript home helper directly.
 //
 //   bun apps/server/integration/codexReadOnlyEscalationGate.mjs --auth <codex auth.json>
-//     [--codex <binary>] [--root <dir>] [--model <slug>] [--gates G3,G3b,G3c,G4,G4b,G4c]
-//     [--link-rules]
+//     [--codex <binary>] [--root <dir>] [--model <slug>] [--gates G3,G3b,G3c,G4,G4b,G4c,G8]
+//     [--link-rules] [--no-git-overrides]
 //
 // Everything happens in a fresh folder under ~/.f5-codex-gates (or --root): a source Codex home
 // whose auth.json is a symlink to --auth and whose rules/default.rules allows `touch`, the
@@ -30,6 +30,10 @@
 //   G4b An edit: the file change must ask, is declined, and the file is unchanged.
 //   G4c A web search still works (it runs server-side).
 //   G6  The read-only home's auth.json is still a link to the source after the session.
+//   G8  `git log -p -1 -- notes.txt`, where the workspace's own Git config names a textconv
+//       program for that file: with F5's Git overrides in the launch environment the program
+//       must not run and the command must still print the change. With --no-git-overrides (the
+//       control) the program runs.
 //
 // G5 (a repository's .codex/rules blocks the stage) is F5's own guard and is covered by unit
 // tests. Each check prints PASS, FAIL or INCONCLUSIVE; the script exits non-zero unless all pass.
@@ -58,9 +62,11 @@ if (!authPath || !existsSync(authPath)) {
   console.error("--auth <path to a signed-in Codex home's auth.json> is required");
   process.exit(2);
 }
-const ALL_GATES = ["G3", "G3b", "G3c", "G4", "G4b", "G4c"];
+const ALL_GATES = ["G3", "G3b", "G3c", "G4", "G4b", "G4c", "G8"];
 // Control for G4: link `rules` into the read-only home too, so the allow rule applies.
 const linkRules = argv.includes("--link-rules");
+// Control for G8: launch without F5's Git overrides, so the workspace's helper runs.
+const noGitOverrides = argv.includes("--no-git-overrides");
 // The line F5 adds to a policy-enforced Codex read-only stage (buildCodexAdditionalContext).
 const ESCALATION_HINT =
   'If a shell command fails because the sandbox can\'t start, rerun it with `sandbox_permissions: "require_escalated"` and a short justification; F5 approves read-only commands and refuses the rest.';
@@ -101,6 +107,15 @@ git("-c", "user.name=gate", "-c", "user.email=gate@example.invalid", "add", ".")
 git("-c", "user.name=gate", "-c", "user.email=gate@example.invalid", "commit", "-qm", "init");
 const headSha = git("rev-parse", "HEAD");
 const authInode = lstatSync(path.join(readOnlyHome, "auth.json"));
+// G8: the workspace's own Git config names a program for diffs of notes.txt (a textconv,
+// selected by an attribute kept outside the tree). It leaves a marker when it runs.
+const helperMarker = path.join(root, "helper-marker");
+const helper = path.join(root, "textconv.sh");
+writeFileSync(helper, `#!/bin/sh\ntouch ${JSON.stringify(helperMarker)}\ncat "$1"\n`, {
+  mode: 0o755,
+});
+git("config", "diff.gate.textconv", helper);
+writeFileSync(path.join(workspace, ".git", "info", "attributes"), "notes.txt diff=gate\n");
 
 const results = [];
 const record = (gate, verdict, detail) => {
@@ -108,8 +123,17 @@ const record = (gate, verdict, detail) => {
   console.log(`${verdict.padEnd(12)} ${gate}  ${detail}`);
 };
 
-// The config F5 passes every read-only stage.
-const childEnvironment = { ...process.env, CODEX_HOME: readOnlyHome };
+// The environment F5 gives a policy-enforced stage: no optional Git locks, pager or lazy fetch,
+// and an override for each helper the workspace's own Git config defines (readOnlyGitConfig.ts).
+const { READ_ONLY_WORKFLOW_ENVIRONMENT } = await import("../src/provider/readOnlyWorkflowShell.ts");
+const { withReadOnlyGitConfig } = await import("../src/provider/readOnlyGitConfig.ts");
+const baseEnvironment = { ...process.env, CODEX_HOME: readOnlyHome };
+const childEnvironment = noGitOverrides
+  ? baseEnvironment
+  : await withReadOnlyGitConfig(
+      { ...baseEnvironment, ...READ_ONLY_WORKFLOW_ENVIRONMENT },
+      workspace,
+    );
 const child = spawn(
   codexBinary,
   ["app-server", ...(await codexReadOnlyStageConfigArgs(sourceHome, childEnvironment))],
@@ -435,6 +459,39 @@ try {
       "G4b",
       notesUnchanged ? (askedEdit ? "PASS" : "INCONCLUSIVE") : "FAIL",
       `asked=${askedEdit} unchanged=${notesUnchanged} requests=${JSON.stringify(describe(g4b.requests))} items=${JSON.stringify(g4b.items.map((item) => item.type))}`,
+    );
+  }
+  if (selected.has("G8")) {
+    // G8: F5's Git overrides reach the commands Codex runs. Codex passes its shell a filtered
+    // environment; if it dropped the `GIT_CONFIG_KEY_n` variables and kept `GIT_CONFIG_COUNT`,
+    // every Git command would fail, and if it dropped them all the helper would run.
+    const command = "git log -p -1 -- notes.txt";
+    decide = acceptOnly([command]);
+    const g8 = await runTurn(
+      threadId,
+      `${ESCALATION_HINT}\n\nRun the shell command \`${command}\` exactly as written and reply with its output. Do not run anything else.`,
+    );
+    const asked = askedFor(g8.requests, command);
+    const ran = acceptedAndRan(g8, command, "+original");
+    const helperRan = existsSync(helperMarker);
+    record(
+      noGitOverrides ? "G8 control (no overrides)" : "G8",
+      noGitOverrides
+        ? helperRan
+          ? "PASS"
+          : "INCONCLUSIVE"
+        : helperRan
+          ? "FAIL"
+          : ran
+            ? "PASS"
+            : "INCONCLUSIVE",
+      `asked=${asked} ran=${ran} helperRan=${helperRan} overrides=${JSON.stringify(
+        Array.from({ length: Number(childEnvironment.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [
+          childEnvironment[`GIT_CONFIG_KEY_${index}`],
+          childEnvironment[`GIT_CONFIG_VALUE_${index}`],
+          // Only the overrides this gate is about, not whatever Git config the shell carries.
+        ]).filter(([key]) => /^(?:core\.fsmonitor|diff\.|filter\.|gpg)/.test(String(key))),
+      )} commands=${JSON.stringify(commandItems(g8.items).map((item) => ({ command: item.command, exitCode: item.exitCode, output: String(item.aggregatedOutput ?? "").slice(0, 300) })))} replies=${JSON.stringify(replies(g8.items))}`,
     );
   }
   if (selected.has("G4c")) {
