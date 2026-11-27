@@ -35,7 +35,9 @@ import type {
   ReadOnlyEnforcement,
 } from "@t3tools/contracts";
 import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "./provider/readOnlyWorkflowShell.ts";
-import { withReadOnlyGitConfig } from "./provider/readOnlyGitConfig.ts";
+import { makeReadOnlyGitGuard } from "./provider/readOnlyGitConfig.ts";
+import { codexApprovalShellCommand } from "./provider/codex/CodexProtocolHelpers.ts";
+import { appendGitConfigPairs } from "./git/gitConfigEnvironment.ts";
 import { readCodexCommandApprovalOffer } from "./codex/commandApprovalOffer.ts";
 import { describeMcpElicitation } from "./codex/mcpElicitation.ts";
 import { buildElicitationDescriptor } from "@t3tools/shared/elicitationForm";
@@ -368,9 +370,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ...(unsandboxedReadOnly ? READ_ONLY_WORKFLOW_ENVIRONMENT : {}),
         },
       );
+      // A repository's own Git helpers must not run for those commands (readOnlyGitConfig.ts).
+      // Requirements can still send the stage to the sandbox, where nothing is approved.
+      const readOnlyGitGuard = unsandboxedReadOnly
+        ? await makeReadOnlyGitGuard(resolvedCwd, baseChildEnvironment)
+        : undefined;
       const childEnvironment = withBrowserOpenThreadToken(
-        unsandboxedReadOnly
-          ? await withReadOnlyGitConfig(baseChildEnvironment, resolvedCwd)
+        readOnlyGitGuard
+          ? appendGitConfigPairs({ ...baseChildEnvironment }, readOnlyGitGuard.pairs)
           : baseChildEnvironment,
         threadId,
       );
@@ -534,6 +541,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           input.readOnlyEnforcement ?? "sandbox",
         );
       else delete context.readOnlyMode;
+      if (readOnlyGitGuard) context.readOnlyGitGuard = readOnlyGitGuard;
+      else delete context.readOnlyGitGuard;
       if (readOnlyHomePath) await this.assertNoCodexProjectRules(context, input.cwd ?? processCwd);
       const threadOpenParams = buildCodexThreadOpenRequestParams({
         cliVersion,
@@ -3565,6 +3574,40 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   ): boolean {
     const verdict = codexReadOnlyPolicyDecision(request.method, request.params);
     if (!verdict) return false;
+    const command =
+      verdict.decision === "accept" && context.readOnlyGitGuard
+        ? codexApprovalShellCommand(request.method, request.params)
+        : undefined;
+    if (!command || !context.readOnlyGitGuard) {
+      this.respondToReadOnlyPolicyRequest(context, request, approvalRequest, route, verdict);
+      return true;
+    }
+    // The classifier accepted the text. Git also runs programs a repository's config names, so
+    // the repositories the command reaches are read before it is approved.
+    void context.readOnlyGitGuard
+      .refusal(command.script, command.cwd)
+      .catch((error: unknown) => (error instanceof Error ? error.message : String(error)))
+      .then((reason) =>
+        this.respondToReadOnlyPolicyRequest(
+          context,
+          request,
+          approvalRequest,
+          route,
+          reason === undefined ? verdict : { decision: "decline", reason },
+        ),
+      );
+    return true;
+  }
+
+  private respondToReadOnlyPolicyRequest(
+    context: CodexSessionContext,
+    request: JsonRpcRequest,
+    approvalRequest: NonNullable<ReturnType<CodexAppServerManager["approvalRequestForMethod"]>>,
+    route: { readonly turnId?: TurnId | undefined; readonly itemId?: ProviderItemId | undefined },
+    verdict: NonNullable<ReturnType<typeof codexReadOnlyPolicyDecision>>,
+  ): void {
+    // The repository check is asynchronous: the session can have ended meanwhile.
+    if (!this.isLiveContext(context)) return;
     const commandOffer =
       approvalRequest.method === "item/commandExecution/requestApproval"
         ? readCodexCommandApprovalOffer(request.params)
@@ -3585,7 +3628,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             decision,
           );
     this.writeServerRequestResponse(context, { id: request.id, result });
-    if (decision === "accept") return true;
+    if (decision === "accept") return;
     this.emitEvent({
       ...context.mcpEventIdentity,
       id: EventId.makeUnsafe(timeOrderedUuid()),
@@ -3604,7 +3647,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         params: request.params,
       },
     });
-    return true;
   }
 
   private handleServerRequest(context: CodexSessionContext, request: JsonRpcRequest): void {

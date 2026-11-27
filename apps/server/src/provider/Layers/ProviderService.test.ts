@@ -1060,20 +1060,26 @@ it.effect.each([
 );
 
 it.effect.each([
-  { effective: "sandbox", lines: ["sandbox", "sandbox"] },
-  { effective: undefined, lines: ["policy"] },
+  // What the adapter reports at the first start and at the recovered one (undefined: as asked).
+  { effective: ["sandbox", "sandbox"], lines: ["sandbox"] },
+  { effective: [undefined, undefined], lines: ["policy"] },
+  // Requirements were relaxed in between: "sandboxed" must not stay over an unsandboxed stage.
+  { effective: ["sandbox", undefined], lines: ["sandbox", "policy"] },
+  { effective: [undefined, "sandbox"], lines: ["policy", "sandbox"] },
 ] as const)(
-  "labels a recovered read-only stage again only when it runs stricter than requested (effective: $effective)",
+  "labels a recovered read-only stage again only when its mode changed (effective: $effective)",
   ({ effective, lines }) => {
     const codex = makeFakeCodexAdapter();
-    if (effective) {
-      const start = codex.startSession.getMockImplementation()!;
-      codex.startSession.mockImplementation((input) =>
-        start(input).pipe(
-          Effect.map((session) => ({ ...session, readOnlyEnforcement: effective })),
+    const start = codex.startSession.getMockImplementation()!;
+    let starts = 0;
+    codex.startSession.mockImplementation((input) => {
+      const reported = effective[Math.min(starts++, effective.length - 1)];
+      return start(input).pipe(
+        Effect.map((session) =>
+          reported ? { ...session, readOnlyEnforcement: reported } : session,
         ),
       );
-    }
+    });
     const adapter = {
       ...codex.adapter,
       capabilities: { ...codex.adapter.capabilities, enforcesReadOnlyWorkflow: true },

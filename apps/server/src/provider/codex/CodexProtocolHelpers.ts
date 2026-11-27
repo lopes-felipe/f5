@@ -13,6 +13,7 @@ import {
   isShellProgram,
   unwrapShellInvocation,
 } from "../readOnlyWorkflowShell.ts";
+import type { ReadOnlyGitGuard } from "../readOnlyGitConfig.ts";
 import {
   codexCommandApprovalDecision,
   type CodexCommandApprovalOffer,
@@ -184,6 +185,8 @@ export interface CodexSessionContext {
   workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   /** How the read-only workflow stage runs Codex; see `CodexReadOnlyMode`. */
   readOnlyMode?: CodexReadOnlyMode;
+  /** Checks the repositories a command's Git calls reach before F5 approves it. */
+  readOnlyGitGuard?: ReadOnlyGitGuard;
   modelContextWindowCatalog: ReadonlyMap<string, number>;
   /** Capabilities this session's `model/list` reported, keyed by slug. */
   reportedModelCapabilities?: ReadonlyMap<string, ModelCapabilities>;
@@ -878,6 +881,27 @@ export function codexReadOnlyPolicyDecision(
     default:
       return undefined;
   }
+}
+
+/**
+ * The script of a command request as the classifier reads it, and the folder Codex says it
+ * starts in, for the check of the repositories its Git calls reach (`ReadOnlyGitGuard`).
+ * Undefined for a request that isn't a command.
+ */
+export function codexApprovalShellCommand(
+  method: string,
+  params: unknown,
+): { readonly script: string; readonly cwd?: string } | undefined {
+  if (method !== "item/commandExecution/requestApproval" && method !== "execCommandApproval")
+    return undefined;
+  const record = asObject(params);
+  const command = codexApprovalCommand(record?.command);
+  if (command === undefined) return undefined;
+  const cwd = record?.cwd;
+  return {
+    script: unwrapShellInvocation(command),
+    ...(typeof cwd === "string" && cwd.length > 0 ? { cwd } : {}),
+  };
 }
 
 /**

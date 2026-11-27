@@ -135,10 +135,25 @@ shows the template, cost and per-step context.
     for more permissions are refused. Antigravity launches without `--sandbox`, under the same
     allowlist.
   - Commands F5 approves without a sandbox (Cursor always, Codex and Antigravity when
-    policy-enforced) can't run the repository's own Git helpers: an external diff, a diff
-    driver's command or textconv, a clean or smudge filter, an fsmonitor hook or a GPG program set
-    in its `.git/config`. Git refuses to run them, so a command that needs one fails. Helpers from
-    your own Git config, such as Git LFS's filters, still run.
+    policy-enforced) can't run a repository's own Git helpers: an external diff, a diff driver's
+    command or textconv, a clean or smudge filter, a filter process, an fsmonitor hook, a pager
+    or a GPG program set in its `.git/config`. Helpers from your own Git config, such as a
+    globally installed Git LFS, still run.
+    - **In the stage's folder:** when the stage starts, F5 turns off the helpers that
+      repository's config defines. A textconv or a clean or smudge filter passes the content
+      through instead, so `git diff` and `git status` keep working and show what is stored. A
+      file that Git LFS manages through the repository's own config (`git lfs install --local`)
+      then shows its stored pointer and can appear as modified. An external diff or a diff
+      driver's command can't be stood in for, so `git diff` fails with `cannot run` for the
+      paths that need it; `git diff --no-ext-diff` works.
+    - **Anywhere else:** before F5 approves a command that runs Git, it reads the config of
+      each repository the command can reach (through `cd`, `git -C`, a submodule or a nested
+      repository) and refuses the command when one defines a helper F5 didn't turn off. That
+      includes a helper added to the stage's own repository after the stage started. The model
+      is told which setting it was and reads that repository with `gh` or F5's forge tools
+      instead.
+    - Git also runs without a pager and never fetches a missing object from a partial clone's
+      remote.
   - If your organisation's Codex requirements (`allowed_approval_policies` or
     `allowed_sandbox_modes` in a managed `requirements.toml`) don't allow `untrusted` with
     `danger-full-access`, Codex can't be made to ask before every command:

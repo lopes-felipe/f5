@@ -691,8 +691,23 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         yield* PubSub.publish(runtimeEventPubSub, event);
       });
 
+    /**
+     * What each thread's "Read-only stage: …" line last said, so a recovered stage repeats the
+     * line only when its mode changed. Kept in memory: after a restart the comparison falls back
+     * to the requested mode, which is what the line says unless the adapter ended up stricter.
+     */
+    const publishedReadOnlyEnforcement = new Map<ThreadId, ReadOnlyEnforcement>();
+
     /** The thread's "Read-only stage: …" line, through `session.configured`. */
     const publishReadOnlyEnforcement = (
+      session: ProviderSession,
+      providerInstanceId: ProviderInstanceId,
+      enforcement: ReadOnlyEnforcement,
+    ) =>
+      Effect.sync(() => publishedReadOnlyEnforcement.set(session.threadId, enforcement)).pipe(
+        Effect.andThen(publishReadOnlyEnforcementEvent(session, providerInstanceId, enforcement)),
+      );
+    const publishReadOnlyEnforcementEvent = (
       session: ProviderSession,
       providerInstanceId: ProviderInstanceId,
       enforcement: ReadOnlyEnforcement,
@@ -1601,20 +1616,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             generation: resumedGeneration,
           }),
         };
-        // A recovered stage keeps the line recorded at its start when it runs as requested. When
-        // the adapter ended up stricter (Codex requirements), the line says so again, since the
-        // binding records only the requested value.
+        // A recovered stage keeps the line it has when it still runs that way. When the mode
+        // differs from what the line last said, the line is written again: the adapter can end
+        // up stricter than requested (Codex requirements), and can stop being stricter when the
+        // requirements change, which would leave "sandboxed" over a stage that no longer is.
         const requestedEnforcement = recoveredInstructionContext?.readOnlyEnforcement;
+        // An adapter that reports nothing runs the stage as requested.
+        const recoveredEnforcement = resumed.readOnlyEnforcement ?? requestedEnforcement;
         if (
           requestedEnforcement !== undefined &&
-          resumed.readOnlyEnforcement !== undefined &&
-          resumed.readOnlyEnforcement !== requestedEnforcement
+          recoveredEnforcement !== undefined &&
+          recoveredEnforcement !==
+            (publishedReadOnlyEnforcement.get(input.binding.threadId) ?? requestedEnforcement)
         )
-          yield* publishReadOnlyEnforcement(
-            resumed,
-            bindingInstanceId,
-            resumed.readOnlyEnforcement,
-          );
+          yield* publishReadOnlyEnforcement(resumed, bindingInstanceId, recoveredEnforcement);
         yield* Effect.logInfo("provider service resumed provider session from persisted binding", {
           operation: input.operation,
           threadId: input.binding.threadId,

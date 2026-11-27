@@ -1,4 +1,5 @@
 import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
+import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 import * as os from "node:os";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -398,10 +399,25 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         const serverConfig = yield* ServerConfig;
         const tempDir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "cursor-acp-")));
         const envLogPath = path.join(tempDir, "env.ndjson");
+        // A repository whose own config names a program Git would run for a diff.
+        const repo = path.join(tempDir, "repo");
+        execFileSync("git", ["init", "-q", repo]);
+        execFileSync("git", ["-C", repo, "config", "diff.external", "./helper.sh"]);
+        const pairIndexes = Array.from({ length: 12 }, (_, index) => index);
         const wrapperPath = writeAcpWrapper(path.join(tempDir, "fake-agent"), mockAgentPath, {
           envLog: {
             path: envLogPath,
-            keys: ["GIT_OPTIONAL_LOCKS", "CURSOR_CONFIG_DIR", "GIT_CONFIG_COUNT"],
+            keys: [
+              "GIT_OPTIONAL_LOCKS",
+              "GIT_PAGER",
+              "GIT_NO_LAZY_FETCH",
+              "CURSOR_CONFIG_DIR",
+              "GIT_CONFIG_COUNT",
+              ...pairIndexes.flatMap((index) => [
+                `GIT_CONFIG_KEY_${index}`,
+                `GIT_CONFIG_VALUE_${index}`,
+              ]),
+            ],
           },
         });
         yield* serverSettings.updateSettings({
@@ -415,7 +431,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           yield* adapter.startSession({
             threadId,
             provider: ProviderDriverKind.make("cursor"),
-            cwd: process.cwd(),
+            cwd: repo,
             runtimeMode: "full-access",
             ...(profiled ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
             modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
@@ -427,11 +443,25 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           launches.map((entry) => entry.GIT_OPTIONAL_LOCKS),
           ["0", process.env.GIT_OPTIONAL_LOCKS ?? null],
         );
-        // The read-only launch appends F5's Git helper overrides (readOnlyGitConfig.ts).
-        const [readOnlyCount, ordinaryCount] = launches.map((entry) =>
-          Number(entry.GIT_CONFIG_COUNT ?? 0),
+        // No pager from the repository's config, and no fetch of a missing object.
+        assert.deepEqual(
+          launches.map((entry) => [entry.GIT_PAGER, entry.GIT_NO_LAZY_FETCH]),
+          [
+            ["cat", "1"],
+            [process.env.GIT_PAGER ?? null, process.env.GIT_NO_LAZY_FETCH ?? null],
+          ],
         );
-        assert.ok(readOnlyCount! > ordinaryCount!, `${readOnlyCount} > ${ordinaryCount}`);
+        // The read-only launch appends F5's Git helper overrides (readOnlyGitConfig.ts): the
+        // one every stage gets, and one for the helper this repository's config defines.
+        const [readOnlyPairs, ordinaryPairs] = launches.map((entry) =>
+          pairIndexes
+            .slice(0, Number(entry.GIT_CONFIG_COUNT ?? 0))
+            .map((index) => [entry[`GIT_CONFIG_KEY_${index}`], entry[`GIT_CONFIG_VALUE_${index}`]]),
+        );
+        assert.deepEqual(readOnlyPairs!.slice(ordinaryPairs!.length), [
+          ["core.fsmonitor", "false"],
+          ["diff.external", ""],
+        ]);
         const readOnlyConfigDir = path.join(
           serverConfig.providerHomesDir ?? path.join(serverConfig.stateDir, "provider-homes"),
           "cursor-readonly",
@@ -1935,6 +1965,61 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
         yield* Fiber.interrupt(fiber);
         yield* adapter.stopSession(threadId);
       }),
+  );
+
+  it.effect("refuses a Git command that reaches a repository whose config names a helper", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-workflow-git-guard");
+      const tempDir = yield* scopedTempDir("cursor-workflow-git-guard-");
+      const stage = path.join(tempDir, "stage");
+      const other = path.join(tempDir, "other");
+      for (const repo of [stage, other]) execFileSync("git", ["init", "-q", repo]);
+      // F5's overrides cover the stage's own repository, not this one.
+      execFileSync("git", ["-C", other, "config", "diff.external", "./helper.sh"]);
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+          T3_ACP_PERMISSION_REQUEST_COUNT: "2",
+          T3_ACP_PERMISSION_COMMAND: `git -C ${other} diff`,
+          T3_ACP_SECOND_PERMISSION_COMMAND: "git status --short",
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+        }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const { events, fiber } = yield* collectThreadEvents(threadId);
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: stage,
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "review the PR",
+        attachments: [],
+        workflowExecutionProfile: "unattended-readonly",
+      });
+
+      const opened = events.filter((event) => event.type === "request.opened");
+      assert.equal(opened.length, 1);
+      const denied = opened[0];
+      assert.ok(denied?.type === "request.opened");
+      assert.equal(denied.payload.autoDeclined, true);
+      assert.include(denied.payload.detail ?? "", `git -C ${other} diff`);
+      // The model is told which setting it was.
+      assert.include(denied.payload.detail ?? "", "sets `diff.external`");
+      const outcomes = responsesFor(yield* Effect.promise(() => readJsonLines(requestLogPath)))
+        .map((line) => (line.result as { outcome?: { optionId?: string } } | undefined)?.outcome)
+        .flatMap((outcome) => (outcome?.optionId ? [outcome.optionId] : []));
+      assert.deepEqual(outcomes, ["reject-once", "allow-once"]);
+      yield* Fiber.interrupt(fiber);
+      yield* adapter.stopSession(threadId);
+    }),
   );
 
   it.effect("checks the workspace again before every read-only turn", () =>
