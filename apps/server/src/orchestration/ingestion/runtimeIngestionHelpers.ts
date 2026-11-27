@@ -1,5 +1,6 @@
 import { readMcpAppReferenceForTool, readMcpAppToolResult } from "@t3tools/shared/mcpApp";
 import { stringifyWithinBytes } from "@t3tools/shared/boundedJson";
+import { READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY } from "@t3tools/shared/readOnlyEnforcement";
 import { isPreparedComputerEvent } from "../../provider/prepareAutomationRuntimeEvent";
 import { computerToolHeading } from "@t3tools/shared/computerAction";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
@@ -1543,6 +1544,11 @@ export function runtimeEventToActivities(
       const instructionContractVersion = instructionProfile?.contractVersion;
       const instructionSupplementVersion = instructionProfile?.providerSupplementVersion;
       const instructionStrategy = instructionProfile?.strategy;
+      const readOnlyEnforcementSummary =
+        typeof config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY] === "string" &&
+        config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY].trim().length > 0
+          ? config[READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY].trim()
+          : undefined;
 
       return [
         {
@@ -1550,7 +1556,7 @@ export function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: "info",
           kind: "runtime.configured",
-          summary: "Runtime configured",
+          summary: readOnlyEnforcementSummary ?? "Runtime configured",
           payload: compactThreadActivityPayload({
             kind: "runtime.configured",
             payload: {

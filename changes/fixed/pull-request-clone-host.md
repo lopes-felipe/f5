@@ -1,1 +1,0 @@
-- Checking out a fork pull request looks up the fork on the pull request's host.

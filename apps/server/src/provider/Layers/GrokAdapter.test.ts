@@ -1,5 +1,5 @@
 import { writeAcpWrapper } from "../../testUtils/cli.ts";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -18,16 +18,18 @@ import {
   ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { Cause, Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
+import { Cause, Effect, Exit, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
 
 import { vi } from "vitest";
 import * as GrokAcpSupport from "../acp/GrokAcpSupport.ts";
 import { ServerConfig } from "../../config.ts";
 import type { GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { makeGrokAdapter, type GrokAdapterLiveOptions } from "./GrokAdapter.ts";
+import { READ_ONLY_SHELL_GUIDE } from "../readOnlyShellGuide.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import type { InteractionSession } from "../../mcp/interactionMcpTools.ts";
 import type { PreviewMcpHttpServerShape } from "../../mcp/PreviewMcpHttpServer.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
 
 class GrokAdapter extends ServiceMap.Service<GrokAdapter, GrokAdapterShape>()(
   "t3/provider/Layers/GrokAdapter.test/GrokAdapter",
@@ -461,6 +463,106 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
   );
+  rootIt.live("refuses read-only workflow sessions in a workspace with Antigravity hooks", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-hooks-")),
+      );
+      const workspace = path.join(dir, "workspace");
+      const hooks = path.join(workspace, ".agents", "hooks.json");
+      mkdirSync(path.dirname(hooks), { recursive: true });
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1" },
+      });
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          instanceId: ProviderInstanceId.make("antigravity"),
+          antigravity: { readOnlyWorkflowCertified: () => true },
+        },
+      );
+      const threadId = ThreadId.make("antigravity-hooks");
+      const start = {
+        threadId,
+        provider: "antigravity" as const,
+        cwd: workspace,
+        runtimeMode: "full-access" as const,
+        workflowExecutionProfile: "unattended-readonly" as const,
+      };
+      yield* adapter.startSession(start);
+      writeFileSync(hooks, JSON.stringify({ hooks: { PreToolUse: [{ command: "id" }] } }));
+      const turnError = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Review",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.flip);
+      assert.include(
+        turnError.message,
+        `Antigravity can't run read-only workflow stages here: ${hooks} defines hooks`,
+      );
+      yield* adapter.stopSession(threadId);
+      const startError = yield* adapter.startSession(start).pipe(Effect.flip);
+      assert.include(startError.message, "defines hooks, which run shell commands");
+      // Ordinary sessions keep the workspace's hooks.
+      yield* adapter.startSession({ ...start, workflowExecutionProfile: undefined });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
+  rootIt.live("launches only read-only workflow sessions in Antigravity's sandbox", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-sandbox-")),
+      );
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1" },
+      });
+      const sandboxed: Array<boolean | undefined> = [];
+      const readOnly: Array<boolean | undefined> = [];
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          instanceId: ProviderInstanceId.make("antigravity"),
+          antigravity: { readOnlyWorkflowCertified: () => true },
+          makeRuntime: (input) => {
+            sandboxed.push(input.readOnlySandbox);
+            readOnly.push(input.readOnlyWorkflow);
+            return GrokAcpSupport.makeGrokAcpRuntime(input);
+          },
+        },
+      );
+      const base = {
+        provider: "antigravity" as const,
+        cwd: process.cwd(),
+        runtimeMode: "full-access" as const,
+      };
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-workflow"),
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-plain"),
+      });
+      // Where the sandbox can't start, F5 resolves the stage to policy: no --sandbox.
+      yield* adapter.startSession({
+        ...base,
+        threadId: ThreadId.make("antigravity-sandbox-policy"),
+        workflowExecutionProfile: "unattended-readonly",
+        readOnlyEnforcement: "policy",
+      });
+      assert.deepEqual(sandboxed, [true, undefined, false]);
+      assert.deepEqual(readOnly, [true, undefined, true]);
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-workflow"));
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-plain"));
+      yield* adapter.stopSession(ThreadId.make("antigravity-sandbox-policy"));
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
   rootIt.live("refuses workflow sessions on an uncertified or unknown Antigravity build", () =>
     Effect.gen(function* () {
       const dir = yield* Effect.promise(() =>
@@ -742,6 +844,26 @@ rootIt.live(
         (overtaken.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
         "completed",
       );
+      // A typed quota stop with no reset: the terminal carries the same limit, so ingestion can
+      // resolve its reset from the account afterwards.
+      const typed = yield* runTurn(
+        { T3_ACP_PROMPT_RESPONSE_TEXT: "Working on it.", F5_ACP_STOP_REASON: "refusal" },
+        "agy-native-refusal",
+      );
+      assert.equal(typed.errors.length, 1);
+      const typedLimit = (typed.errors[0]?.payload as { usageLimit?: unknown } | undefined)
+        ?.usageLimit;
+      assert.deepEqual(typedLimit, {
+        windows: [],
+        resetsAt: null,
+        resetSource: null,
+        evidence: "typed",
+      });
+      const typedCompleted = typed.completed.at(-1)?.payload as
+        | { state?: string; usageLimit?: unknown }
+        | undefined;
+      assert.equal(typedCompleted?.state, "failed");
+      assert.deepEqual(typedCompleted?.usageLimit, typedLimit);
     }).pipe(
       Effect.provide(
         ServerConfig.layerTest(process.cwd(), { prefix: "f5-agy-native-notice-test-" }).pipe(
@@ -1309,6 +1431,204 @@ rootIt.layer(
     }).pipe(Effect.scoped),
   );
 
+  /** A read-only workflow turn against an agent that asks to run `rm -rf build`. */
+  const refusedWorkflowTurn = (threadName: string, env: Record<string, string>) =>
+    Effect.gen(function* () {
+      const harness = yield* antigravityProfileAdapter({
+        env: {
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+          T3_ACP_PERMISSION_ANTIGRAVITY_SHAPE: "1",
+          T3_ACP_PERMISSION_COMMAND: "rm -rf build",
+          ...env,
+        },
+        options: () => ({
+          antigravity: {
+            accountRevision: Effect.succeed(0),
+            nativeReaders: () => Effect.succeed(false),
+            readOnlyWorkflowCertified: () => true,
+          },
+        }),
+      });
+      const threadId = ThreadId.make(threadName);
+      yield* harness.adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const turn = yield* harness.adapter
+        .sendTurn({
+          threadId,
+          input: "Review it",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.timeout("20 seconds"), Effect.exit);
+      const prompts = (yield* harness.requests()).flatMap((frame) => {
+        const request = frame as {
+          method?: string;
+          params?: { prompt?: ReadonlyArray<{ text?: string }> };
+        };
+        return request.method === "session/prompt"
+          ? [(request.params?.prompt ?? []).map((part) => part.text ?? "")]
+          : [];
+      });
+      yield* harness.adapter.stopSession(threadId).pipe(Effect.ignore);
+      return { ...harness, turn, prompts };
+    });
+
+  it.effect("tells a read-only stage the shell rules, and why a command was refused", () =>
+    Effect.gen(function* () {
+      const { events, turn, prompts } = yield* refusedWorkflowTurn("agy-refusal-reason", {});
+      assert.ok(Exit.isSuccess(turn));
+      const opened = events.find((event) => event.type === "request.opened");
+      assert.ok(opened?.type === "request.opened");
+      assert.equal(opened.payload.autoDeclined, true);
+      assert.include(opened.payload.detail ?? "", "(`rm` is not on the read-only allowlist)");
+      // The agent replied after the refusal, so nothing more is sent.
+      assert.deepEqual(prompts, [["Review it", READ_ONLY_SHELL_GUIDE]]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("explains a refusal to an agent that ended its turn on it without a reply", () =>
+    Effect.gen(function* () {
+      const { events, turn, prompts } = yield* refusedWorkflowTurn("agy-refusal-follow-up", {
+        T3_ACP_SILENT_REJECTED_PROMPTS: "1",
+      });
+      assert.ok(Exit.isSuccess(turn));
+      assert.equal(prompts.length, 2);
+      assert.equal(prompts[1]?.length, 1);
+      assert.include(prompts[1]?.[0] ?? "", "F5 refused this operation");
+      assert.include(prompts[1]?.[0] ?? "", "(`rm` is not on the read-only allowlist)");
+      assert.include(prompts[1]?.[0] ?? "", "Do not retry");
+      // One F5 turn, which now ends with the agent's reply.
+      assert.equal(events.filter((event) => event.type === "turn.completed").length, 1);
+      assert.ok(
+        events.some(
+          (event) =>
+            event.type === "content.delta" &&
+            event.payload.delta.includes("finished without the refused command"),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("sends the shell rules with a stage's request and not again with a steer", () =>
+    Effect.gen(function* () {
+      const gateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "agy-guide-steer-"))),
+        (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+      );
+      const gate = path.join(gateDir, "go");
+      const { adapter, requests } = yield* antigravityProfileAdapter({
+        env: { T3_ACP_PROMPT_GATE_PATH: gate },
+        options: () => ({
+          antigravity: {
+            accountRevision: Effect.succeed(0),
+            nativeReaders: () => Effect.succeed(false),
+            readOnlyWorkflowCertified: () => true,
+          },
+        }),
+      });
+      const threadId = ThreadId.make("agy-guide-steer");
+      yield* adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const turn = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Review it",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.forkChild);
+      let activeTurnId: TurnId | undefined;
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          const sessions = await Effect.runPromise(adapter.listSessions());
+          activeTurnId = sessions.find((session) => session.threadId === threadId)?.activeTurnId;
+          if (!activeTurnId) throw new Error("no running turn yet");
+        }),
+      );
+      const steer = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Also check the tests",
+          attachments: [],
+          expectedTurnId: activeTurnId,
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.forkChild);
+      const promptTexts = () =>
+        requests().pipe(
+          Effect.map((frames) =>
+            frames.flatMap((frame) =>
+              frame.method === "session/prompt"
+                ? [
+                    ((frame.params?.prompt ?? []) as ReadonlyArray<{ text?: string }>).map(
+                      (part) => part.text ?? "",
+                    ),
+                  ]
+                : [],
+            ),
+          ),
+        );
+      yield* Effect.promise(() =>
+        vi.waitFor(async () => {
+          if ((await Effect.runPromise(promptTexts())).length < 2)
+            throw new Error("the steer has not been sent yet");
+        }),
+      );
+      yield* Effect.promise(() => writeFile(gate, ""));
+      yield* Fiber.join(turn);
+      yield* Fiber.join(steer).pipe(Effect.ignore);
+      // The steer joins a turn that already carries the rules.
+      assert.deepEqual(yield* promptTexts(), [
+        ["Review it", READ_ONLY_SHELL_GUIDE],
+        ["Also check the tests"],
+      ]);
+      yield* adapter.stopSession(threadId).pipe(Effect.ignore);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not take text written before the request for a reply to its refusal", () =>
+    Effect.gen(function* () {
+      // The preamble is still queued for the event stream when F5 answers the request.
+      const { events, turn, prompts } = yield* refusedWorkflowTurn("agy-refusal-preamble", {
+        T3_ACP_SILENT_REJECTED_PROMPTS: "1",
+        T3_ACP_PREAMBLE_CHUNKS_BEFORE_PERMISSION: "200",
+      });
+      assert.ok(Exit.isSuccess(turn));
+      assert.ok(
+        events.some(
+          (event) => event.type === "content.delta" && event.payload.delta.includes("preamble 199"),
+        ),
+      );
+      assert.equal(prompts.length, 2);
+      assert.include(prompts[1]?.[0] ?? "", "F5 refused this operation");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("fails the turn when the agent keeps ending on a refusal", () =>
+    Effect.gen(function* () {
+      const { turn, prompts } = yield* refusedWorkflowTurn("agy-refusal-stuck", {
+        T3_ACP_SILENT_REJECTED_PROMPTS: "9",
+      });
+      assert.equal(prompts.length, 3);
+      assert.ok(Exit.isFailure(turn));
+      const message = String(Cause.squash(turn.cause));
+      assert.include(message, "stopped without a reply after F5 refused");
+      assert.include(message, "(`rm` is not on the read-only allowlist)");
+      // The reason, not the command: this message reaches the server log.
+      assert.notInclude(message, "rm -rf build");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("runs a read-only command in a workflow turn without opening a request", () =>
     Effect.gen(function* () {
       const { adapter, events, requests } = yield* antigravityProfileAdapter({
@@ -1482,10 +1802,12 @@ rootIt.layer(
       assert.isString(payload.usageLimit?.resetsAt);
       assert.equal(payload.usageLimit?.resetSource, "message");
       assert.equal(payload.usageLimit?.evidence, "message");
-      assert.equal(
-        (limited.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
-        "failed",
-      );
+      const completedPayload = limited.completed.at(-1)?.payload as
+        | { state?: string; usageLimit?: unknown }
+        | undefined;
+      assert.equal(completedPayload?.state, "failed");
+      // The failed turn's terminal sets the session's limit, so it must carry the same one.
+      assert.deepEqual(completedPayload?.usageLimit, payload.usageLimit);
 
       // A notice split across chunks, after the model's own text, still reads whole.
       const split = yield* runTurn(
@@ -1973,6 +2295,51 @@ rootIt.layer(
         assert.include(meta?.antigravity?.systemPrompt?.append ?? "", "ask_user_question");
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("passes project MCP servers as hub endpoints, over HTTP when the agent offers it", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeMcpHub();
+      const mcpServers = {
+        docs: { type: "http", url: "https://docs.example/mcp" },
+        local: { type: "stdio", command: "node" },
+      } as const;
+      for (const http of [false, true]) {
+        const { adapter, requests } = yield* antigravityProfileAdapter({
+          env: http ? { ACP_MOCK_MCP_HTTP: "1" } : {},
+          options: () => ({ mcpHub: fake.hub, mcpSessionStdioLaunch: STDIO_LAUNCH }),
+        });
+        const threadId = ThreadId.make(`agy-hub-${http}`);
+        yield* adapter.startSession({
+          threadId,
+          provider: "antigravity",
+          cwd: process.cwd(),
+          runtimeMode: "approval-required",
+          providerOptions: { mcpServers },
+        });
+        const created = (yield* requests()).find((request) => request.method === "session/new");
+        const servers = created?.params?.mcpServers as ReadonlyArray<Record<string, unknown>>;
+        const local = servers.find((server) => server.name === "local");
+        assert.ok(servers.some((server) => server.name === "docs"));
+        if (http) {
+          assert.deepEqual(local, {
+            type: "http",
+            name: "local",
+            url: "http://127.0.0.1:9/mcp/user/local",
+            headers: [{ name: "Authorization", value: "Bearer token-local" }],
+          });
+        } else {
+          assert.equal(local?.command, "/opt/f5/f5");
+          assert.deepEqual(local?.env, [
+            { name: "F5_MCP_URL", value: "http://127.0.0.1:9/mcp/user/local" },
+            { name: "F5_MCP_TOKEN", value: "token-local" },
+          ]);
+        }
+        yield* adapter.stopSession(threadId);
+      }
+      assert.equal(fake.attaches.length, 2);
+      assert.equal(fake.disposed, 2);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("sends no system prompt guidance to an agent that does not advertise it", () =>

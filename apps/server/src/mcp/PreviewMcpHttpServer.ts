@@ -119,9 +119,22 @@ export interface PreviewMcpSessionConfig {
   readonly endTurn?: (turnId: string) => void;
 }
 
+/**
+ * Handles requests under a mounted path prefix. The listener has already
+ * checked the loopback peer, Host and Origin; the handler owns authentication.
+ */
+export type McpPrefixHandler = (
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+) => Promise<void>;
+
 export interface PreviewMcpHttpServerShape {
   readonly supportsThreadCatalog?: boolean;
   readonly getUrl: (catalog?: McpCatalog) => string;
+  /** `http://127.0.0.1:<port>`; absent in test fakes that serve no mounted routes. */
+  readonly baseUrl?: string;
+  /** Routes every method under `prefix` (which must end with `/`) to `handler`. */
+  readonly mount?: (prefix: string, handler: McpPrefixHandler) => () => void;
   readonly createSessionConfig: (input: {
     readonly threadId: ThreadId;
     readonly providerInstanceId?: ProviderInstanceId;
@@ -386,6 +399,7 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
     thread,
   );
   let expectedHostPort: number | null = null;
+  const mounts = new Map<string, McpPrefixHandler>();
   const runLog = Effect.runPromiseWith(yield* Effect.services<never>());
 
   const server = http.createServer((request, response) => {
@@ -402,6 +416,13 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
       if (request.headers.origin !== undefined) {
         writeJson(response, 403, { error: "origin_not_allowed" });
         return;
+      }
+      const path = (request.url ?? "").split("?")[0] ?? "";
+      for (const [prefix, handler] of mounts) {
+        if (path.startsWith(prefix)) {
+          await handler(request, response);
+          return;
+        }
       }
       const catalog = (Object.keys(CATALOG_PATHS) as McpCatalog[]).find(
         (entry) => CATALOG_PATHS[entry] === request.url,
@@ -555,6 +576,16 @@ export const makePreviewMcpHttpServer = Effect.gen(function* () {
   return {
     supportsThreadCatalog: !!thread,
     getUrl: (catalog = "preview") => catalogUrl(catalog),
+    baseUrl: `http://127.0.0.1:${port}`,
+    mount: (prefix, handler) => {
+      if (!prefix.startsWith("/mcp/") || !prefix.endsWith("/"))
+        throw new Error("Mounted MCP prefixes must look like /mcp/<name>/.");
+      if (mounts.has(prefix)) throw new Error(`An MCP handler is already mounted at ${prefix}.`);
+      mounts.set(prefix, handler);
+      return () => {
+        if (mounts.get(prefix) === handler) mounts.delete(prefix);
+      };
+    },
     createSessionConfig: (input) => {
       const catalog = input.catalog ?? "preview";
       if (catalog === "thread" && !thread) throw new Error("Thread tools unavailable.");

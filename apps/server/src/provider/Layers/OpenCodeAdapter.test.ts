@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import * as NodeFs from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -27,6 +30,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import type { OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
@@ -60,6 +64,7 @@ type MessageEntry = {
 const runtimeMock = {
   state: {
     startCalls: [] as string[],
+    connectEnvironments: [] as Array<NodeJS.ProcessEnv | undefined>,
     sessionCreateUrls: [] as string[],
     sessionCreateInputs: [] as Array<Record<string, unknown> | undefined>,
     authHeaders: [] as Array<string | null>,
@@ -104,9 +109,14 @@ const runtimeMock = {
     resumedSessionBusy: false,
     onSessionGet: undefined as (() => Promise<void>) | undefined,
     todos: [] as unknown[],
+    mcpAddCalls: [] as Array<{ name: string; config: Record<string, unknown> }>,
+    mcpStatus: {} as Record<string, unknown>,
   },
   reset() {
+    this.state.mcpAddCalls.length = 0;
+    this.state.mcpStatus = {};
     this.state.startCalls.length = 0;
+    this.state.connectEnvironments.length = 0;
     this.state.sessionCreateUrls.length = 0;
     this.state.sessionCreateInputs.length = 0;
     this.state.authHeaders.length = 0;
@@ -167,8 +177,9 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         exitCode: Effect.never,
       };
     }),
-  connectToOpenCodeServer: ({ serverUrl, serverPassword }) =>
+  connectToOpenCodeServer: ({ serverUrl, serverPassword, environment }) =>
     Effect.gen(function* () {
+      runtimeMock.state.connectEnvironments.push(environment);
       const url = serverUrl ?? "http://127.0.0.1:4301";
       // Unconditionally register a scope finalizer for test observability —
       // preserves the `closeCalls` / `closeError` probes that the existing
@@ -196,6 +207,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
     runtimeMock.state.requestSignal = signal;
     return {
       command: { list: async () => ({ data: runtimeMock.state.commands }) },
+      mcp: {
+        status: async () => ({ data: runtimeMock.state.mcpStatus }),
+        add: async (input: { name: string; config: Record<string, unknown> }) => {
+          runtimeMock.state.mcpAddCalls.push(input);
+          return { data: {} };
+        },
+      },
       app: { skills: async () => ({ data: [] }) },
       session: {
         status: async () => ({
@@ -404,6 +422,149 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       assert.match(error.message, /A stored OpenCode password is unavailable/);
       assert.deepEqual(runtimeMock.state.sessionCreateUrls, []);
       assert.deepEqual(runtimeMock.state.closeCalls, []);
+    }),
+  );
+
+  it.effect("starts a read-only stage's own server without the repository's config", () =>
+    Effect.gen(function* () {
+      const local = yield* makeOpenCodeAdapter({
+        ...openCodeAdapterTestSettings,
+        serverUrl: "",
+        serverPassword: "",
+      });
+      yield* local.startSession({
+        threadId: asThreadId("readonly-local"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      yield* local.startSession({
+        threadId: asThreadId("normal-local"),
+        runtimeMode: "full-access",
+      });
+      assert.equal(runtimeMock.state.connectEnvironments[0]?.OPENCODE_DISABLE_PROJECT_CONFIG, "1");
+      assert.equal(
+        runtimeMock.state.connectEnvironments[1]?.OPENCODE_DISABLE_PROJECT_CONFIG,
+        undefined,
+      );
+      yield* local.stopAll();
+    }),
+  );
+
+  it.effect("refuses read-only stages on an external server when the workspace has plugins", () =>
+    Effect.gen(function* () {
+      const root = NodeFs.realpathSync(
+        NodeFs.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "f5-opencode-ro-")),
+      );
+      try {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("readonly-external");
+        yield* adapter.startSession({
+          threadId,
+          runtimeMode: "full-access",
+          cwd: root,
+          workflowExecutionProfile: "unattended-readonly",
+        });
+        const plugin = NodePath.join(root, ".opencode", "plugin", "audit.ts");
+        NodeFs.mkdirSync(NodePath.dirname(plugin), { recursive: true });
+        NodeFs.writeFileSync(plugin, "export default {}");
+        const turnError = yield* adapter
+          .sendTurn({
+            threadId,
+            input: "review",
+            model: "anthropic/sonnet",
+            workflowExecutionProfile: "unattended-readonly",
+          })
+          .pipe(Effect.flip);
+        // A plain substring: Windows paths hold backslashes, which a RegExp reads as escapes.
+        assert.ok(
+          turnError.message.includes(
+            `OpenCode can't run read-only workflow stages here: ${plugin}`,
+          ),
+          turnError.message,
+        );
+        assert.deepEqual(runtimeMock.state.promptCalls, []);
+        const startError = yield* adapter
+          .startSession({
+            threadId: asThreadId("readonly-external-2"),
+            runtimeMode: "full-access",
+            cwd: root,
+            workflowExecutionProfile: "unattended-readonly",
+          })
+          .pipe(Effect.flip);
+        assert.match(startError.message, /is an OpenCode plugin/);
+        // The external server's own environment is never F5's to change.
+        assert.equal(
+          runtimeMock.state.connectEnvironments[0]?.OPENCODE_DISABLE_PROJECT_CONFIG,
+          undefined,
+        );
+        yield* adapter.stopAll();
+      } finally {
+        NodeFs.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("registers hub endpoints only on an OpenCode server F5 spawned", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeMcpHub();
+      const mcpServers = {
+        docs: { type: "http", url: "https://docs.example/mcp", toolTimeoutSec: 30 },
+        local: { type: "stdio", command: "node" },
+        mine: { type: "http", url: "https://mine.example/mcp" },
+      } as const;
+      runtimeMock.state.mcpStatus = { mine: { status: "connected" } };
+      const local = yield* makeOpenCodeAdapter(
+        { ...openCodeAdapterTestSettings, serverUrl: "", serverPassword: "" },
+        { mcpHub: fake.hub },
+      );
+      const threadId = asThreadId("hub-local");
+      yield* local.startSession({
+        threadId,
+        runtimeMode: "full-access",
+        providerOptions: { mcpServers },
+      });
+      assert.deepEqual([...(fake.attaches[0]?.reservedNames ?? [])], ["mine"]);
+      assert.deepEqual(runtimeMock.state.mcpAddCalls, [
+        {
+          name: "docs",
+          config: {
+            type: "remote",
+            url: "http://127.0.0.1:9/mcp/user/docs",
+            enabled: true,
+            headers: { Authorization: "Bearer token-docs" },
+            oauth: false,
+            timeout: 600_000,
+          },
+        },
+        {
+          name: "local",
+          config: {
+            type: "remote",
+            url: "http://127.0.0.1:9/mcp/user/local",
+            enabled: true,
+            headers: { Authorization: "Bearer token-local" },
+            oauth: false,
+            timeout: 600_000,
+          },
+        },
+      ]);
+      yield* local.stopSession(threadId);
+      assert.equal(fake.disposed, 1);
+
+      // An external server is shared with other clients, so it gets nothing.
+      runtimeMock.state.mcpAddCalls.length = 0;
+      const external = yield* makeOpenCodeAdapter(openCodeAdapterTestSettings, {
+        mcpHub: fake.hub,
+      });
+      const externalThread = asThreadId("hub-external");
+      yield* external.startSession({
+        threadId: externalThread,
+        runtimeMode: "full-access",
+        providerOptions: { mcpServers },
+      });
+      assert.equal(fake.attaches.length, 1);
+      assert.deepEqual(runtimeMock.state.mcpAddCalls, []);
+      yield* external.stopSession(externalThread);
     }),
   );
 

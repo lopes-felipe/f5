@@ -104,7 +104,7 @@ import {
   toSafeThreadAttachmentSegment,
 } from "../attachmentStore.ts";
 import { CheckpointStore } from "../checkpointing/Services/CheckpointStore.ts";
-import { ServerConfig } from "../config.ts";
+import { resolveProviderHomesDir, ServerConfig } from "../config.ts";
 import { getDatabaseDamage } from "../persistence/databaseHealth.ts";
 import { GitCore, type RegisteredWorktree } from "../git/Services/GitCore.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -1836,8 +1836,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const rootTraversalStartedAt = Date.now();
       const managedRoots = yield* managedWorktreesRoots;
       const listedWorktrees = yield* listManagedWorktrees;
-      const providerHomesDir =
-        config.providerHomesDir ?? Path.join(config.stateDir, "provider-homes");
+      const providerHomesDir = resolveProviderHomesDir(config);
       let providerHomesListingFailed = false;
       const providerChildren = yield* Effect.tryPromise(async () => {
         try {
@@ -4809,8 +4808,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
       const perTargetReclaimed: PerTargetReclaimed = [];
       const settings = yield* readDiscovery;
-      const providerHomesDir =
-        config.providerHomesDir ?? Path.join(config.stateDir, "provider-homes");
+      const providerHomesDir = resolveProviderHomesDir(config);
       const targets = [...(selected ?? [])];
       if (
         !settings.machineCleanupEnabled &&

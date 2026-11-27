@@ -117,6 +117,24 @@ export function claudeHookOnFailureSupported(
 }
 
 /**
+ * Why this executable can't run a read-only workflow stage, or undefined when it can. In a
+ * stage F5's hook is what refuses a write, ahead of any allow rule. An executable that does not
+ * honor `onFailure: "block"` treats a hook that times out as "no decision" and goes on to its
+ * allow rules, so the stage would only be read-only while the hook answers.
+ */
+export function claudeReadOnlyStageRuntimeConflict(
+  binaryPath: string | null | undefined,
+  executableVersion: string | undefined,
+): string | undefined {
+  if (claudeHookOnFailureSupported(binaryPath, executableVersion)) return undefined;
+  const found =
+    executableVersion === undefined
+      ? "F5 couldn't read its version"
+      : `it reports version ${executableVersion}`;
+  return `Claude can't run read-only workflow stages with the custom executable \`${binaryPath}\`: ${found}, and a stage needs Claude Code ${CLAUDE_HOOK_ON_FAILURE_MIN_VERSION} or later, which blocks a tool when F5's check doesn't answer. Update it, or clear the executable path in the Claude provider settings to use the bundled runtime.`;
+}
+
+/**
  * How the SDK hands launch MCP servers to Claude Code. `initialize` keeps server `env` and
  * `headers` off the command line; only the bundled runtime or a custom executable reporting
  * 2.1.326+ accepts it. Others (unknown versions included) get an explicit `argv`, which also

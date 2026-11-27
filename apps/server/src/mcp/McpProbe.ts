@@ -1,4 +1,5 @@
 import { closeProbeProcess } from "./McpProbeProcess.ts";
+import { resolveInvocation } from "../spawn/resolveCommand.ts";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { homedir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,8 +14,14 @@ import type {
   McpToolSummary,
 } from "@t3tools/contracts";
 import { summarizeMcpTools } from "@t3tools/shared/mcpTools";
+import {
+  describeMcpInterpolationSkip,
+  interpolateMcpServers,
+} from "@t3tools/shared/mcpInterpolation";
+import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import { isMcpCredentialKey, createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
 import { Data, Effect } from "effect";
+import { resolvedMcpSecretsIn } from "./mcpResolvedSecrets.ts";
 
 /** The SDK's stdio transport does not own a process group. Probes must also reap descendants. */
 export class ProbeStdioTransport implements Transport {
@@ -25,22 +32,40 @@ export class ProbeStdioTransport implements Transport {
   private child?: ChildProcessWithoutNullStreams;
   private closing?: Promise<void>;
   private stderr = Buffer.alloc(0);
+  private readonly stderrLimit: number;
+  private readonly maxPendingBytes: number;
   constructor(
     private readonly command: string,
     private readonly args: string[],
     private readonly env: NodeJS.ProcessEnv,
     private readonly cwd: string,
-  ) {}
+    /** The MCP hub keeps a larger stderr ring and allows larger messages than a probe. */
+    options: { readonly stderrLimit?: number; readonly maxPendingBytes?: number } = {},
+  ) {
+    this.stderrLimit = options.stderrLimit ?? 4096;
+    this.maxPendingBytes = options.maxPendingBytes ?? 2 * 1024 * 1024;
+  }
+  get pid(): number | undefined {
+    return this.child?.pid;
+  }
   get stderrTail() {
     return this.stderr.toString("utf8");
   }
   setProtocolVersion(version: string) {
     this.protocolVersion = version;
   }
-  start(): Promise<void> {
-    if (this.child || this.closing)
-      return Promise.reject(new Error("Probe transport already started or closed."));
-    const child = spawn(this.command, this.args, {
+  async start(): Promise<void> {
+    if (this.child || this.closing) throw new Error("Probe transport already started or closed.");
+    // On Windows, `npx`, `pnpm dlx` and other npm commands are .cmd shims that
+    // `spawn` cannot run without a shell; resolve them like provider binaries.
+    const invocation =
+      process.platform === "win32"
+        ? await resolveInvocation(this.command, this.args, this.env, { cwd: this.cwd }).catch(
+            () => ({ file: this.command, args: this.args }),
+          )
+        : { file: this.command, args: this.args };
+    if (this.child || this.closing) throw new Error("Probe transport already started or closed.");
+    const child = spawn(invocation.file, [...invocation.args], {
       env: this.env,
       cwd: this.cwd,
       detached: process.platform !== "win32",
@@ -52,12 +77,16 @@ export class ProbeStdioTransport implements Transport {
     const buffer = new ReadBuffer();
     let pendingBytes = 0;
     child.stderr.on("data", (chunk: Buffer) => {
-      this.stderr = Buffer.concat([this.stderr, chunk.subarray(-4096)]).subarray(-4096);
+      this.stderr = Buffer.concat([this.stderr, chunk.subarray(-this.stderrLimit)]).subarray(
+        -this.stderrLimit,
+      );
     });
     child.stdout.on("data", (chunk: Buffer) => {
       pendingBytes += chunk.length;
-      if (pendingBytes > 2 * 1024 * 1024) {
-        this.onerror?.(new Error("Probe response exceeds 2 MiB."));
+      if (pendingBytes > this.maxPendingBytes) {
+        this.onerror?.(
+          new Error(`MCP message exceeds ${Math.round(this.maxPendingBytes / 1024 / 1024)} MiB.`),
+        );
         void this.close();
         return;
       }
@@ -114,6 +143,7 @@ class McpProbeError extends Data.TaggedError("McpProbeError")<{
   authRequired: boolean;
 }> {}
 const active = new Set<string>();
+const MAX_CONCURRENT_PROBES = 4;
 export function probeMcpServer(
   input: McpProbeServerRequest,
   execution: {
@@ -127,12 +157,16 @@ export function probeMcpServer(
     input.instanceId ?? execution.identity ?? "default",
     input.serverName.trim().toLowerCase(),
   ]);
-  const server = input.server;
-  const bearer = server.bearerTokenEnvVar
-    ? execution.environment[server.bearerTokenEnvVar]
-    : undefined;
+  const interpolation = interpolateMcpServers(
+    { [input.serverName]: input.server },
+    execution.environment,
+  );
+  const unresolved = interpolation.skipped[0];
+  const server = interpolation.servers[input.serverName] ?? input.server;
   const sanitizer = createMcpDiagnosticsSanitizer({ [input.serverName]: server }, [
-    ...(bearer ? [bearer] : []),
+    ...mcpBearerRedactionValues(server, execution.environment),
+    // Stored secrets resolved into arguments or the URL, which a server may echo back.
+    ...resolvedMcpSecretsIn(JSON.stringify([server.type === "stdio" ? server.args : server.url])),
     ...Object.entries(execution.environment).flatMap(([name, value]) =>
       value && isMcpCredentialKey(name) ? [value] : [],
     ),
@@ -145,12 +179,21 @@ export function probeMcpServer(
     authRequired: false,
   };
   return Effect.suspend<McpProbeServerResult, never, never>(() => {
-    if (active.has(key) || active.size >= 4)
+    if (unresolved)
       return Effect.succeed({
         ...empty,
         ok: false,
         durationMs: Date.now() - start,
-        error: "A test is already running.",
+        error: `This server ${describeMcpInterpolationSkip(unresolved)}.`,
+      });
+    if (active.has(key) || active.size >= MAX_CONCURRENT_PROBES)
+      return Effect.succeed({
+        ...empty,
+        ok: false,
+        durationMs: Date.now() - start,
+        error: active.has(key)
+          ? "This server is already being tested."
+          : `Too many tests are running (limit ${MAX_CONCURRENT_PROBES}). Wait for one to finish and try again.`,
       });
     return Effect.scoped(
       Effect.gen(function* () {
@@ -168,8 +211,10 @@ export function probeMcpServer(
           { capabilities: {} },
         );
         const controller = new AbortController();
-        const headers = new Headers(server.headers);
-        if (bearer) headers.set("Authorization", `Bearer ${bearer}`);
+        // The same precedence as every provider: a literal Authorization header wins.
+        const headers = new Headers(
+          server.type === "stdio" ? undefined : mcpRemoteHeaders(server, execution.environment),
+        );
         if (server.type === "stdio") {
           transport = new ProbeStdioTransport(
             server.command,

@@ -1,7 +1,11 @@
+import * as NodeOs from "node:os";
+import { runtimeBuildTarget } from "@t3tools/shared/workflowProviders";
 import {
-  driverSupportsReadOnlyWorkflowTurns,
-  runtimeBuildTarget,
-} from "@t3tools/shared/workflowProviders";
+  READ_ONLY_ENFORCEMENT_CONFIG_KEY,
+  READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY,
+  readOnlyEnforcementSummary,
+  resolveReadOnlyEnforcement,
+} from "@t3tools/shared/readOnlyEnforcement";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { MCP_APP_PROVIDERS } from "@t3tools/shared/mcpApp";
@@ -25,6 +29,7 @@ import { resolveClaudeLaunchAppendSystemPrompt } from "../claudeAppendSystemProm
 import { DeliveryAttemptContext, TurnAcceptanceSignal } from "../deliveryAttemptContext";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
+import { McpHubGovernanceService } from "../../mcp/hub/McpHubGovernanceLive.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { redactProviderRuntimeFailure } from "../failureText.ts";
 import {
@@ -82,6 +87,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderSessionAction,
+  type ReadOnlyEnforcement,
   type ServerProvider,
   type ProviderTurnStartResult,
   type McpReloadResult,
@@ -178,6 +184,7 @@ import {
 import { computeProviderLaunchFingerprint } from "../providerLaunchFingerprint.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { nestedSandboxAvailable } from "../nestedSandboxProbe.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import {
   isProviderTerminalRuntimeEvent,
@@ -196,6 +203,8 @@ export interface ProviderServiceLiveOptions {
   readonly recordTerminalEvent?: (
     event: ProviderTerminalRuntimeEvent,
   ) => Effect.Effect<void, ProviderTerminalEventRepositoryError>;
+  /** Test seam for `nestedSandboxAvailable`: whether provider OS sandboxes can start here. */
+  readonly nestedSandboxAvailable?: () => boolean;
 }
 
 const PROVIDER_RUNTIME_EVENT_QUEUE_CAPACITY = 2_048;
@@ -682,6 +691,54 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         yield* PubSub.publish(runtimeEventPubSub, event);
       });
+    // F5's MCP hub asks before Ask-policy and changed tools run; its approval cards
+    // join the conversation's runtime events, and answers come back below.
+    const mcpHubGovernance = Option.getOrUndefined(
+      yield* Effect.serviceOption(McpHubGovernanceService),
+    );
+    if (mcpHubGovernance)
+      yield* Stream.runForEach(mcpHubGovernance.approvalEvents, publishRuntimeEvent).pipe(
+        Effect.forkScoped,
+      );
+
+    /**
+     * What each thread's "Read-only stage: …" line last said, so a recovered stage repeats the
+     * line only when its mode changed. Kept in memory: after a restart the comparison falls back
+     * to the requested mode, which is what the line says unless the adapter ended up stricter.
+     */
+    const publishedReadOnlyEnforcement = new Map<ThreadId, ReadOnlyEnforcement>();
+
+    /** The thread's "Read-only stage: …" line, through `session.configured`. */
+    const publishReadOnlyEnforcement = (
+      session: ProviderSession,
+      providerInstanceId: ProviderInstanceId,
+      enforcement: ReadOnlyEnforcement,
+    ) =>
+      Effect.sync(() => publishedReadOnlyEnforcement.set(session.threadId, enforcement)).pipe(
+        Effect.andThen(publishReadOnlyEnforcementEvent(session, providerInstanceId, enforcement)),
+      );
+    const publishReadOnlyEnforcementEvent = (
+      session: ProviderSession,
+      providerInstanceId: ProviderInstanceId,
+      enforcement: ReadOnlyEnforcement,
+    ) =>
+      publishRuntimeEvent({
+        type: "session.configured",
+        eventId: EventId.makeUnsafe(timeOrderedUuid()),
+        provider: session.provider,
+        providerInstanceId,
+        threadId: session.threadId,
+        createdAt: new Date().toISOString(),
+        payload: {
+          config: {
+            [READ_ONLY_ENFORCEMENT_CONFIG_KEY]: enforcement,
+            [READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY]: readOnlyEnforcementSummary(
+              enforcement,
+              PROVIDER_DISPLAY_NAMES[session.provider],
+            ),
+          },
+        },
+      });
 
     const upsertSessionBinding = (
       session: ProviderSession,
@@ -746,24 +803,36 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       });
 
     /**
-     * Read-only workflow turns run only on providers that can confine the turn. Grok and Muse
-     * never can; Antigravity can only when this instance's runtime is certified.
+     * How a read-only workflow stage on this instance is kept read-only, or a validation error
+     * when it can't be. Grok and Muse never can; Antigravity can only on a certified runtime.
      */
-    const readOnlyWorkflowRejection = (
+    const resolveStageReadOnlyEnforcement = (
       operation: string,
       provider: ProviderKind,
       instanceId: ProviderInstanceId,
       profile: string | undefined,
     ) =>
       Effect.gen(function* () {
-        if (!profile?.endsWith("readonly")) return;
+        if (!profile?.endsWith("readonly")) return undefined;
         const version = (yield* readProviderSnapshot(instanceId))?.version ?? undefined;
-        if (driverSupportsReadOnlyWorkflowTurns(provider, version, runtimeBuildTarget())) return;
+        const enforcement = resolveReadOnlyEnforcement(provider, version, {
+          target: runtimeBuildTarget(),
+          osRelease: NodeOs.release(),
+          nestedSandbox: (options?.nestedSandboxAvailable ?? nestedSandboxAvailable)(),
+        });
+        if (enforcement !== undefined) return enforcement;
         return yield* toValidationError(
           operation,
           `${PROVIDER_DISPLAY_NAMES[provider]} cannot enforce read-only workflow turns.`,
         );
       });
+    const readOnlyWorkflowRejection = (
+      operation: string,
+      provider: ProviderKind,
+      instanceId: ProviderInstanceId,
+      profile: string | undefined,
+    ) =>
+      resolveStageReadOnlyEnforcement(operation, provider, instanceId, profile).pipe(Effect.asVoid);
 
     /** Per-instance runtime-mode support from the status snapshot, when it narrows the default. */
     const readAvailableRuntimeModes = (instanceId: ProviderInstanceId) =>
@@ -1557,6 +1626,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             generation: resumedGeneration,
           }),
         };
+        // A recovered stage keeps the line it has when it still runs that way. When the mode
+        // differs from what the line last said, the line is written again: the adapter can end
+        // up stricter than requested (Codex requirements), and can stop being stricter when the
+        // requirements change, which would leave "sandboxed" over a stage that no longer is.
+        const requestedEnforcement = recoveredInstructionContext?.readOnlyEnforcement;
+        // An adapter that reports nothing runs the stage as requested.
+        const recoveredEnforcement = resumed.readOnlyEnforcement ?? requestedEnforcement;
+        if (
+          requestedEnforcement !== undefined &&
+          recoveredEnforcement !== undefined &&
+          recoveredEnforcement !==
+            (publishedReadOnlyEnforcement.get(input.binding.threadId) ?? requestedEnforcement)
+        )
+          yield* publishReadOnlyEnforcement(resumed, bindingInstanceId, recoveredEnforcement);
         yield* Effect.logInfo("provider service resumed provider session from persisted binding", {
           operation: input.operation,
           threadId: input.binding.threadId,
@@ -1760,7 +1843,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const instanceInfo = yield* registry.getInstanceInfo(requestedInstanceId);
           const resolvedProvider = instanceInfo.driverKind as ProviderKind;
           metricProvider = resolvedProvider;
-          yield* readOnlyWorkflowRejection(
+          const readOnlyEnforcement = yield* resolveStageReadOnlyEnforcement(
             "ProviderService.startSession",
             resolvedProvider,
             requestedInstanceId,
@@ -1878,6 +1961,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               : undefined;
           const adapterInput = {
             ...input,
+            ...(readOnlyEnforcement !== undefined ? { readOnlyEnforcement } : {}),
             providerOptions: mergeResolvedMcpProviderOptions({
               providerOptions: input.providerOptions,
               projectMcpServers: resolvedProjectMcp?.servers,
@@ -1954,7 +2038,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
                   launchFingerprint,
                   startConfig: persistedStartConfig,
-                  instructionContext: toInstructionContextFromSessionStartInput(input),
+                  instructionContext: {
+                    ...toInstructionContextFromSessionStartInput(input),
+                    ...(readOnlyEnforcement !== undefined ? { readOnlyEnforcement } : {}),
+                  },
                   clearMissingResumeCursor: input.discardResumeCursor === true || !sameProvenance,
                   sessionGeneration,
                 },
@@ -1981,6 +2068,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             inputCwd: input.cwd ?? null,
             sessionCwd: sessionWithInstance.cwd ?? null,
           });
+          // One line, after the start succeeded, with what the stage actually runs under (an
+          // adapter can end up stricter than requested). The binding keeps the requested value,
+          // so a later start asks for it again.
+          if (readOnlyEnforcement !== undefined)
+            yield* publishReadOnlyEnforcement(
+              sessionWithInstance,
+              requestedInstanceId,
+              sessionWithInstance.readOnlyEnforcement ?? readOnlyEnforcement,
+            );
 
           return sessionWithInstance;
         }).pipe(
@@ -2936,6 +3032,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           schema: ProviderRespondToRequestInput,
           payload: rawInput,
         });
+        if (mcpHubGovernance?.isHubRequest(input.requestId)) {
+          if (input.decision === "acceptAlways")
+            return yield* toValidationError(
+              "ProviderService.respondToRequest",
+              "F5 can allow this tool once or for this conversation. To always allow it, set it to Allow in MCP settings.",
+            );
+          if (!mcpHubGovernance.respondToApproval(input.threadId, input.requestId, input.decision))
+            return yield* toValidationError(
+              "ProviderService.respondToRequest",
+              "This MCP tool call is no longer waiting for an answer.",
+            );
+          return;
+        }
         if (input.decision === "acceptAlways") {
           const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
           if (binding?.provider !== "codex")

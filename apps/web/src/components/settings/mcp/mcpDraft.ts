@@ -1,12 +1,19 @@
 import { readMcpKeyValueRows } from "./mcpEditorValues";
 import {
+  isKnownProviderKind,
   McpServerWriteDefinition,
   type McpProjectServersConfig,
   type McpProjectConfigResult,
   type McpServerTransportType,
 } from "@t3tools/contracts";
 import { Schema } from "effect";
-import { normalizeServerName, trimToUndefined } from "@t3tools/shared/mcpValidation";
+import type { McpCatalogDraft } from "@t3tools/shared/mcpCatalog";
+import {
+  mcpServerNameKey,
+  normalizeServerName,
+  readMcpServerNameProblem,
+  trimToUndefined,
+} from "@t3tools/shared/mcpValidation";
 
 export type TransportType = McpServerTransportType;
 
@@ -33,7 +40,19 @@ export type ServerDraft = {
   readonly oauthCallbackPort: string;
   readonly oauthCallbackUrl: string;
   readonly oauthResource: string;
+  readonly description: string;
 };
+
+/**
+ * Fields the form does not edit. They are kept from the saved server on every save,
+ * including a transport change, so editing never drops them.
+ */
+const PRESERVED_FIELDS = [
+  "disabledProviders",
+  "connectionScope",
+  "toolPolicy",
+  "defaultToolPolicy",
+] as const;
 
 export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
   return {
@@ -58,6 +77,7 @@ export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
     oauthCallbackPort: "",
     oauthCallbackUrl: "",
     oauthResource: "",
+    description: "",
   };
 }
 
@@ -211,10 +231,90 @@ export function draftFromServer(
       server.oauthCallbackPort !== undefined ? String(server.oauthCallbackPort) : "",
     oauthCallbackUrl: server.oauthCallbackUrl ?? "",
     oauthResource: server.oauthResource ?? "",
+    description: server.description ?? "",
   };
 }
 
-export function decodeDraftServer(draft: ServerDraft): {
+/**
+ * A new draft from a catalog entry. Secret values become secret rows, so the form
+ * asks for a stored secret before it can save.
+ */
+export function draftFromCatalog(choice: McpCatalogDraft): ServerDraft {
+  const { original: _original, ...draft } = draftFromServer(choice.name, choice.server);
+  const secrets = new Set(choice.secretKeys);
+  const rows = (values: Record<string, string> | undefined) =>
+    values && Object.keys(values).some((key) => secrets.has(key))
+      ? JSON.stringify(
+          Object.entries(values).map(([key, value]) =>
+            secrets.has(key) ? { key, value, secret: true } : { key, value },
+          ),
+        )
+      : undefined;
+  const server = choice.server;
+  const env = server.type === "stdio" ? rows(server.env) : undefined;
+  const headers = server.type !== "stdio" ? rows(server.headers) : undefined;
+  return {
+    ...draft,
+    // Lines keep `<placeholder>` arguments readable for editing. An argument holding a line
+    // break (`\r` or `\n`, as the line parser splits on `\r?\n`) keeps the JSON format.
+    ...(server.type === "stdio" && server.args && server.args.every((arg) => !/[\r\n]/u.test(arg))
+      ? { args: server.args.join("\n"), argsFormat: "lines" as const }
+      : {}),
+    ...(env !== undefined ? { env } : {}),
+    ...(headers !== undefined ? { headers } : {}),
+  };
+}
+
+/** `name`, or `name-2`, `name-3`… when the scope already has it (names compare case-insensitively). */
+export function uniqueMcpServerName(name: string, servers: McpProjectServersConfig): string {
+  const taken = new Set(Object.keys(servers).map(mcpServerNameKey));
+  if (!taken.has(mcpServerNameKey(name))) return name;
+  for (let suffix = 2; ; suffix += 1) {
+    const candidate = `${name.slice(0, 120)}-${suffix}`;
+    if (!taken.has(mcpServerNameKey(candidate))) return candidate;
+  }
+}
+
+/**
+ * Moves a draft onto a newer saved version of its server. Fields the user has not
+ * changed take the new saved values; edited fields keep the user's text. A switch
+ * flipped elsewhere (enabled, a tool, a provider) is then not reverted by saving the form.
+ *
+ * `baseline` is what "not changed" is measured against: the draft that was submitted,
+ * when a save of this form completes. Without it, the saved entry the draft was opened
+ * on. Measuring against the submitted draft keeps typing made while the save ran, even
+ * typing that returns a field to its old value.
+ */
+export function rebaseDraft(
+  draft: ServerDraft,
+  name: string,
+  server: McpProjectServersConfig[string],
+  baseline?: ServerDraft,
+): ServerDraft {
+  if (!draft.original) return draft;
+  const before = baseline ?? draftFromServer(draft.original.name, draft.original.server);
+  const after = draftFromServer(name, server);
+  const next: Record<string, unknown> = { ...draft, original: after.original };
+  // The argument text is read in its format, so the two move together or not at all.
+  const argsUnchanged = draft.args === before.args && draft.argsFormat === before.argsFormat;
+  for (const key of Object.keys(after) as Array<keyof ServerDraft>) {
+    if (key === "original") continue;
+    const unchanged =
+      key === "args" || key === "argsFormat" ? argsUnchanged : draft[key] === before[key];
+    if (unchanged) next[key] = after[key];
+  }
+  return next as ServerDraft;
+}
+
+/**
+ * `current` is the saved entry the draft replaces, when it still exists: fields the
+ * form does not edit come from it, so a change saved elsewhere since the draft was
+ * opened is not reverted.
+ */
+export function decodeDraftServer(
+  draft: ServerDraft,
+  current?: McpProjectServersConfig[string],
+): {
   readonly name: string;
   readonly server: McpProjectServersConfig[string];
 } {
@@ -222,6 +322,9 @@ export function decodeDraftServer(draft: ServerDraft): {
   if (!name) {
     throw new Error("Server name is required and must be 128 characters or fewer.");
   }
+  // Stored legacy names keep working; new and renamed servers follow the charset rule.
+  const nameProblem = name === draft.original?.name ? undefined : readMcpServerNameProblem(name);
+  if (nameProblem) throw new Error(nameProblem);
 
   const startupTimeoutSec = parseOptionalIntegerInput(draft.startupTimeoutSec, "Startup timeout");
   const toolTimeoutSec = parseOptionalIntegerInput(draft.toolTimeoutSec, "Tool timeout");
@@ -255,6 +358,9 @@ export function decodeDraftServer(draft: ServerDraft): {
     ...(disabledTools ? { disabledTools } : {}),
     ...(scopes ? { scopes } : {}),
     ...(oauthResource ? { oauthResource } : {}),
+    ...(trimToUndefined(draft.description)
+      ? { description: trimToUndefined(draft.description) }
+      : {}),
   };
 
   const candidate =
@@ -299,6 +405,15 @@ export function decodeDraftServer(draft: ServerDraft): {
         else writable[key] = value;
       }
     }
+  }
+  const base = current ?? draft.original?.server;
+  for (const field of PRESERVED_FIELDS) {
+    const value =
+      field === "disabledProviders"
+        ? // Provider names this version does not know cannot be written back.
+          base?.disabledProviders?.filter(isKnownProviderKind)
+        : base?.[field];
+    if (value !== undefined && (!Array.isArray(value) || value.length > 0)) writable[field] = value;
   }
   return { name, server: Schema.decodeUnknownSync(McpServerWriteDefinition)(writable) };
 }

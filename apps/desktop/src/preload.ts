@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { DesktopBridge } from "@t3tools/contracts";
+import type { AppIconId, DesktopBridge } from "@t3tools/contracts";
 import { createFileActionGesture } from "./fileActionGesture";
 import { createDesktopWsUrlReader } from "./desktopWsUrlReader";
 
@@ -60,6 +60,18 @@ const argument = (name: string) =>
 const getWsUrl = createDesktopWsUrlReader(() => ipcRenderer.sendSync("desktop:get-ws-url") ?? null);
 const profileId = argument("f5-profile-id");
 const systemLocale = argument("f5-system-locale");
+
+// The app icon choice, read when this page loads (reloads included, unlike the window
+// argument) and kept current from then on, so no broadcast before the first render is lost.
+// The main process only ever sends known ids; the argument covers a failed read.
+let appIconCurrent = (ipcRenderer.sendSync("desktop:app-icon-get") ??
+  argument("f5-app-icon") ??
+  "lines") as AppIconId;
+const appIconListeners = new Set<(id: AppIconId) => void>();
+ipcRenderer.on("desktop:app-icon-changed", (_event, id: AppIconId) => {
+  appIconCurrent = id;
+  for (const listener of appIconListeners) listener(id);
+});
 
 // The isolated preload observes actual DOM gestures; renderer-supplied booleans are ignored.
 let computerGestureAt = -Infinity;
@@ -165,6 +177,18 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.invoke("desktop-computer:revoke-integration-consent", integration),
   },
   getSystemLocale: () => systemLocale,
+  appIcon: {
+    initial: appIconCurrent,
+    current: () => appIconCurrent,
+    set: (id) => ipcRenderer.invoke("desktop:app-icon-set", id),
+    onChange: (listener) => {
+      appIconListeners.add(listener);
+      return () => void appIconListeners.delete(listener);
+    },
+    claimDockRefreshPrompt: () => ipcRenderer.invoke("desktop:app-icon-claim-dock-prompt"),
+    dismissDockRefreshPrompt: () => ipcRenderer.invoke("desktop:app-icon-dismiss-dock-prompt"),
+    restartDock: () => ipcRenderer.invoke("desktop:app-icon-restart-dock"),
+  },
   setQuitShortcutMode: (mode) => ipcRenderer.invoke("desktop:quit-mode", mode),
   setAttentionBadge: (count) => ipcRenderer.invoke("desktop:attention-badge", count),
   markStartup: (marker) => ipcRenderer.send("desktop:startup-marker", marker),

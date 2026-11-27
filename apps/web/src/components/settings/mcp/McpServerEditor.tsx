@@ -1,8 +1,10 @@
 import { McpArgumentFields } from "./McpArgumentFields";
 import { readMcpKeyValueRows, mcpDuplicateKeys } from "./mcpEditorValues";
 import { McpKeyValueFields } from "./McpKeyValueFields";
+import { McpSecretReference } from "./McpSecretReference";
 import { McpTestConnection } from "./McpTestConnection";
 import { decodeDraftServer } from "./mcpDraft";
+import { MCP_SERVER_DESCRIPTION_MAX_LENGTH } from "@t3tools/contracts";
 import { CODEX_SSE_TRANSPORT_HINT } from "@t3tools/shared/mcpTranslation";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
@@ -25,7 +27,7 @@ export function McpServerEditor({
   onAdvancedOpenChange,
   isSavingConfig,
   saveBlocked,
-  beginCreate,
+  onCancel,
   saveDraft,
 }: {
   readonly projectId: import("@t3tools/contracts").ProjectId | null;
@@ -39,30 +41,18 @@ export function McpServerEditor({
   readonly onAdvancedOpenChange: (open: boolean) => void;
   readonly isSavingConfig: boolean;
   readonly saveBlocked: boolean;
-  readonly beginCreate: () => void;
+  /** Discards the draft; shown only when given. */
+  readonly onCancel?: (() => void) | undefined;
   readonly saveDraft: () => void;
 }) {
   const duplicateKeys = mcpDuplicateKeys(
     readMcpKeyValueRows(draft.type === "stdio" ? draft.env : draft.headers),
   );
   return (
-    <div className="space-y-3 rounded-lg border border-border bg-background p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-foreground">
-            {editingServerName ? `Edit ${editingServerName}` : "Add MCP server"}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Shared fields apply to Codex and Claude. Codex-only options stay saved in either scope.
-          </p>
-        </div>
-        {editingServerName ? (
-          <Button size="xs" variant="outline" onClick={beginCreate} disabled={isSavingConfig}>
-            New server
-          </Button>
-        ) : null}
-      </div>
-
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Every provider gets the same server. Overview shows which providers ignore an option.
+      </p>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="space-y-1">
           <span className="text-xs font-medium text-foreground">Name</span>
@@ -98,6 +88,17 @@ export function McpServerEditor({
         </label>
       </div>
 
+      <label className="block space-y-1">
+        <span className="text-xs font-medium text-foreground">Description</span>
+        <Input
+          aria-label="Description"
+          value={draft.description}
+          maxLength={MCP_SERVER_DESCRIPTION_MAX_LENGTH}
+          onChange={(event) => onDraftChange({ description: event.target.value })}
+          placeholder="What this server is for (optional)"
+        />
+      </label>
+
       {draft.type === "sse" ? (
         <p className="text-xs text-muted-foreground">{CODEX_SSE_TRANSPORT_HINT}</p>
       ) : null}
@@ -132,6 +133,7 @@ export function McpServerEditor({
             />
           </label>
           <McpArgumentFields draft={draft} onChange={onDraftChange} />
+          <McpSecretReference />
           <div className="grid gap-3 sm:grid-cols-2">
             <McpKeyValueFields
               key={`${editingServerName}:${draft.original?.name}:env`}
@@ -165,6 +167,7 @@ export function McpServerEditor({
               placeholder="https://example.com/mcp"
             />
           </label>
+          <McpSecretReference />
           <McpKeyValueFields
             key={`${editingServerName}:${draft.original?.name}:headers`}
             label="Headers"
@@ -179,7 +182,7 @@ export function McpServerEditor({
           <span>
             <span className="block text-xs font-medium text-foreground">Advanced options</span>
             <span className="block text-xs text-muted-foreground">
-              Tool timeout and tool filters apply to Codex and Claude. Other options apply to Codex.
+              Timeouts, tool filters, the bearer token environment variable, and OAuth options.
             </span>
           </span>
           <Badge variant="outline">{isAdvancedOpen ? "Hide" : "Show"}</Badge>
@@ -188,9 +191,7 @@ export function McpServerEditor({
           <div className="mt-3 space-y-3 rounded-lg border border-border/70 bg-card/40 p-3">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  Bearer token env var <Badge variant="outline">Codex only</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">Bearer token env var </span>
                 <Input
                   className="font-mono"
                   aria-label="Bearer token env var"
@@ -202,9 +203,7 @@ export function McpServerEditor({
                 />
               </label>
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  OAuth client ID <Badge variant="outline">Codex only</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">OAuth client ID </span>
                 <Input
                   className="font-mono"
                   aria-label="OAuth client ID"
@@ -217,9 +216,7 @@ export function McpServerEditor({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  OAuth callback port <Badge variant="outline">Codex only</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">OAuth callback port </span>
                 <Input
                   className="font-mono"
                   aria-label="OAuth callback port"
@@ -231,9 +228,7 @@ export function McpServerEditor({
                 />
               </label>
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  OAuth callback URL <Badge variant="outline">Codex only</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">OAuth callback URL </span>
                 <Input
                   aria-label="OAuth callback URL"
                   value={draft.oauthCallbackUrl}
@@ -247,9 +242,7 @@ export function McpServerEditor({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  OAuth resource <Badge variant="outline">Codex only</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">OAuth resource </span>
                 <Input
                   aria-label="OAuth resource"
                   value={draft.oauthResource}
@@ -258,9 +251,7 @@ export function McpServerEditor({
                 />
               </label>
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  Startup timeout (sec) <Badge variant="outline">Codex only</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">Startup timeout (sec) </span>
                 <Input
                   aria-label="Startup timeout (sec)"
                   value={draft.startupTimeoutSec}
@@ -271,9 +262,7 @@ export function McpServerEditor({
                 />
               </label>
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  Tool timeout (sec) <Badge variant="outline">Codex + Claude</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">Tool timeout (sec) </span>
                 <Input
                   aria-label="Tool timeout (sec)"
                   value={draft.toolTimeoutSec}
@@ -287,9 +276,7 @@ export function McpServerEditor({
 
             <div className="flex items-center justify-between border-b border-border py-2 last:border-b-0">
               <div>
-                <p className="text-xs font-medium text-foreground">
-                  Parallel tool calls <Badge variant="outline">Codex only</Badge>
-                </p>
+                <p className="text-xs font-medium text-foreground">Parallel tool calls </p>
                 <p className="text-xs text-muted-foreground">
                   Declare that this server supports concurrent tool execution.
                 </p>
@@ -313,9 +300,7 @@ export function McpServerEditor({
 
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  Enabled tools <Badge variant="outline">Codex + Claude</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">Enabled tools </span>
                 <Textarea
                   aria-label="Enabled tools"
                   value={draft.enabledTools}
@@ -328,9 +313,7 @@ export function McpServerEditor({
                 </span>
               </label>
               <label className="space-y-1">
-                <span className="text-xs font-medium text-foreground">
-                  Disabled tools <Badge variant="outline">Codex + Claude</Badge>
-                </span>
+                <span className="text-xs font-medium text-foreground">Disabled tools </span>
                 <Textarea
                   aria-label="Disabled tools"
                   value={draft.disabledTools}
@@ -342,9 +325,7 @@ export function McpServerEditor({
             </div>
 
             <label className="space-y-1">
-              <span className="text-xs font-medium text-foreground">
-                Scopes <Badge variant="outline">Codex only</Badge>
-              </span>
+              <span className="text-xs font-medium text-foreground">Scopes </span>
               <Textarea
                 aria-label="Scopes"
                 value={draft.scopes}
@@ -372,9 +353,9 @@ export function McpServerEditor({
           </p>
         )}
         <div className="flex items-center gap-2">
-          {editingServerName ? (
-            <Button size="sm" variant="outline" onClick={beginCreate} disabled={isSavingConfig}>
-              Cancel
+          {onCancel ? (
+            <Button size="sm" variant="outline" onClick={onCancel} disabled={isSavingConfig}>
+              {editingServerName ? "Revert" : "Cancel"}
             </Button>
           ) : null}
           <Button

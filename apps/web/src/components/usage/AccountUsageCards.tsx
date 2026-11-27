@@ -39,7 +39,19 @@ const ACCOUNT_ERROR_MESSAGES: Record<AccountUsageErrorCode, string> = {
   "process-unavailable": "The configured provider executable is unavailable.",
   "invalid-response": "The provider returned an invalid account usage response.",
   "temporary-failure": "Account usage is temporarily unavailable.",
+  "credentials-expired":
+    "The provider's saved sign-in has expired. Start a turn with it to renew it.",
 };
+
+/** The error text for an account, naming the provider where the generic text would not. */
+function accountErrorMessage(
+  provider: UsageAccount["provider"],
+  errorCode: AccountUsageErrorCode,
+): string {
+  if (errorCode !== "credentials-expired") return ACCOUNT_ERROR_MESSAGES[errorCode];
+  const label = providerLabel(provider);
+  return `${label}'s saved sign-in has expired. Start ${/^[aeiou]/i.test(label) ? "an" : "a"} ${label} turn to renew it.`;
+}
 
 export type QuotaHistoryIndex = ReadonlyMap<
   string,
@@ -408,7 +420,7 @@ function SectionError(props: {
       <AlertDescription className="text-xs">
         {section.outcome === "unsupported"
           ? `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`
-          : ACCOUNT_ERROR_MESSAGES[section.errorCode ?? "temporary-failure"]}
+          : accountErrorMessage(account.provider, section.errorCode ?? "temporary-failure")}
         {section.snapshot
           ? ` Showing data from ${formatAbsoluteTimeLabel(section.snapshot.fetchedAt)}.`
           : ""}
@@ -474,9 +486,11 @@ export function accountStatusText(account: UsageAccount): string | null {
   if (!account.enabled)
     return `${providerLabel(account.provider)} is disabled in provider settings.`;
   for (const section of account.sections) {
+    if (section.outcome === "unsupported" && account.provider === "antigravity")
+      return "Subscription quota is unavailable for Antigravity.";
     if (section.outcome === "unsupported")
       return `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`;
-    if (section.errorCode) return ACCOUNT_ERROR_MESSAGES[section.errorCode];
+    if (section.errorCode) return accountErrorMessage(account.provider, section.errorCode);
   }
   const claude = account.sections.find((section) => section.kind === "claude-usage");
   if (claude?.kind === "claude-usage" && claude.snapshot && !claude.snapshot.data.limitsAvailable)
@@ -484,6 +498,13 @@ export function accountStatusText(account: UsageAccount): string | null {
   return account.sections.some((section) => section.snapshot)
     ? "No quota windows reported."
     : "No successful snapshot yet.";
+}
+
+/** Why the limits an account still shows are last-known rather than current, or null. */
+export function accountStaleLimitsNotice(account: UsageAccount): string | null {
+  return account.sections.some((section) => section.errorCode === "credentials-expired")
+    ? accountErrorMessage(account.provider, "credentials-expired")
+    : null;
 }
 
 export function accountNeedsAuthentication(account: UsageAccount): boolean {
@@ -624,7 +645,13 @@ export function AccountUsageCard(props: {
               key={section.kind}
               first={index === 0}
               label={SECTION_LABELS[section.kind]}
-              meta={<SectionMeta section={section} />}
+              meta={
+                account.provider === "antigravity" &&
+                section.kind === "provider-limits" &&
+                section.snapshot?.data.plan === "Billed per token" ? null : (
+                  <SectionMeta section={section} />
+                )
+              }
             >
               <AccountSectionBody
                 account={account}

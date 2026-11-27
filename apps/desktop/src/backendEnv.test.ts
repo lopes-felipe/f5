@@ -87,6 +87,21 @@ describe("buildDesktopBackendEnv", () => {
     }
   });
 
+  it("passes this profile's secret store key and never an inherited one", () => {
+    const base = {
+      backendPort: 3773,
+      stateDir: "/tmp/t3-state",
+      stateDirSource: "default" as const,
+      authToken: "token-123",
+    };
+    const inherited = { PATH: "/usr/bin", F5_SECRET_STORE_KEY: "aa".repeat(32) };
+    expect(buildDesktopBackendEnv(inherited, base).F5_SECRET_STORE_KEY).toBeUndefined();
+    expect(
+      buildDesktopBackendEnv(inherited, { ...base, secretStoreKey: "bb".repeat(32) })
+        .F5_SECRET_STORE_KEY,
+    ).toBe("bb".repeat(32));
+  });
+
   it("does not add observability enablement when it is absent", () => {
     const env = buildDesktopBackendEnv(
       {

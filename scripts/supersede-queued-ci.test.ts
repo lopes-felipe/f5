@@ -22,6 +22,14 @@ const run = (id: number): WorkflowRun => ({
   updated_at: "2026-11-02T10:00:00Z",
   run_started_at: "",
 });
+/** The release candidate that a main push starts alongside CI run `source`. */
+const candidate = (id: number, source: WorkflowRun, changes: Partial<WorkflowRun> = {}) => ({
+  ...run(id),
+  head_sha: source.head_sha,
+  path: ".github/workflows/release.yml",
+  status: "in_progress",
+  ...changes,
+});
 
 function harness() {
   const state = {
@@ -46,13 +54,29 @@ function harness() {
     fileError: false,
     cancelError: false,
     afterCancel: "queued",
+    candidates: [] as WorkflowRun[],
+    // How many candidate cancel requests (to `candidateCancelErrorIds`, or to any
+    // candidate when null) and candidate listings fail before they start succeeding.
+    candidateCancelErrors: 0,
+    candidateCancelErrorIds: null as Set<number> | null,
+    candidateAfterCancel: "in_progress",
+    candidateListErrors: 0,
   };
   const gh = vi.fn<Gh>(async (args) => {
     const path = args.at(-1)!.slice(root.length);
     let response: unknown;
     if (path.includes("status=queued"))
       response = state.queued.map((workflow_runs) => ({ total_count: state.total, workflow_runs }));
-    else if (path.startsWith("actions/workflows/"))
+    else if (path.startsWith("actions/workflows/release.yml/")) {
+      if (state.candidateListErrors-- > 0) throw new Error("candidate list API unavailable");
+      // GitHub filters by head_sha; keep one mismatched row to prove the script rechecks it.
+      const sha = /head_sha=([a-f0-9]+)/.exec(path)![1]!;
+      response = {
+        workflow_runs: state.candidates.filter(
+          (item) => item.head_sha === sha || item.head_sha === "f".repeat(40),
+        ),
+      };
+    } else if (path.startsWith("actions/workflows/"))
       response = {
         workflow_runs: state.newestRuns ?? (state.newest ? [state.newest] : []),
       };
@@ -66,6 +90,17 @@ function harness() {
       }));
     } else if (path.startsWith("compare/")) response = { status: state.comparison };
     else if (path.endsWith("/cancel")) {
+      const id = Number(path.split("/").at(-2));
+      const target = state.candidates.find((item) => item.id === id);
+      if (target) {
+        if (
+          (state.candidateCancelErrorIds && !state.candidateCancelErrorIds.has(id)) ||
+          state.candidateCancelErrors-- <= 0
+        )
+          return "";
+        state.current.set(id, { ...target, status: state.candidateAfterCancel });
+        throw new Error("candidate cancel API unavailable");
+      }
       if (state.cancelError) {
         state.current.set(1, { ...run(1), status: state.afterCancel });
         throw new Error("cancel API unavailable");
@@ -74,7 +109,8 @@ function harness() {
     } else if (path.includes("/jobs?")) response = state.jobs.map((jobs) => ({ jobs }));
     else if (/^actions\/runs\/\d+$/.test(path)) {
       const id = Number(path.split("/").at(-1));
-      response = state.current.get(id) ?? run(id);
+      response =
+        state.current.get(id) ?? state.candidates.find((item) => item.id === id) ?? run(id);
     } else throw new Error("Unexpected gh request: " + args.join(" "));
     return JSON.stringify(response);
   });
@@ -318,5 +354,191 @@ describe("supersedeQueuedCi", () => {
     const { state, gh } = harness();
     state.cancelError = true;
     await expect(supersedeQueuedCi(repository, gh)).rejects.toThrow("cancel API unavailable");
+  });
+
+  describe("release candidates of superseded sources", () => {
+    const posts = (cancellations: ReturnType<typeof harness>["cancellations"]) =>
+      cancellations().map(([args]) => args.at(-1)!.slice(root.length));
+
+    it("cancels each superseded source's unfinished candidate after its CI run", async () => {
+      const { state, gh, cancellations } = harness();
+      state.candidates = [
+        candidate(101, run(1)),
+        candidate(102, run(2), { status: "queued" }),
+        // The replacement's own candidate is the one that may publish.
+        candidate(103, run(3)),
+      ];
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([1, 2]);
+      expect(posts(cancellations)).toEqual([
+        "actions/runs/1/cancel",
+        "actions/runs/101/cancel",
+        "actions/runs/2/cancel",
+        "actions/runs/102/cancel",
+      ]);
+      expect(gh).toHaveBeenCalledWith([
+        "api",
+        root +
+          "actions/workflows/release.yml/runs?branch=main&event=push&head_sha=" +
+          run(1).head_sha +
+          "&per_page=100",
+      ]);
+    });
+
+    it.each([
+      { status: "completed", conclusion: "success" },
+      { status: "completed", conclusion: "failure" },
+      { event: "workflow_dispatch" },
+      { head_branch: "feature" },
+      { path: ".github/workflows/release-upgrade.yml" },
+      { repository: { full_name: "another/repo" } },
+      { head_repository: { full_name: "another/repo" } },
+      { head_sha: "f".repeat(40) },
+    ])("leaves candidate %j alone", async (changes) => {
+      const { state, gh, cancellations } = harness();
+      state.queued = [[run(1)]];
+      state.candidates = [candidate(101, run(1), changes)];
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([1]);
+      expect(posts(cancellations)).toEqual(["actions/runs/1/cancel"]);
+    });
+
+    it("never looks for candidates of a release-intent source", async () => {
+      const { state, gh, cancellations } = harness();
+      state.files = [[{ filename: "release-intent.json", status: "modified" }]];
+      state.candidates = [candidate(101, run(1)), candidate(102, run(2))];
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([]);
+      expect(cancellations()).toEqual([]);
+      expect(gh.mock.calls.some(([args]) => args.at(-1)!.includes("release.yml"))).toBe(false);
+    });
+
+    it.each(["in_progress", "completed"])(
+      "keeps the candidate when the CI run became %s instead of being cancelled",
+      async (status) => {
+        const { state, gh, cancellations } = harness();
+        state.queued = [[run(1)]];
+        state.candidates = [candidate(101, run(1))];
+        state.cancelError = true;
+        state.afterCancel = status;
+        expect(await supersedeQueuedCi(repository, gh)).toEqual([]);
+        expect(posts(cancellations)).toEqual(["actions/runs/1/cancel"]);
+        expect(gh.mock.calls.some(([args]) => args.at(-1)!.includes("release.yml"))).toBe(false);
+      },
+    );
+
+    it("treats a candidate that completed during cancellation as done", async () => {
+      const { state, gh, cancellations } = harness();
+      state.candidates = [candidate(101, run(1)), candidate(102, run(2))];
+      state.candidateCancelErrors = Infinity;
+      state.candidateAfterCancel = "completed";
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([1, 2]);
+      expect(posts(cancellations)).toHaveLength(4);
+    });
+
+    it.each(["queued", "in_progress", "waiting", "pending", "requested"])(
+      "cancels a candidate that is %s",
+      async (status) => {
+        const { state, gh, cancellations } = harness();
+        state.queued = [[run(1)]];
+        state.candidates = [candidate(101, run(1), { status })];
+        expect(await supersedeQueuedCi(repository, gh)).toEqual([1]);
+        expect(posts(cancellations)).toEqual(["actions/runs/1/cancel", "actions/runs/101/cancel"]);
+      },
+    );
+
+    it("cancels every unfinished candidate run of one source", async () => {
+      const { state, gh, cancellations } = harness();
+      state.queued = [[run(1)]];
+      state.candidates = [
+        candidate(101, run(1)),
+        candidate(111, run(1), { status: "queued", run_attempt: 2 }),
+        candidate(121, run(1), { status: "completed", conclusion: "cancelled" }),
+      ];
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([1]);
+      expect(posts(cancellations)).toEqual([
+        "actions/runs/1/cancel",
+        "actions/runs/101/cancel",
+        "actions/runs/111/cancel",
+      ]);
+    });
+
+    it.each([
+      { status: "completed", conclusion: "success" },
+      { run_attempt: 2 },
+      { head_sha: run(2).head_sha },
+      { id: 999 },
+      { path: ".github/workflows/release-upgrade.yml" },
+      { head_repository: { full_name: "another/repo" } },
+    ])("rechecks candidate identity before cancelling (%j)", async (changes) => {
+      const { state, gh, cancellations } = harness();
+      state.queued = [[run(1)]];
+      state.candidates = [candidate(101, run(1))];
+      state.current.set(101, candidate(101, run(1), changes));
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([1]);
+      expect(posts(cancellations)).toEqual(["actions/runs/1/cancel"]);
+    });
+
+    it("retries a failed candidate cancellation once without repeating accepted ones", async () => {
+      const { state, gh, cancellations } = harness();
+      state.queued = [[run(1)]];
+      state.candidates = [candidate(101, run(1)), candidate(111, run(1))];
+      state.candidateCancelErrorIds = new Set([111]);
+      state.candidateCancelErrors = 1;
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([1]);
+      expect(posts(cancellations)).toEqual([
+        "actions/runs/1/cancel",
+        "actions/runs/101/cancel",
+        "actions/runs/111/cancel",
+        "actions/runs/111/cancel",
+      ]);
+    });
+
+    it("retries a failed candidate listing once", async () => {
+      const { state, gh, cancellations } = harness();
+      state.queued = [[run(1)]];
+      state.candidates = [candidate(101, run(1))];
+      state.candidateListErrors = 1;
+      expect(await supersedeQueuedCi(repository, gh)).toEqual([1]);
+      expect(posts(cancellations)).toEqual(["actions/runs/1/cancel", "actions/runs/101/cancel"]);
+    });
+
+    it("keeps superseding the queue when one source's candidate cannot be cancelled", async () => {
+      const { state, gh, cancellations } = harness();
+      state.candidates = [candidate(101, run(1)), candidate(102, run(2))];
+      state.candidateCancelErrorIds = new Set([101]);
+      state.candidateCancelErrors = Infinity;
+      const failure = await supersedeQueuedCi(repository, gh).then(
+        () => undefined,
+        (error: unknown) => error as AggregateError,
+      );
+      // Both queued CI runs and the healthy candidate were still handled.
+      expect(posts(cancellations)).toEqual([
+        "actions/runs/1/cancel",
+        "actions/runs/101/cancel",
+        "actions/runs/101/cancel",
+        "actions/runs/2/cancel",
+        "actions/runs/102/cancel",
+      ]);
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect(failure!.errors).toHaveLength(1);
+      expect(failure!.message).toContain("Superseded main CI runs 1, 2");
+      expect(failure!.message).toContain(run(1).head_sha);
+      expect(failure!.message).not.toContain(run(2).head_sha);
+      expect(failure!.message).toContain("candidate cancel API unavailable");
+    });
+
+    it("keeps superseding the queue when candidate listings keep failing", async () => {
+      const { state, gh, cancellations } = harness();
+      state.candidates = [candidate(101, run(1)), candidate(102, run(2))];
+      state.candidateListErrors = Infinity;
+      const failure = await supersedeQueuedCi(repository, gh).then(
+        () => undefined,
+        (error: unknown) => error as AggregateError,
+      );
+      expect(posts(cancellations)).toEqual(["actions/runs/1/cancel", "actions/runs/2/cancel"]);
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect(failure!.errors).toHaveLength(2);
+      expect(failure!.message).toContain(run(1).head_sha);
+      expect(failure!.message).toContain(run(2).head_sha);
+      expect(failure!.message).toContain("candidate list API unavailable");
+    });
   });
 });

@@ -1,28 +1,40 @@
-import { mcpToolSwitchState, summarizeMcpTools } from "@t3tools/shared/mcpTools";
+import {
+  mcpToolPolicyChoice,
+  mcpToolSwitchState,
+  summarizeMcpTools,
+  type McpToolPolicyChoice,
+} from "@t3tools/shared/mcpTools";
 import { Switch } from "../../ui/switch";
+import { McpToolPinBadge, McpToolPolicyToggle } from "./McpToolPolicies";
 import type {
+  McpToolPinState,
   McpServerStatusesResult,
   McpSessionReloadOutcome,
   ProjectId,
   ProviderInstanceId,
   ProviderKind,
 } from "@t3tools/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { mcpQueryKeys } from "../../../lib/mcpReactQuery";
 import { mcpInspectServerQueryOptions } from "../../../lib/mcpInspectionReactQuery";
-import { ensureNativeApi } from "../../../nativeApi";
 import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 import { Button } from "../../ui/button";
+import { McpSessionOutcomes } from "./McpSessionOutcomes";
 import { readErrorMessage } from "./mcpSettingsHelpers";
 
-type InspectorTab = "Overview" | "Tools" | "Resources" | "Diagnostics";
+export type InspectorTab = "Overview" | "Tools" | "Resources" | "Diagnostics";
 
 export function McpServerInspector(props: {
   initialTab?: InspectorTab | undefined;
+  /** Shows only this section, without the inspector's own tab row. */
+  tab?: InspectorTab | undefined;
   configuredServer?: import("@t3tools/contracts").McpServerDefinition | undefined;
   fallbackTools?: ReadonlyArray<import("@t3tools/contracts").McpToolSummary> | undefined;
   onToolToggle?: ((name: string, enabled: boolean) => Promise<void>) | undefined;
+  /** Shows Allow, Ask and Block per tool instead of the on/off switch. */
+  onToolPolicy?: ((name: string, choice: McpToolPolicyChoice) => Promise<void>) | undefined;
+  /** F5's pin state per tool (New, Changed). */
+  pinStates?: ReadonlyMap<string, McpToolPinState> | undefined;
   provider: ProviderKind;
   instanceId: ProviderInstanceId;
   projectId: ProjectId | null;
@@ -34,11 +46,8 @@ export function McpServerInspector(props: {
 }) {
   const [savingTool, setSavingTool] = useState<string | null>(null);
   const [toolError, setToolError] = useState<string | null>(null);
-  const [tab, setTab] = useState<InspectorTab>(props.initialTab ?? "Overview");
-  const [retryError, setRetryError] = useState<string | null>(null);
-  const [retrying, setRetrying] = useState(false);
-  const [retryOutcomes, setRetryOutcomes] = useState<ReadonlyArray<McpSessionReloadOutcome>>();
-  const queryClient = useQueryClient();
+  const [selectedTab, setTab] = useState<InspectorTab>(props.initialTab ?? "Overview");
+  const tab = props.tab ?? selectedTab;
   const query = useQuery(
     mcpInspectServerQueryOptions({
       ...props,
@@ -69,19 +78,24 @@ export function McpServerInspector(props: {
       className="space-y-3 rounded-md border border-border p-3"
       aria-label={`Inspect ${props.serverName}`}
     >
-      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Server inspector">
-        {(["Overview", "Tools", "Resources", "Diagnostics"] as const).map((value) => (
-          <Button
-            key={value}
-            size="xs"
-            variant={tab === value ? "secondary" : "outline"}
-            role="tab"
-            aria-selected={tab === value}
-            onClick={() => setTab(value)}
-          >
-            {value}
-          </Button>
-        ))}
+      <div className="flex flex-wrap gap-2">
+        {/* A fixed section has no tabs to choose, so it has no tablist either. */}
+        {props.tab ? null : (
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Server inspector">
+            {(["Overview", "Tools", "Resources", "Diagnostics"] as const).map((value) => (
+              <Button
+                key={value}
+                size="xs"
+                variant={tab === value ? "secondary" : "outline"}
+                role="tab"
+                aria-selected={tab === value}
+                onClick={() => setTab(value)}
+              >
+                {value}
+              </Button>
+            ))}
+          </div>
+        )}
         <Button
           size="xs"
           variant="outline"
@@ -114,10 +128,13 @@ export function McpServerInspector(props: {
                   className="flex items-center justify-between gap-3 rounded border p-2"
                 >
                   <div>
-                    <p>
-                      {tool.name}
-                      {tool.readOnly ? " · read only" : ""}
-                      {tool.destructive ? " · destructive" : ""}
+                    <p className="flex flex-wrap items-center gap-1.5">
+                      <span>
+                        {tool.name}
+                        {tool.readOnly ? " · read only" : ""}
+                        {tool.destructive ? " · destructive" : ""}
+                      </span>
+                      <McpToolPinBadge state={props.pinStates?.get(tool.name)} />
                     </p>
                     {tool.description ? <p>{tool.description}</p> : null}
                     {reported ? (
@@ -136,7 +153,33 @@ export function McpServerInspector(props: {
                       </details>
                     ) : null}
                   </div>
-                  {state && props.onToolToggle ? (
+                  {state && props.onToolPolicy && props.configuredServer ? (
+                    <span
+                      title={
+                        state.excluded
+                          ? "Excluded by this server's enabled-tools list. Edit it under Advanced."
+                          : undefined
+                      }
+                    >
+                      <McpToolPolicyToggle
+                        toolName={tool.name}
+                        value={mcpToolPolicyChoice(props.configuredServer, tool.name)}
+                        excluded={state.excluded}
+                        disabled={savingTool !== null}
+                        onChange={(choice) => {
+                          setSavingTool(tool.name);
+                          setToolError(null);
+                          void props.onToolPolicy!(tool.name, choice)
+                            .catch((cause) =>
+                              setToolError(
+                                readErrorMessage(cause, "Could not save tool settings."),
+                              ),
+                            )
+                            .finally(() => setSavingTool(null));
+                        }}
+                      />
+                    </span>
+                  ) : state && props.onToolToggle ? (
                     <span
                       title={
                         state.excluded
@@ -282,55 +325,13 @@ export function McpServerInspector(props: {
           ))}
         </div>
       ) : null}
-      {(retryOutcomes ?? props.outcomes ?? data?.outcomes)?.map((outcome) => (
-        <div key={`${outcome.threadId}:${outcome.generation}`} className="space-y-1 text-xs">
-          <p>
-            {outcome.threadId} · generation {outcome.generation}: {outcome.disposition}
-          </p>
-          {outcome.result.errors.map((error, index) => (
-            <p key={index} className="whitespace-pre-wrap break-words">
-              {error.message}
-            </p>
-          ))}
-          {outcome.disposition !== "applied" ? (
-            <Button
-              size="xs"
-              variant="outline"
-              disabled={retrying}
-              onClick={() => {
-                if (!props.projectId) return;
-                setRetrying(true);
-                setRetryError(null);
-                const retry =
-                  props.outcomeAction === "reconnect"
-                    ? ensureNativeApi().mcp.reconnectServer({
-                        projectId: props.projectId,
-                        instanceId: props.instanceId,
-                        serverName: props.serverName,
-                        threadIds: [outcome.threadId],
-                      })
-                    : ensureNativeApi().mcp.applyToLiveSessions({
-                        scope: "project",
-                        projectId: props.projectId,
-                        instanceId: props.instanceId,
-                        threadIds: [outcome.threadId],
-                        retryUnchanged: true,
-                      });
-                void retry
-                  .then((result) => {
-                    setRetryOutcomes(result.sessions);
-                    return queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
-                  })
-                  .catch((error) => setRetryError(readErrorMessage(error, "Retry failed.")))
-                  .finally(() => setRetrying(false));
-              }}
-            >
-              Retry in this conversation
-            </Button>
-          ) : null}
-        </div>
-      ))}
-      {retryError ? <p className="text-xs text-destructive">{retryError}</p> : null}
+      <McpSessionOutcomes
+        outcomes={props.outcomes ?? data?.outcomes}
+        action={props.outcomeAction ?? "apply"}
+        projectId={props.projectId}
+        instanceId={props.instanceId}
+        serverName={props.serverName}
+      />
     </section>
   );
 }

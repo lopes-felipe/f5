@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import * as NodeFs from "node:fs";
+import * as NodeOs from "node:os";
+import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
   EventId,
@@ -46,6 +49,8 @@ import {
   type CodexAdapterLiveOptions,
 } from "./CodexAdapter.ts";
 import { CodexChromeSession } from "../codexChromeSession.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
+import type { McpHubOmission } from "../../mcp/hub/McpHub.ts";
 import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
 import {
   NotificationAdmission,
@@ -417,6 +422,181 @@ const validationLayer = it.layer(
   ),
 );
 
+const hubManager = new FakeCodexManager();
+const hubOmitted: McpHubOmission[] = [];
+const fakeHub = makeFakeMcpHub({ omitted: hubOmitted });
+let passthrough = false;
+const hubLayer = it.layer(
+  makeCodexAdapterLive({
+    manager: hubManager,
+    mcpHub: fakeHub.hub,
+    mcpNativePassthrough: Effect.sync(() => passthrough),
+  }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+hubLayer("CodexAdapterLive with F5's MCP hub", (it) => {
+  const launched = () =>
+    hubManager.startSessionImpl.mock.calls.at(-1)![0] as {
+      mcpServers?: Record<string, Record<string, unknown>>;
+      mcpEnvironment?: Record<string, string>;
+    };
+
+  it.effect("launches with hub endpoints whose credentials are environment variables", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const secret = "configured-secret-value";
+      yield* adapter.startSession({
+        threadId: asThreadId("hub-start"),
+        runtimeMode: "approval-required",
+        providerOptions: {
+          mcpServers: {
+            docs: {
+              type: "stdio",
+              command: "docs-server",
+              env: { TOKEN: secret },
+              supportsParallelToolCalls: true,
+            },
+          },
+        },
+      });
+      const input = launched();
+      assert.deepEqual(Object.keys(input.mcpServers ?? {}), ["docs"]);
+      assert.equal(input.mcpServers?.docs?.url, "http://127.0.0.1:9/mcp/user/docs");
+      assert.equal(input.mcpServers?.docs?.bearer_token_env_var, "F5_MCP_HUB_TOKEN_0");
+      assert.equal(input.mcpServers?.docs?.supports_parallel_tool_calls, true);
+      assert.equal(input.mcpEnvironment?.F5_MCP_HUB_TOKEN_0, "token-docs");
+      assert.ok(!JSON.stringify(input.mcpServers).includes(secret));
+      assert.equal(fakeHub.attaches.at(-1)?.provider, "codex");
+    }),
+  );
+
+  it.effect("warns about left-out servers once configured and releases endpoints on exit", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("hub-exit");
+      hubOmitted.push({
+        serverName: "secret-docs",
+        reason: "needs ${env:DOCS_TOKEN}, which is not set",
+      });
+      try {
+        yield* adapter.startSession({
+          threadId,
+          runtimeMode: "approval-required",
+          providerOptions: { mcpServers: { docs: { type: "stdio", command: "docs" } } },
+        });
+      } finally {
+        hubOmitted.length = 0;
+      }
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      hubManager.emit("event", {
+        id: asEventId("evt-hub-configured"),
+        kind: "session",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "session/configured",
+        threadId,
+        payload: { config: { model: "gpt" } },
+      } satisfies ProviderEvent);
+      const collected = [...(yield* Fiber.join(events))];
+      assert.deepEqual(
+        collected.map((event) => event.type),
+        ["session.configured", "config.warning"],
+      );
+      const warning = collected[1]!;
+      if (warning.type === "config.warning") {
+        assert.equal(warning.payload.summary, "F5 did not pass MCP server secret-docs to Codex.");
+        assert.match(warning.payload.details ?? "", /DOCS_TOKEN/);
+      }
+
+      // The process exits on its own: its hub endpoints go with it.
+      const disposedBefore = fakeHub.disposed;
+      hubManager.emit("event", {
+        id: asEventId("evt-hub-exited"),
+        kind: "session",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "session/exited",
+        threadId,
+      } satisfies ProviderEvent);
+      for (let attempt = 0; attempt < 50 && fakeHub.disposed === disposedBefore; attempt++)
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      assert.equal(fakeHub.disposed, disposedBefore + 1);
+    }),
+  );
+
+  it.effect("applies edits on the hub and restarts only for added servers", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("hub-reload");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: { docs: { type: "stdio", command: "old" } } },
+      });
+      const reload = vi.spyOn(hubManager, "reloadMcpConfig").mockResolvedValue([]);
+      try {
+        const edited = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: { docs: { type: "stdio", command: "new" } },
+        });
+        assert.equal(edited.restartRequired, false);
+        assert.deepEqual(fakeHub.updates.at(-1), { docs: { type: "stdio", command: "new" } });
+        assert.equal(reload.mock.calls.length, 1);
+
+        const added = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: {
+            docs: { type: "stdio", command: "new" },
+            more: { type: "stdio", command: "more" },
+          },
+        });
+        // Edits in the same Apply still reach Codex before the restart.
+        assert.equal(added.restartRequired, true);
+        assert.equal(reload.mock.calls.length, 2);
+
+        // An Apply with no F5 change still reloads, so Codex's own servers pick up
+        // sign-ins and edits.
+        const unchanged = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: { docs: { type: "stdio", command: "new" } },
+        });
+        assert.equal(unchanged.restartRequired, false);
+        assert.equal(reload.mock.calls.length, 3);
+      } finally {
+        reload.mockRestore();
+      }
+    }),
+  );
+
+  it.effect("keeps configured servers on Codex with mcpNativePassthrough", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const attaches = fakeHub.attaches.length;
+      passthrough = true;
+      try {
+        yield* adapter.startSession({
+          threadId: asThreadId("hub-passthrough"),
+          runtimeMode: "approval-required",
+          providerOptions: { mcpServers: { docs: { type: "stdio", command: "docs-server" } } },
+        });
+      } finally {
+        passthrough = false;
+      }
+      assert.equal(launched().mcpServers?.docs?.command, "docs-server");
+      assert.equal(fakeHub.attaches.length, attaches);
+    }),
+  );
+});
+
 validationLayer("CodexAdapterLive validation", (it) => {
   it.effect("rejects excessive MCP start and reload inputs before manager mutation", () =>
     Effect.gen(function* () {
@@ -471,6 +651,34 @@ validationLayer("CodexAdapterLive validation", (it) => {
       } finally {
         reload.mockRestore();
       }
+    }),
+  );
+
+  it.effect("starts read-only workflow sessions with their profile", () =>
+    Effect.gen(function* () {
+      validationManager.startSessionImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: "codex",
+        threadId: asThreadId("readonly-stage"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      assert.equal(
+        validationManager.startSessionImpl.mock.calls.at(-1)?.[0].workflowExecutionProfile,
+        "unattended-readonly",
+      );
+      yield* adapter.startSession({
+        provider: "codex",
+        threadId: asThreadId("readonly-policy-stage"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        readOnlyEnforcement: "policy",
+      });
+      assert.equal(
+        validationManager.startSessionImpl.mock.calls.at(-1)?.[0].readOnlyEnforcement,
+        "policy",
+      );
     }),
   );
 
@@ -2960,6 +3168,51 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("reports a request F5 refused in a policy-enforced stage as auto-declined", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const next = yield* Stream.take(adapter.streamEvents, 2).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      lifecycleManager.emit("event", {
+        id: asEventId("policy-refused"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "f5/readOnly/refused",
+        requestId: ApprovalRequestId.makeUnsafe("policy-refused"),
+        requestKind: "command",
+        payload: {
+          requestMethod: "item/commandExecution/requestApproval",
+          reason: "`touch` is not on the read-only allowlist",
+          params: { command: "/bin/zsh -lc 'touch marker'" },
+        },
+      } satisfies ProviderEvent);
+      const [opened, resolved] = Array.from(yield* Fiber.join(next));
+      assert.equal(opened?.type, "request.opened");
+      if (opened?.type !== "request.opened") return;
+      assert.deepEqual(
+        {
+          requestType: opened.payload.requestType,
+          detail: opened.payload.detail,
+          autoDeclined: opened.payload.autoDeclined,
+        },
+        {
+          requestType: "command_execution_approval",
+          detail: "/bin/zsh -lc 'touch marker' (`touch` is not on the read-only allowlist)",
+          autoDeclined: true,
+        },
+      );
+      assert.equal(resolved?.type, "request.resolved");
+      if (resolved?.type !== "request.resolved") return;
+      assert.equal(resolved.payload.decision, "decline");
+      assert.equal(resolved.requestId, opened.requestId);
+      assert.notEqual(resolved.eventId, opened.eventId);
+    }),
+  );
+
   it.effect("lists at most twenty patch approval paths with an overflow count", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -4908,6 +5161,124 @@ it.effect("gives a read-only Codex workflow stage a read-only thread catalog", (
     assert.equal(threadCatalogCall()?.threadAccess, "full");
   }).pipe(Effect.provide(layer), Effect.scoped);
 });
+
+it.effect(
+  "gives a read-only Codex workflow stage no MCP server but F5's read-only thread catalog",
+  () => {
+    const manager = new FakeCodexManager();
+    const createSessionConfig = vi.fn((input: { readonly catalog?: string }) => ({
+      serverName: input.catalog === "thread" ? "f5_thread" : "f5_preview",
+      serverDefinition: { type: "http" as const, url: "http://127.0.0.1/mcp" },
+      env: {},
+      dispose: () => undefined,
+    }));
+    const previewMcpHttpServer = {
+      supportsThreadCatalog: true,
+      createSessionConfig,
+    } as unknown as NonNullable<CodexAdapterLiveOptions["previewMcpHttpServer"]>;
+    const layer = makeCodexAdapterLive({ manager, previewMcpHttpServer }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(
+          process.cwd(),
+          { prefix: "codex-readonly-mcp-" },
+          { mode: "desktop" },
+        ),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const lastStart = () =>
+      manager.startSessionImpl.mock.calls.at(-1)?.[0] as {
+        mcpServers?: Record<string, unknown>;
+        disablePlugins?: boolean;
+        readOnlyHomePath?: string;
+      };
+    // A server from the user's Codex settings and the project's provider options.
+    const providerOptions = {
+      mcpServers: { github: { type: "stdio" as const, command: "github-mcp" } },
+    };
+    return Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        threadId: asThreadId("workflow-stage"),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+        providerOptions,
+      });
+      assert.deepEqual(Object.keys(lastStart().mcpServers ?? {}), ["f5_thread"]);
+      assert.equal(lastStart().disablePlugins, true);
+      // The stage runs in the instance's rules-free home (CodexReadOnlyHome.ts).
+      assert.match(lastStart().readOnlyHomePath ?? "", /[\\/]codex-readonly[\\/]codex$/);
+
+      yield* adapter.startSession({
+        threadId: asThreadId("normal"),
+        runtimeMode: "full-access",
+        providerOptions,
+      });
+      assert.deepEqual(Object.keys(lastStart().mcpServers ?? {}).toSorted(), [
+        "f5_preview",
+        "f5_thread",
+        "github",
+      ]);
+      assert.equal(lastStart().disablePlugins, undefined);
+      assert.equal(lastStart().readOnlyHomePath, undefined);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
+it.effect(
+  "refuses a read-only stage whose workspace has its own Codex rules, at start and before a turn",
+  () => {
+    const manager = new FakeCodexManager();
+    const layer = makeCodexAdapterLive({ manager }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "codex-readonly-rules-" }),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const workspace = NodeFs.mkdtempSync(NodePath.join(NodeOs.tmpdir(), "codex-rules-ws-"));
+      NodeFs.mkdirSync(NodePath.join(workspace, ".git"));
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        threadId: asThreadId("clean-stage"),
+        cwd: workspace,
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+
+      NodeFs.mkdirSync(NodePath.join(workspace, ".codex", "rules"), { recursive: true });
+      NodeFs.writeFileSync(
+        NodePath.join(workspace, ".codex", "rules", "default.rules"),
+        'prefix_rule(pattern=["touch"], decision="allow")\n',
+      );
+      const startFailure = yield* adapter
+        .startSession({
+          threadId: asThreadId("rules-stage"),
+          cwd: workspace,
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.flip);
+      assert.match(String(startFailure.message), /default\.rules has Codex rules/);
+      // A normal session is unaffected.
+      yield* adapter.startSession({
+        threadId: asThreadId("normal-session"),
+        cwd: workspace,
+        runtimeMode: "full-access",
+      });
+
+      manager.readOnlyStageCwd = () => workspace;
+      const sendsBefore = manager.sendTurnImpl.mock.calls.length;
+      const turnFailure = yield* adapter
+        .sendTurn({ threadId: asThreadId("clean-stage"), input: "review" })
+        .pipe(Effect.flip);
+      assert.match(String(turnFailure.message), /default\.rules has Codex rules/);
+      assert.equal(manager.sendTurnImpl.mock.calls.length, sendsBefore);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
 
 it.effect(
   "has Codex start node_repl only for consented, interactive desktop sessions without a node_repl of their own",

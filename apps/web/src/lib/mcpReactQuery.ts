@@ -1,61 +1,258 @@
 import type {
-  McpCodexStatusResult,
   ThreadId,
   McpStatusUpdatedPayload,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
+  McpGetHubAuthStatusResult,
+  McpGetHubStatusResult,
+  McpListActivityResult,
+  McpListToolPinsResult,
+  McpThreadServersResult,
+  McpListComposerPromptsResult,
+  McpListComposerResourcesResult,
+  McpRepositoryServersResult,
   McpLoginStatusResult,
   McpProviderStatusResult,
-  McpOauthLoginStatusResult,
   McpProjectConfigResult,
   McpServerStatusesResult,
   ProjectId,
   ProviderKind,
-  ProviderInstanceId,
 } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { getWsConnectionState } from "../wsConnectionState";
 import { ensureNativeApi } from "../nativeApi";
 import { rpcQueryContext, rpcQueryMeta } from "./rpcQueryContext";
 
-type CodexEnvironmentKeyPart = string | null;
+/**
+ * Every MCP query key is `["mcp", kind, scope, ...extra]`. Event matching reads the
+ * scope by name, and TanStack's partial matching lets a shorter scope (for example
+ * without `threadId`) invalidate every query inside it.
+ */
+export interface McpQueryScope {
+  readonly projectId: ProjectId | null;
+  readonly provider?: ProviderKind | undefined;
+  readonly instanceId?: ProviderInstanceId | null;
+  readonly serverName?: string | null;
+  readonly threadId?: ThreadId | null;
+}
+
+export function readMcpQueryScope(queryKey: readonly unknown[]): McpQueryScope | undefined {
+  const scope = queryKey[2];
+  return scope && typeof scope === "object" ? (scope as McpQueryScope) : undefined;
+}
 
 export const mcpQueryKeys = {
   all: ["mcp"] as const,
-  commonConfig: () => ["mcp", "commonConfig"] as const,
-  projectConfig: (projectId: ProjectId | null) => ["mcp", "projectConfig", projectId] as const,
-  effectiveConfig: (projectId: ProjectId | null) => ["mcp", "effectiveConfig", projectId] as const,
+  commonConfig: () => ["mcp", "commonConfig", { projectId: null }] as const,
+  projectConfig: (projectId: ProjectId | null) => ["mcp", "projectConfig", { projectId }] as const,
+  effectiveConfig: (projectId: ProjectId | null) =>
+    ["mcp", "effectiveConfig", { projectId }] as const,
   providerStatus: (
     provider: ProviderKind,
     projectId: ProjectId | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "providerStatus", provider, projectId, binaryPath, homePath] as const,
+    instanceId: ProviderInstanceId | null,
+  ) => ["mcp", "providerStatus", { provider, projectId, instanceId }] as const,
   serverStatuses: (
     provider: ProviderKind,
     projectId: ProjectId | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "serverStatuses", provider, projectId, binaryPath, homePath] as const,
+    instanceId: ProviderInstanceId | null,
+  ) => ["mcp", "serverStatuses", { provider, projectId, instanceId }] as const,
   loginStatus: (
     provider: ProviderKind,
     projectId: ProjectId | null,
     serverName: string | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "loginStatus", provider, projectId, serverName, binaryPath, homePath] as const,
-  codexStatus: (
+    instanceId: ProviderInstanceId | null,
+  ) => ["mcp", "loginStatus", { provider, projectId, serverName, instanceId }] as const,
+  inspectServer: (
+    provider: ProviderKind | undefined,
     projectId: ProjectId | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "codexStatus", projectId, binaryPath, homePath] as const,
-  oauthStatus: (
-    projectId: ProjectId | null,
-    serverName: string | null,
-    binaryPath: CodexEnvironmentKeyPart,
-    homePath: CodexEnvironmentKeyPart,
-  ) => ["mcp", "oauthStatus", projectId, serverName, binaryPath, homePath] as const,
+    instanceId: ProviderInstanceId | null,
+    serverName: string,
+    threadId: ThreadId | null,
+  ) => ["mcp", "inspectServer", { provider, projectId, instanceId, serverName, threadId }] as const,
+  hubStatus: (projectId: ProjectId | null) => ["mcp", "hubStatus", { projectId }] as const,
+  hubAuth: (projectId: ProjectId | null) => ["mcp", "hubAuth", { projectId }] as const,
+  toolPins: (serverName: string) => ["mcp", "toolPins", { projectId: null, serverName }] as const,
+  activity: (serverName: string | null, threadId: ThreadId | null) =>
+    ["mcp", "activity", { projectId: null, serverName, threadId }] as const,
+  threadServers: (threadId: ThreadId) =>
+    ["mcp", "threadServers", { projectId: null, threadId }] as const,
+  composerPrompts: (threadId: ThreadId) =>
+    ["mcp", "composerPrompts", { projectId: null, threadId }] as const,
+  composerResources: (threadId: ThreadId) =>
+    ["mcp", "composerResources", { projectId: null, threadId }] as const,
+  repositoryServers: (projectId: ProjectId) => ["mcp", "repositoryServers", { projectId }] as const,
 };
+
+/** `.mcp.json` servers and their approvals; refreshed with the stored configuration. */
+export function mcpRepositoryServersQueryOptions(input: {
+  readonly projectId: ProjectId;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpRepositoryServersResult>({
+    queryKey: mcpQueryKeys.repositoryServers(input.projectId),
+    enabled: input.enabled ?? true,
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.getRepositoryServers(
+        { projectId: input.projectId },
+        rpcQueryContext(context),
+      ),
+  });
+}
+
+/** Hub queries refreshed by `hub` events (connections, pins, conversation toggles). */
+const MCP_HUB_QUERY_KINDS = new Set([
+  "hubStatus",
+  "toolPins",
+  "threadServers",
+  "composerPrompts",
+  "composerResources",
+]);
+
+/** How long the composer reuses a conversation's prompt and resource lists. */
+const COMPOSER_LIST_STALE_MS = 30_000;
+
+/** Prompts from the hub servers this conversation's session uses; read when `/` opens. */
+export function mcpComposerPromptsQueryOptions(input: {
+  readonly threadId: ThreadId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpListComposerPromptsResult>({
+    queryKey: mcpQueryKeys.composerPrompts(input.threadId ?? ("" as ThreadId)),
+    enabled: (input.enabled ?? true) && input.threadId !== null,
+    staleTime: COMPOSER_LIST_STALE_MS,
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.listComposerPrompts(
+        { threadId: input.threadId! },
+        rpcQueryContext(context),
+      ),
+  });
+}
+
+/** Resources from the same servers; read when `@` opens. */
+export function mcpComposerResourcesQueryOptions(input: {
+  readonly threadId: ThreadId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpListComposerResourcesResult>({
+    queryKey: mcpQueryKeys.composerResources(input.threadId ?? ("" as ThreadId)),
+    enabled: (input.enabled ?? true) && input.threadId !== null,
+    staleTime: COMPOSER_LIST_STALE_MS,
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.listComposerResources(
+        { threadId: input.threadId! },
+        rpcQueryContext(context),
+      ),
+  });
+}
+
+export function mcpToolPinsQueryOptions(input: {
+  readonly serverName: string;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpListToolPinsResult>({
+    queryKey: mcpQueryKeys.toolPins(input.serverName),
+    enabled: input.enabled ?? true,
+    queryFn: async () => ensureNativeApi().mcp.listToolPins({ serverName: input.serverName }),
+  });
+}
+
+/** The call log is read when shown and on Refresh; calls are not pushed one by one. */
+export function mcpActivityQueryOptions(input: {
+  readonly serverName: string | null;
+  readonly threadId?: ThreadId | null;
+  readonly projectId?: ProjectId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpListActivityResult>({
+    queryKey: [
+      ...mcpQueryKeys.activity(input.serverName, input.threadId ?? null),
+      { projectId: input.projectId ?? null },
+    ] as const,
+    enabled: input.enabled ?? true,
+    staleTime: 0,
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.listActivity(
+        {
+          ...(input.serverName ? { serverName: input.serverName } : {}),
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          ...(input.projectId ? { projectId: input.projectId } : {}),
+        },
+        rpcQueryContext(context),
+      ),
+  });
+}
+
+export function mcpThreadServersQueryOptions(input: {
+  readonly threadId: ThreadId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpThreadServersResult>({
+    queryKey: mcpQueryKeys.threadServers(input.threadId ?? ("" as ThreadId)),
+    enabled: (input.enabled ?? true) && input.threadId !== null,
+    queryFn: async () => ensureNativeApi().mcp.getThreadServers({ threadId: input.threadId! }),
+  });
+}
+
+/** Sign-in state follows saves (the server list) and hub events (sign-in, sign-out). */
+export function mcpHubAuthQueryOptions(input: {
+  readonly projectId: ProjectId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpGetHubAuthStatusResult>({
+    queryKey: mcpQueryKeys.hubAuth(input.projectId),
+    enabled: input.enabled ?? true,
+    meta: rpcQueryMeta("refresh-background"),
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.getHubAuthStatus(
+        input.projectId ? { projectId: input.projectId } : {},
+        rpcQueryContext(context),
+      ),
+  });
+}
+
+/** Hub status is pushed (reason `hub`), so it is never polled. */
+export function mcpHubStatusQueryOptions(input: {
+  readonly projectId: ProjectId | null;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpGetHubStatusResult>({
+    queryKey: mcpQueryKeys.hubStatus(input.projectId),
+    enabled: input.enabled ?? true,
+    meta: rpcQueryMeta("refresh-background"),
+    queryFn: async (context) =>
+      ensureNativeApi().mcp.getHubStatus(
+        input.projectId ? { projectId: input.projectId } : {},
+        rpcQueryContext(context),
+      ),
+  });
+}
+
+const MCP_CONFIG_QUERY_KINDS = new Set([
+  "commonConfig",
+  "projectConfig",
+  "effectiveConfig",
+  "repositoryServers",
+]);
+
+export function isMcpConfigQuery(queryKey: readonly unknown[]): boolean {
+  return queryKey[0] === "mcp" && MCP_CONFIG_QUERY_KINDS.has(String(queryKey[1]));
+}
+
+/**
+ * A save changes stored configuration only. Statuses are refetched on Refresh,
+ * Apply or a status event, because a Codex status check can start a provider
+ * process that launches every configured server.
+ */
+export function invalidateMcpConfigQueries(
+  queryClient: import("@tanstack/react-query").QueryClient,
+) {
+  return queryClient.invalidateQueries({
+    queryKey: mcpQueryKeys.all,
+    predicate: (query) => isMcpConfigQuery(query.queryKey),
+  });
+}
 
 /** Scoped account events must never refresh another account's control or login queries. */
 export function isMcpQueryAffected(
@@ -64,23 +261,27 @@ export function isMcpQueryAffected(
 ): boolean {
   if (queryKey[0] !== "mcp") return false;
   const kind = queryKey[1];
+  // Hub sign-in is profile-wide and local to read; provider-account events never change it.
+  if (kind === "hubAuth") return event.instanceId === undefined;
+  if (event.reason === "updated" && !isMcpConfigQuery(queryKey)) return false;
+  // The call log is read on demand; the catalog is the registry's, not F5's.
+  if (kind === "activity" || kind === "catalog") return false;
+  // Hub connection changes never touch provider observations, and vice versa.
+  if (event.reason === "hub") return MCP_HUB_QUERY_KINDS.has(String(kind));
+  if (MCP_HUB_QUERY_KINDS.has(String(kind)) && kind !== "hubStatus") return false;
+  if (kind === "hubStatus") return event.reason !== "updated";
   const accountScoped = [
     "providerStatus",
     "serverStatuses",
     "inspectServer",
     "loginStatus",
-    "codexStatus",
-    "oauthStatus",
   ].includes(String(kind));
+  const scope = readMcpQueryScope(queryKey);
   if (event.instanceId) {
-    if (!accountScoped) return false;
-    const instance = queryKey[kind === "codexStatus" ? 3 : kind === "loginStatus" ? 5 : 4];
-    if (instance !== event.instanceId) return false;
+    if (!accountScoped || scope?.instanceId !== event.instanceId) return false;
   }
   if (event.projectId && event.scope === "project") {
-    const project =
-      queryKey[accountScoped && kind !== "codexStatus" && kind !== "oauthStatus" ? 3 : 2];
-    if (kind !== "commonConfig" && project !== event.projectId) return false;
+    if (kind !== "commonConfig" && scope?.projectId !== event.projectId) return false;
   }
   return true;
 }
@@ -129,50 +330,17 @@ export function mcpEffectiveConfigQueryOptions(input: {
   });
 }
 
-export function mcpCodexStatusQueryOptions(input: {
-  readonly projectId: ProjectId | null;
-  readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
-  readonly enabled?: boolean;
-}) {
-  return queryOptions<McpCodexStatusResult>({
-    queryKey: mcpQueryKeys.codexStatus(
-      input.projectId,
-      input.instanceId ?? input.binaryPath ?? null,
-      input.homePath ?? null,
-    ),
-    enabled: (input.enabled ?? true) && Boolean(input.projectId),
-    meta: rpcQueryMeta("refresh-background"),
-    queryFn: async (context) => {
-      if (!input.projectId) {
-        throw new Error("Codex MCP status is unavailable.");
-      }
-      return ensureNativeApi().mcp.getCodexStatus(
-        {
-          projectId: input.projectId,
-          ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-        },
-        rpcQueryContext(context),
-      );
-    },
-  });
-}
-
 export function mcpProviderStatusQueryOptions(input: {
   readonly provider: ProviderKind;
   readonly projectId: ProjectId | null;
   readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
   readonly enabled?: boolean;
 }) {
   return queryOptions<McpProviderStatusResult>({
     queryKey: mcpQueryKeys.providerStatus(
       input.provider,
       input.projectId,
-      input.instanceId ?? input.binaryPath ?? null,
-      input.homePath ?? null,
+      input.instanceId ?? null,
     ),
     enabled: (input.enabled ?? true) && Boolean(input.projectId),
     meta: rpcQueryMeta("refresh-background"),
@@ -192,47 +360,44 @@ export function mcpProviderStatusQueryOptions(input: {
   });
 }
 
+/**
+ * The key deliberately omits the saved config version: a save must not refetch
+ * statuses (see invalidateMcpConfigQueries).
+ */
 export function mcpServerStatusesQueryOptions(input: {
   readonly provider: ProviderKind;
   readonly projectId: ProjectId | null;
   readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
   readonly enabled?: boolean;
   readonly threadId?: ThreadId;
-  readonly fingerprint?: string;
-  readonly generation?: number;
-  readonly desiredVersion?: string;
-  readonly appliedVersion?: string;
 }) {
+  const scope: McpQueryScope = {
+    provider: input.provider,
+    projectId: input.projectId,
+    instanceId: input.instanceId ?? null,
+    threadId: input.threadId ?? null,
+  };
   return queryOptions<McpServerStatusesResult>({
-    queryKey: [
-      ...mcpQueryKeys.serverStatuses(
-        input.provider,
-        input.projectId,
-        input.instanceId ?? input.binaryPath ?? null,
-        input.homePath ?? null,
-      ),
-      input.threadId ? "conversation" : "automatic",
-      input.fingerprint ?? null,
-      input.threadId ?? null,
-      input.generation ?? null,
-      input.desiredVersion ?? null,
-      input.appliedVersion ?? null,
-    ],
+    queryKey: ["mcp", "serverStatuses", scope],
     placeholderData: (previous, previousQuery) => {
-      const key = previousQuery?.queryKey;
-      return key?.[2] === input.provider &&
-        key[3] === input.projectId &&
-        key[4] === (input.instanceId ?? input.binaryPath ?? null) &&
-        key[5] === (input.homePath ?? null) &&
-        key[8] === (input.threadId ?? null)
+      const key = previousQuery ? readMcpQueryScope(previousQuery.queryKey) : undefined;
+      return key !== undefined &&
+        key.provider === scope.provider &&
+        key.projectId === scope.projectId &&
+        key.instanceId === scope.instanceId &&
+        key.threadId === scope.threadId
         ? previous
         : undefined;
     },
     enabled: (input.enabled ?? true) && Boolean(input.projectId),
+    // Conversation statuses are pushed (reason `runtime`). A configuration check has no
+    // conversation to report from, so its starting servers are re-checked for 30 seconds.
     refetchInterval: (query) => {
-      if (!query.state.data?.statuses.some((server) => server.state === "starting")) {
+      if (
+        !query.state.data ||
+        query.state.data.source === "conversation" ||
+        !query.state.data.statuses.some((server) => server.state === "starting")
+      ) {
         runtimePollWindows.delete(query);
         return false;
       }
@@ -263,23 +428,27 @@ export function mcpLoginStatusQueryOptions(input: {
   readonly projectId: ProjectId | null;
   readonly serverName?: string | null;
   readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
   readonly enabled?: boolean;
 }) {
+  // The server records a Claude server sign-in under the provider's default instance when
+  // none is given, and pushes its completion with that instance; the key must match it.
+  const instanceId =
+    input.instanceId ??
+    (input.provider === "claudeAgent" && input.serverName
+      ? ProviderInstanceId.make(input.provider)
+      : undefined);
   return queryOptions<McpLoginStatusResult>({
     queryKey: mcpQueryKeys.loginStatus(
       input.provider,
       input.projectId,
       input.serverName ?? null,
-      input.instanceId ?? input.binaryPath ?? null,
-      input.homePath ?? null,
+      instanceId ?? null,
     ),
     enabled:
       (input.enabled ?? true) &&
       Boolean(input.projectId) &&
       (input.provider === "claudeAgent" || Boolean(input.serverName)),
-    refetchInterval: (query) => (query.state.data?.status === "pending" ? 2_000 : false),
+    // Not polled: every completed or failed sign-in is pushed (see useMcpStatusUpdates).
     queryFn: async () => {
       if (!input.projectId) {
         throw new Error("MCP login status is unavailable.");
@@ -289,37 +458,6 @@ export function mcpLoginStatusQueryOptions(input: {
         projectId: input.projectId,
         ...(input.instanceId ? { instanceId: input.instanceId } : {}),
         ...(input.serverName ? { serverName: input.serverName } : {}),
-      });
-    },
-  });
-}
-
-export function mcpOAuthStatusQueryOptions(input: {
-  readonly projectId: ProjectId | null;
-  readonly serverName: string | null;
-  readonly instanceId?: ProviderInstanceId;
-  readonly binaryPath?: string;
-  readonly homePath?: string;
-  readonly enabled?: boolean;
-  readonly refetchInterval?: number | false;
-}) {
-  return queryOptions<McpOauthLoginStatusResult>({
-    queryKey: mcpQueryKeys.oauthStatus(
-      input.projectId,
-      input.serverName,
-      input.instanceId ?? input.binaryPath ?? null,
-      input.homePath ?? null,
-    ),
-    enabled: (input.enabled ?? true) && Boolean(input.projectId) && Boolean(input.serverName),
-    refetchInterval: input.refetchInterval ?? false,
-    queryFn: async () => {
-      if (!input.projectId || !input.serverName) {
-        throw new Error("MCP OAuth status is unavailable.");
-      }
-      return ensureNativeApi().mcp.getOAuthStatus({
-        projectId: input.projectId,
-        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-        serverName: input.serverName,
       });
     },
   });

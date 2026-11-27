@@ -52,6 +52,7 @@ import {
   asString,
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
+  CODEX_READ_ONLY_REFUSED_METHOD,
 } from "./CodexProtocolHelpers.ts";
 import type { AgentCapabilityState } from "../Layers/claudeAgentBrowser.ts";
 import { CODEX_CHROME_SERVER_NAME } from "../codexChromeIntegration.ts";
@@ -1591,6 +1592,39 @@ export function mapToRuntimeEvents(
           requestType,
           ...(event.payload !== undefined ? { resolution: event.payload } : {}),
         },
+      },
+    ];
+  }
+
+  if (event.method === CODEX_READ_ONLY_REFUSED_METHOD && event.requestId) {
+    // The manager already refused it (a policy-enforced read-only stage): nothing is pending, so
+    // the request opens auto-declined and resolves at once, as on the ACP providers.
+    const requestMethod = asString(payload?.requestMethod) ?? "unknown";
+    const params = asObject(payload?.params);
+    const requestType = toRequestTypeFromMethod(requestMethod, params?.permissions);
+    const subject =
+      requestMethod === "applyPatchApproval" || requestMethod === "item/fileChange/requestApproval"
+        ? describePatchApproval(params)
+        : (asString(params?.command) ??
+          (Array.isArray(params?.command) ? params.command.join(" ") : undefined));
+    const reason = asString(payload?.reason);
+    const detail = subject && reason ? `${subject} (${reason})` : (subject ?? reason ?? undefined);
+    return [
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        type: "request.opened",
+        payload: {
+          requestType,
+          ...(detail ? { detail } : {}),
+          ...(params ? { args: params } : {}),
+          autoDeclined: true,
+        },
+      },
+      {
+        ...runtimeEventBase(event, canonicalThreadId),
+        eventId: EventId.make(`${event.id}:resolved`),
+        type: "request.resolved",
+        payload: { requestType, decision: "decline" },
       },
     ];
   }

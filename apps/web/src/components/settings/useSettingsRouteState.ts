@@ -96,6 +96,8 @@ export interface UseSettingsRouteStateOptions {
   readonly focusedProviderInstanceId?: string | null;
   /** The project that link's inventory should list first (`instanceProject` search param). */
   readonly focusedProviderInstanceProjectId?: string | null;
+  /** An MCP server a link asked to open in its detail panel (`server` search param). */
+  readonly focusedMcpServer?: string | null;
 }
 
 export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}) {
@@ -416,6 +418,7 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   return {
     focusedProviderInstanceId: options.focusedProviderInstanceId ?? null,
     focusedProviderInstanceProjectId: options.focusedProviderInstanceProjectId ?? null,
+    focusedMcpServer: options.focusedMcpServer ?? null,
     theme,
     setTheme,
     resolvedTheme,

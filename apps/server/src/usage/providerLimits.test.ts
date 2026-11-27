@@ -175,7 +175,7 @@ describe("provider limits", () => {
     // The CLIProxy account ID identifies the account; rotating the hub key does not.
     const hub = (key: string, account: string) =>
       providerLimitsIdentity({
-        provider: "antigravity",
+        provider: "grok",
         environment: {
           F5_CLIPROXY_HUB_URL: "https://hub",
           F5_CLIPROXY_ACCOUNT_ID: account,
@@ -220,42 +220,6 @@ describe("provider limits", () => {
     ).toEqual([{ id: "weekly", label: "Go · weekly", usedPercent: 0, resetsAt: null }]);
     expect(normalizeProviderLimits("antigravity", {})).toEqual([]);
   });
-  it("labels Gemini 4 Neon, Carbon and Hydrogen buckets as Gemini quota", () => {
-    const windows = normalizeProviderLimits(
-      "antigravity",
-      {
-        buckets: [
-          { bucketId: "gemini-4-neon-5h", remainingFraction: 0.4, window: "5h" },
-          { bucketId: "gemini-4-carbon-weekly", remainingFraction: 0.75, window: "weekly" },
-          { bucketId: "gemini-4-hydrogen-5h", remainingFraction: 1, window: "5h" },
-        ],
-      },
-      Date.parse("2026-11-22T00:00:00Z"),
-    );
-    expect(windows.map(({ id, label, usedPercent }) => ({ id, label, usedPercent }))).toEqual([
-      { id: "gemini-4-neon-5h", label: "Gemini · 5-hour", usedPercent: 60 },
-      { id: "gemini-4-carbon-weekly", label: "Gemini · Weekly", usedPercent: 25 },
-      { id: "gemini-4-hydrogen-5h", label: "Gemini · 5-hour", usedPercent: 0 },
-    ]);
-  });
-  it("reports Antigravity window lengths so the meters can show pace", () => {
-    const windows = normalizeProviderLimits(
-      "antigravity",
-      {
-        buckets: [
-          { bucketId: "gemini-5h", remainingFraction: 0.9, window: "5h" },
-          { bucketId: "gemini-weekly", remainingFraction: 0.9, window: "weekly" },
-          { bucketId: "gemini-other", remainingFraction: 0.9, displayName: "Daily" },
-        ],
-      },
-      Date.parse("2026-11-22T00:00:00Z"),
-    );
-    expect(windows.map(({ id, durationMinutes }) => ({ id, durationMinutes }))).toEqual([
-      { id: "gemini-5h", durationMinutes: 300 },
-      { id: "gemini-weekly", durationMinutes: 10_080 },
-      { id: "gemini-other", durationMinutes: undefined },
-    ]);
-  });
   it("keeps main and Spark windows separate and distinguishes omitted reset credits", () => {
     const limits = normalizeRateLimits({
       rateLimits: { limitId: "spark", primary: { usedPercent: 90 } },
@@ -272,141 +236,59 @@ describe("provider limits", () => {
   });
 });
 
-it("reads only the configured hub account and never sends its management key to the provider", async () => {
-  const { Effect } = await import("effect");
-  const Semaphore = await import("effect/Semaphore");
-  const { ProviderInstanceId } = await import("@t3tools/contracts");
-  const { makeProviderLimits } = await import("./providerLimits.ts");
-  const { vi } = await import("vitest");
-  const fetchMock = vi
-    .fn()
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          files: [
-            {
-              id: "different",
-              provider: "antigravity",
-              auth_index: "wrong",
-              email: "same@example.com",
-            },
-            {
-              id: "chosen",
-              provider: "antigravity",
-              auth_index: "right",
-              email: "same@example.com",
-            },
-          ],
-        }),
-      ),
-    )
-    .mockImplementation(
-      async () =>
-        new Response(
-          JSON.stringify({
-            status_code: 200,
-            body: JSON.stringify({
-              id: "verified-google-account",
-              buckets: [
-                {
-                  bucketId: "gemini-5h",
-                  window: "5h",
-                  remainingFraction: 0.75,
-                  resetTime: "2026-10-02T19:00:00Z",
-                },
-              ],
-            }),
-          }),
-        ),
-    );
-  vi.stubGlobal("fetch", fetchMock);
-  try {
-    const snapshot = await Effect.runPromise(
-      Effect.gen(function* () {
-        const capability = yield* makeProviderLimits({
-          provider: "antigravity",
-          instanceId: ProviderInstanceId.make("antigravity-test"),
-          displayName: "Account",
-          enabled: true,
-          environment: {
-            F5_CLIPROXY_HUB_URL: "https://hub.example",
-            F5_CLIPROXY_API_KEY: "secret-test-key",
-            F5_CLIPROXY_ACCOUNT_ID: "chosen",
-          },
-        });
-        const permits = yield* Semaphore.make(1);
-        yield* capability.refresh("force", permits);
-        for (let index = 0; index < 20; index++) {
-          const value = yield* capability.getSnapshot;
-          if (value.refreshState === "idle") return value;
-          yield* Effect.sleep("10 millis");
-        }
-        return yield* capability.getSnapshot;
-      }).pipe(Effect.scoped),
-    );
-    expect(snapshot.sections[0]?.outcome).toBe("available");
-    const section = snapshot.sections[0];
-    if (section?.kind === "provider-limits")
-      expect(section.snapshot?.data.windows[0]?.usedPercent).toBe(25);
-    expect(fetchMock.mock.calls.map((call) => new URL(call[0]).hostname)).toEqual([
-      "hub.example",
-      "hub.example",
-      "hub.example",
-      "hub.example",
-    ]);
-    const requests = fetchMock.mock.calls.slice(1).map((call) => {
-      const sent = JSON.parse(call[1].body);
-      expect(sent.auth_index).toBe("right");
-      expect(sent.header.Authorization).toBe("Bearer $TOKEN$");
-      expect(call[1].redirect).toBe("error");
-      return new URL(sent.url).hostname;
-    });
-    expect(requests).toEqual([
-      "www.googleapis.com",
-      "daily-cloudcode-pa.googleapis.com",
-      "cloudcode-pa.googleapis.com",
-    ]);
-  } finally {
-    vi.unstubAllGlobals();
-  }
-});
-
-it("skips the private token reader on an uncertified Antigravity version", async () => {
-  const profileDirectory = await mkdtemp(path.join(os.tmpdir(), "f5-agy-uncertified-"));
-  await mkdir(path.join(profileDirectory, "antigravity-acp"), { recursive: true });
-  await writeFile(
-    path.join(profileDirectory, "antigravity-acp", "acp_token.json"),
-    JSON.stringify({ client_id: "c", client_secret: "s", refresh_token: "r" }),
-  );
+it.each([
+  { name: "Google sign-in", environment: {}, billedPerToken: false },
+  {
+    name: "CLIProxyAPI hub",
+    environment: {
+      F5_CLIPROXY_HUB_URL: "https://hub.example",
+      F5_CLIPROXY_ACCOUNT_ID: "legacy",
+      F5_CLIPROXY_API_KEY: "test-key",
+    },
+    billedPerToken: false,
+  },
+  {
+    name: "legacy quota URL",
+    environment: {
+      F5_CLIPROXY_USAGE_URL: "https://hub.example/usage",
+      F5_CLIPROXY_API_KEY: "test-key",
+    },
+    billedPerToken: false,
+  },
+  { name: "Gemini API key", environment: {}, billedPerToken: true },
+])("never requests Antigravity quotas with $name", async ({ environment, billedPerToken }) => {
   const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   try {
-    const snapshot = await Effect.runPromise(
+    const { before, after } = await Effect.runPromise(
       Effect.gen(function* () {
         const capability = yield* makeProviderLimits({
           provider: "antigravity",
           instanceId: ProviderInstanceId.make("antigravity-test"),
-          displayName: "Account",
+          displayName: "Antigravity",
           enabled: true,
-          environment: {},
-          antigravityProfileDirectory: profileDirectory,
-          antigravityNativeReaders: async () => false,
+          environment,
+          antigravityBilledPerToken: billedPerToken,
         });
-        const permits = yield* Semaphore.make(1);
-        yield* capability.refresh("force", permits);
-        for (let index = 0; index < 20; index++) {
-          const value = yield* capability.getSnapshot;
-          if (value.refreshState === "idle") return value;
-          yield* Effect.sleep("10 millis");
-        }
-        return yield* capability.getSnapshot;
+        const before = yield* capability.getSnapshot;
+        yield* capability.refresh("force", yield* Semaphore.make(1));
+        const after = yield* capability.getSnapshot;
+        return { before, after };
       }).pipe(Effect.scoped),
     );
-    expect(snapshot.sections[0]?.outcome).toBe("unavailable");
-    expect(snapshot.sections[0]?.errorCode).toBe("unsupported");
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(after).toEqual(before);
+    if (billedPerToken) {
+      const section = after.sections[0];
+      expect(section?.lastAttemptAt).toEqual(expect.any(String));
+      expect(section?.lastAttemptAt).toBe(section?.snapshot?.fetchedAt);
+    }
+    expect(after.sections).toMatchObject(
+      billedPerToken
+        ? [{ outcome: "available", snapshot: { data: { windows: [], plan: "Billed per token" } } }]
+        : [{ outcome: "unsupported", errorCode: "unsupported", snapshot: null }],
+    );
   } finally {
     vi.unstubAllGlobals();
-    await rm(profileDirectory, { recursive: true, force: true });
   }
 });

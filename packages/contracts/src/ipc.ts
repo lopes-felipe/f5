@@ -83,6 +83,7 @@ import type {
   AgentBridgeTaskControlInput,
   BotTask,
 } from "./agentBridge";
+import type { DesktopAppIconBridge } from "./appIcon";
 import type { DesktopComputerAutomationBridge } from "./computerAutomation";
 import type {
   UpstreamAcceptSuggestionsInput,
@@ -263,13 +264,47 @@ import type { ElicitationSubmitInput, ElicitationSubmitResult } from "./elicitat
 import type {
   McpApplyToLiveSessionsRequest,
   McpApplyToLiveSessionsResult,
-  McpCodexStatusResult,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
   McpGetCommonConfigRequest,
   McpGetLoginStatusRequest,
+  McpGetHubStatusRequest,
+  McpGetHubStatusResult,
+  McpReconnectHubServerRequest,
+  McpGetHubAuthStatusRequest,
+  McpStartHubSignInRequest,
+  McpCompleteHubSignInRequest,
+  McpSignOutHubServerRequest,
+  McpReconnectHubServerResult,
+  McpGetHubAuthStatusResult,
+  McpStartHubSignInResult,
+  McpCompleteHubSignInResult,
+  McpSignOutHubServerResult,
+  McpListToolPinsRequest,
+  McpListToolPinsResult,
+  McpAcceptToolChangesRequest,
+  McpAcceptToolChangesResult,
+  McpListActivityRequest,
+  McpListActivityResult,
+  McpGetThreadServersRequest,
+  McpSetThreadServerEnabledRequest,
+  McpThreadServersResult,
+  McpListComposerPromptsRequest,
+  McpListComposerPromptsResult,
+  McpGetComposerPromptRequest,
+  McpGetComposerPromptResult,
+  McpCompleteComposerPromptRequest,
+  McpCompleteComposerPromptResult,
+  McpListComposerResourcesRequest,
+  McpListComposerResourcesResult,
+  McpReadComposerResourceRequest,
+  McpReadComposerResourceResult,
+  McpSearchCatalogRequest,
+  McpSearchCatalogResult,
+  McpGetRepositoryServersRequest,
+  McpSetRepositoryServerTrustRequest,
+  McpRepositoryServersResult,
   McpGetProviderStatusRequest,
-  McpGetCodexStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
   McpGetServerStatusesRequest,
@@ -284,16 +319,12 @@ import type {
   McpReconnectServerRequest,
   McpReconnectServerResult,
   McpLoginStatusResult,
-  McpOauthLoginStatusRequest,
-  McpOauthLoginStatusResult,
   McpProviderStatusResult,
   McpProjectConfigResult,
-  McpReloadProjectRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
   McpServerStatusesResult,
   McpStartLoginRequest,
-  McpStartOauthLoginRequest,
   McpStatusUpdatedPayload,
 } from "./mcp";
 import type {
@@ -852,6 +883,7 @@ export interface DesktopBridge {
   completeAppActivation?: (id: string, error?: string) => Promise<void>;
   readonly keepAwake?: DesktopKeepAwakeBridge;
   readonly notifications?: DesktopNotificationsBridge;
+  readonly appIcon?: DesktopAppIconBridge;
   htmlPreview?: (input: HtmlPreviewRequest) => Promise<HtmlPreviewResult>;
   /** Consent for terminals and agents opening login URLs; requests arrive only on macOS. */
   browserOpen?: DesktopBrowserOpenBridge;
@@ -1337,16 +1369,60 @@ export interface NativeApi {
     reconnectServer: (input: McpReconnectServerRequest) => Promise<McpReconnectServerResult>;
     startLogin: (input: McpStartLoginRequest) => Promise<McpLoginStatusResult>;
     getLoginStatus: (input: McpGetLoginStatusRequest) => Promise<McpLoginStatusResult>;
-    getCodexStatus: (
-      input: McpGetCodexStatusRequest,
-      context?: NativeRequestContext,
-    ) => Promise<McpCodexStatusResult>;
-    reloadProject: (input: McpReloadProjectRequest) => Promise<McpCodexStatusResult>;
     applyToLiveSessions: (
       input: McpApplyToLiveSessionsRequest,
     ) => Promise<McpApplyToLiveSessionsResult>;
-    startOAuthLogin: (input: McpStartOauthLoginRequest) => Promise<McpOauthLoginStatusResult>;
-    getOAuthStatus: (input: McpOauthLoginStatusRequest) => Promise<McpOauthLoginStatusResult>;
+    getHubStatus: (
+      input: McpGetHubStatusRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpGetHubStatusResult>;
+    reconnectHubServer: (
+      input: McpReconnectHubServerRequest,
+    ) => Promise<McpReconnectHubServerResult>;
+    getHubAuthStatus: (
+      input: McpGetHubAuthStatusRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpGetHubAuthStatusResult>;
+    startHubSignIn: (input: McpStartHubSignInRequest) => Promise<McpStartHubSignInResult>;
+    completeHubSignIn: (input: McpCompleteHubSignInRequest) => Promise<McpCompleteHubSignInResult>;
+    signOutHubServer: (input: McpSignOutHubServerRequest) => Promise<McpSignOutHubServerResult>;
+    listToolPins: (input: McpListToolPinsRequest) => Promise<McpListToolPinsResult>;
+    acceptToolChanges: (input: McpAcceptToolChangesRequest) => Promise<McpAcceptToolChangesResult>;
+    listActivity: (
+      input: McpListActivityRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListActivityResult>;
+    getThreadServers: (input: McpGetThreadServersRequest) => Promise<McpThreadServersResult>;
+    setThreadServerEnabled: (
+      input: McpSetThreadServerEnabledRequest,
+    ) => Promise<McpThreadServersResult>;
+    listComposerPrompts: (
+      input: McpListComposerPromptsRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListComposerPromptsResult>;
+    getComposerPrompt: (input: McpGetComposerPromptRequest) => Promise<McpGetComposerPromptResult>;
+    completeComposerPrompt: (
+      input: McpCompleteComposerPromptRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpCompleteComposerPromptResult>;
+    listComposerResources: (
+      input: McpListComposerResourcesRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListComposerResourcesResult>;
+    readComposerResource: (
+      input: McpReadComposerResourceRequest,
+    ) => Promise<McpReadComposerResourceResult>;
+    searchCatalog: (
+      input: McpSearchCatalogRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpSearchCatalogResult>;
+    getRepositoryServers: (
+      input: McpGetRepositoryServersRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpRepositoryServersResult>;
+    setRepositoryServerTrust: (
+      input: McpSetRepositoryServerTrustRequest,
+    ) => Promise<McpRepositoryServersResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

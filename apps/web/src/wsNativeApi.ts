@@ -5,7 +5,6 @@ import {
   McpAppToolInfo,
   McpAppToolResult,
   McpLoginStatusResult,
-  McpOauthLoginStatusResult,
   ProjectIssueAssetUrlResult,
 } from "@t3tools/contracts";
 import { isWebUrl } from "./browser/webUrl";
@@ -935,17 +934,26 @@ export function createWsNativeApi(): NativeApi {
         Schema.decodeUnknownSync(McpLoginStatusResult)(
           await transport.request(WS_METHODS.mcpGetLoginStatus, input),
         ),
-      getCodexStatus: requestMethod(WS_METHODS.mcpGetCodexStatus),
-      reloadProject: requestMethod(WS_METHODS.mcpReloadProject),
       applyToLiveSessions: requestMethod(WS_METHODS.mcpApplyToLiveSessions),
-      startOAuthLogin: async (input) =>
-        Schema.decodeUnknownSync(McpOauthLoginStatusResult)(
-          await transport.request(WS_METHODS.mcpStartOAuthLogin, input),
-        ),
-      getOAuthStatus: async (input) =>
-        Schema.decodeUnknownSync(McpOauthLoginStatusResult)(
-          await transport.request(WS_METHODS.mcpGetOAuthStatus, input),
-        ),
+      getHubStatus: requestMethod(WS_METHODS.mcpGetHubStatus),
+      reconnectHubServer: requestMethod(WS_METHODS.mcpReconnectHubServer),
+      getHubAuthStatus: requestMethod(WS_METHODS.mcpGetHubAuthStatus),
+      startHubSignIn: requestMethod(WS_METHODS.mcpStartHubSignIn),
+      completeHubSignIn: requestMethod(WS_METHODS.mcpCompleteHubSignIn),
+      signOutHubServer: requestMethod(WS_METHODS.mcpSignOutHubServer),
+      listToolPins: requestMethod(WS_METHODS.mcpListToolPins),
+      acceptToolChanges: requestMethod(WS_METHODS.mcpAcceptToolChanges),
+      listActivity: requestMethod(WS_METHODS.mcpListActivity),
+      getThreadServers: requestMethod(WS_METHODS.mcpGetThreadServers),
+      setThreadServerEnabled: requestMethod(WS_METHODS.mcpSetThreadServerEnabled),
+      listComposerPrompts: requestMethod(WS_METHODS.mcpListComposerPrompts),
+      getComposerPrompt: requestMethod(WS_METHODS.mcpGetComposerPrompt),
+      completeComposerPrompt: requestMethod(WS_METHODS.mcpCompleteComposerPrompt),
+      listComposerResources: requestMethod(WS_METHODS.mcpListComposerResources),
+      readComposerResource: requestMethod(WS_METHODS.mcpReadComposerResource),
+      searchCatalog: requestMethod(WS_METHODS.mcpSearchCatalog),
+      getRepositoryServers: requestMethod(WS_METHODS.mcpGetRepositoryServers),
+      setRepositoryServerTrust: requestMethod(WS_METHODS.mcpSetRepositoryServerTrust),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
         return () => {

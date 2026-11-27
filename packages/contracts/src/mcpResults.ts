@@ -10,7 +10,12 @@ import {
   SignInUrl,
 } from "./baseSchemas";
 import { ServerProviderAuthStatus } from "./server";
-import { McpServerDefinition, McpProjectServersConfig } from "./mcpServer";
+import {
+  McpConnectionScope,
+  McpServerDefinition,
+  McpProjectServersConfig,
+  McpServerTransportType,
+} from "./mcpServer";
 import { McpConfigScope } from "./mcpConfigScope";
 
 // Responses are separate from startup request schemas so browser bundles can omit unused definitions.
@@ -62,6 +67,8 @@ export type McpLiveSessionReloadFailure = typeof McpLiveSessionReloadFailure.Typ
 
 export const McpSessionReloadOutcome = Schema.Struct({
   threadId: ThreadId,
+  /** The conversation's project; set by Apply, which can span projects in common scope. */
+  projectId: Schema.optional(ProjectId),
   instanceId: ProviderInstanceId,
   generation: NonNegativeInt,
   requestedVersion: Schema.String,
@@ -123,6 +130,365 @@ export const McpCodexStatusResult = Schema.Struct({
   configVersion: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpCodexStatusResult = typeof McpCodexStatusResult.Type;
+
+export const McpHubServerState = Schema.Literals([
+  "idle",
+  "connecting",
+  "ready",
+  "retrying",
+  "failed",
+  "needs-auth",
+  "stopped",
+]);
+export type McpHubServerState = typeof McpHubServerState.Type;
+
+/** One upstream connection owned by F5's MCP hub. */
+export const McpHubServerStatus = Schema.Struct({
+  /** Stable, opaque id of this connection (several can serve one server). */
+  id: Schema.optional(TrimmedNonEmptyString),
+  name: TrimmedNonEmptyString,
+  connectionScope: McpConnectionScope,
+  transport: McpServerTransportType,
+  state: McpHubServerState,
+  error: Schema.optional(TrimmedNonEmptyString),
+  serverInfo: Schema.optional(Schema.Struct({ name: Schema.String, version: Schema.String })),
+  protocolVersion: Schema.optional(TrimmedNonEmptyString),
+  toolCount: Schema.optional(NonNegativeInt),
+  resourceCount: Schema.optional(NonNegativeInt),
+  promptCount: Schema.optional(NonNegativeInt),
+  latencyMs: Schema.optional(NonNegativeInt),
+  lastConnectedAt: Schema.optional(IsoDateTime),
+  /** Failed connection attempts since the last success. */
+  attempts: NonNegativeInt,
+  /** Provider session endpoints currently routed to this connection. */
+  attachedSessions: NonNegativeInt,
+  projectIds: Schema.Array(ProjectId),
+  providers: Schema.Array(ProviderKind),
+});
+export type McpHubServerStatus = typeof McpHubServerStatus.Type;
+
+export const McpGetHubStatusResult = Schema.Struct({
+  servers: Schema.Array(McpHubServerStatus),
+});
+export type McpGetHubStatusResult = typeof McpGetHubStatusResult.Type;
+
+export const McpReconnectHubServerResult = Schema.Struct({
+  reconnected: NonNegativeInt,
+});
+export type McpReconnectHubServerResult = typeof McpReconnectHubServerResult.Type;
+
+export const McpHubSignInAttempt = Schema.Struct({
+  attemptId: TrimmedNonEmptyString,
+  /** Open this in a browser; F5 never opens it on its own. */
+  authorizationUrl: TrimmedNonEmptyString,
+  redirectUrl: TrimmedNonEmptyString,
+  startedAt: IsoDateTime,
+});
+export type McpHubSignInAttempt = typeof McpHubSignInAttempt.Type;
+
+/** OAuth state of one remote server; tokens are shared by every project with the same URL. */
+export const McpHubAuthServerStatus = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  signedIn: Schema.Boolean,
+  /** F5 can renew the access token without a new sign-in. */
+  refreshable: Schema.Boolean,
+  expiresAt: Schema.optional(IsoDateTime),
+  pending: Schema.optional(McpHubSignInAttempt),
+});
+export type McpHubAuthServerStatus = typeof McpHubAuthServerStatus.Type;
+
+export const McpGetHubAuthStatusResult = Schema.Struct({
+  servers: Schema.Array(McpHubAuthServerStatus),
+});
+export type McpGetHubAuthStatusResult = typeof McpGetHubAuthStatusResult.Type;
+
+export const McpStartHubSignInResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("signed-in") }),
+  Schema.Struct({ status: Schema.Literal("pending"), attempt: McpHubSignInAttempt }),
+]);
+export type McpStartHubSignInResult = typeof McpStartHubSignInResult.Type;
+
+export const McpCompleteHubSignInResult = Schema.Struct({
+  status: Schema.Literal("signed-in"),
+  serverName: TrimmedNonEmptyString,
+  /** Hub connections reconnected with the new tokens. */
+  reconnected: NonNegativeInt,
+});
+export type McpCompleteHubSignInResult = typeof McpCompleteHubSignInResult.Type;
+
+export const McpSignOutHubServerResult = Schema.Struct({
+  signedOut: Schema.Boolean,
+});
+export type McpSignOutHubServerResult = typeof McpSignOutHubServerResult.Type;
+
+/**
+ * `pinned`: matches the accepted definition. `new`: first seen after the server's
+ * first listing. `changed`: the name, description or input schema differs from the
+ * accepted one, so calls ask until the change is accepted.
+ */
+export const McpToolPinState = Schema.Literals(["pinned", "new", "changed"]);
+export type McpToolPinState = typeof McpToolPinState.Type;
+
+export const McpToolPin = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  /** Which definition of the server (URL or command) the pin belongs to; opaque. */
+  identity: TrimmedNonEmptyString,
+  /** The server's URL without query, or its command, for telling identities apart. */
+  identityLabel: Schema.String,
+  toolName: TrimmedNonEmptyString,
+  state: McpToolPinState,
+  firstSeenAt: IsoDateTime,
+  acceptedAt: Schema.optional(IsoDateTime),
+  /** Pretty-printed JSON of the accepted description and input schema. */
+  accepted: Schema.String,
+  /** The definition the server reports now, when it differs from `accepted`. */
+  observed: Schema.optional(Schema.String),
+});
+export type McpToolPin = typeof McpToolPin.Type;
+
+export const McpListToolPinsResult = Schema.Struct({
+  tools: Schema.Array(McpToolPin),
+});
+export type McpListToolPinsResult = typeof McpListToolPinsResult.Type;
+
+export const McpAcceptToolChangesResult = Schema.Struct({
+  accepted: NonNegativeInt,
+  /** Reviewed tools that changed again before the click; review them again. */
+  stale: Schema.optional(NonNegativeInt),
+});
+export type McpAcceptToolChangesResult = typeof McpAcceptToolChangesResult.Type;
+
+export const McpToolCallOutcome = Schema.Literals([
+  "ok",
+  "error",
+  "declined",
+  "blocked",
+  "cancelled",
+  "turned-off",
+]);
+export type McpToolCallOutcome = typeof McpToolCallOutcome.Type;
+
+/** How a call was let through: the tool's Allow policy, the user's answer, or an earlier answer. */
+export const McpToolCallApproval = Schema.Literals(["policy", "asked", "session"]);
+export type McpToolCallApproval = typeof McpToolCallApproval.Type;
+
+/** One tool call through F5's hub. Arguments and results are never stored. */
+export const McpToolCallRecord = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  threadId: ThreadId,
+  provider: ProviderKind,
+  serverName: TrimmedNonEmptyString,
+  toolName: TrimmedNonEmptyString,
+  outcome: McpToolCallOutcome,
+  durationMs: NonNegativeInt,
+  approval: McpToolCallApproval,
+  errorSummary: Schema.optional(Schema.String),
+});
+export type McpToolCallRecord = typeof McpToolCallRecord.Type;
+
+export const McpActivitySummary = Schema.Struct({
+  /** Calls in the last 24 hours. */
+  calls: NonNegativeInt,
+  errors: NonNegativeInt,
+  p50Ms: Schema.optional(NonNegativeInt),
+  p95Ms: Schema.optional(NonNegativeInt),
+});
+export type McpActivitySummary = typeof McpActivitySummary.Type;
+
+export const McpListActivityResult = Schema.Struct({
+  calls: Schema.Array(McpToolCallRecord),
+  last24h: McpActivitySummary,
+  /** Redacted stderr of the server's live stdio connections, when one server was asked for. */
+  stderrTail: Schema.optional(Schema.String),
+});
+export type McpListActivityResult = typeof McpListActivityResult.Type;
+
+export const McpThreadServersResult = Schema.Struct({
+  /** Hub servers turned off for this conversation. */
+  disabledServers: Schema.Array(TrimmedNonEmptyString),
+});
+export type McpThreadServersResult = typeof McpThreadServersResult.Type;
+
+/**
+ * A server from the project's `.mcp.json`. Only approved servers run; a changed
+ * definition needs approval again. `overridden` means a project server has its name.
+ */
+export const McpRepositoryServerState = Schema.Literals(["approved", "needs-approval", "changed"]);
+export type McpRepositoryServerState = typeof McpRepositoryServerState.Type;
+
+export const McpRepositoryServer = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  server: McpServerDefinition,
+  definitionHash: TrimmedNonEmptyString,
+  state: McpRepositoryServerState,
+  overridden: Schema.Boolean,
+  /** Turned off for this project by its opt-outs. */
+  disabled: Schema.Boolean,
+});
+export type McpRepositoryServer = typeof McpRepositoryServer.Type;
+
+export const McpRepositoryServersResult = Schema.Struct({
+  projectId: ProjectId,
+  /** The file read, when the project has a root folder. */
+  path: Schema.optional(Schema.String),
+  found: Schema.Boolean,
+  servers: Schema.Array(McpRepositoryServer),
+  /** Entries left out, and why (invalid, secret references, unreadable file). */
+  issues: Schema.Array(Schema.String),
+});
+export type McpRepositoryServersResult = typeof McpRepositoryServersResult.Type;
+
+/** An environment variable or header a catalog entry asks for. */
+export const McpCatalogInput = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.String),
+  required: Schema.Boolean,
+  secret: Schema.Boolean,
+  /** A fixed value the entry sets, which may contain `{placeholders}`. */
+  value: Schema.optional(Schema.String),
+  default: Schema.optional(Schema.String),
+});
+export type McpCatalogInput = typeof McpCatalogInput.Type;
+
+export const McpCatalogArgument = Schema.Struct({
+  type: Schema.Literals(["positional", "named"]),
+  name: Schema.optional(Schema.String),
+  value: Schema.optional(Schema.String),
+  default: Schema.optional(Schema.String),
+  valueHint: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  required: Schema.Boolean,
+  /** A flag that takes no value, such as `--read-only`. */
+  flag: Schema.Boolean,
+});
+export type McpCatalogArgument = typeof McpCatalogArgument.Type;
+
+export const McpCatalogRemote = Schema.Struct({
+  type: Schema.Literals(["http", "sse"]),
+  url: TrimmedNonEmptyString,
+  headers: Schema.Array(McpCatalogInput),
+});
+export type McpCatalogRemote = typeof McpCatalogRemote.Type;
+
+/** A package F5 can run over stdio. */
+export const McpCatalogPackage = Schema.Struct({
+  registryType: Schema.Literals(["npm", "pypi", "oci"]),
+  identifier: TrimmedNonEmptyString,
+  version: Schema.optional(Schema.String),
+  environmentVariables: Schema.Array(McpCatalogInput),
+  packageArguments: Schema.Array(McpCatalogArgument),
+  runtimeArguments: Schema.Array(McpCatalogArgument),
+});
+export type McpCatalogPackage = typeof McpCatalogPackage.Type;
+
+export const McpCatalogEntry = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.String),
+  websiteUrl: Schema.optional(Schema.String),
+  repositoryUrl: Schema.optional(Schema.String),
+  remotes: Schema.Array(McpCatalogRemote),
+  packages: Schema.Array(McpCatalogPackage),
+});
+export type McpCatalogEntry = typeof McpCatalogEntry.Type;
+
+export const McpSearchCatalogResult = Schema.Struct({
+  entries: Schema.Array(McpCatalogEntry),
+  nextCursor: Schema.optional(Schema.String),
+});
+export type McpSearchCatalogResult = typeof McpSearchCatalogResult.Type;
+
+export const McpComposerPromptArgument = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  description: Schema.optional(Schema.String),
+  required: Schema.optional(Schema.Boolean),
+});
+export type McpComposerPromptArgument = typeof McpComposerPromptArgument.Type;
+
+export const McpComposerPrompt = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  arguments: Schema.Array(McpComposerPromptArgument),
+});
+export type McpComposerPrompt = typeof McpComposerPrompt.Type;
+
+/** One server's prompts, or why they could not be listed. */
+export const McpComposerServerPrompts = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  prompts: Schema.Array(McpComposerPrompt),
+  error: Schema.optional(Schema.String),
+});
+export type McpComposerServerPrompts = typeof McpComposerServerPrompts.Type;
+
+export const McpListComposerPromptsResult = Schema.Struct({
+  servers: Schema.Array(McpComposerServerPrompts),
+});
+export type McpListComposerPromptsResult = typeof McpListComposerPromptsResult.Type;
+
+export const McpGetComposerPromptResult = Schema.Struct({
+  /** The prompt's messages as text, for the user to review in the composer. */
+  text: Schema.String,
+  /** Images, audio and binary resources in the prompt, which the composer cannot hold. */
+  omitted: NonNegativeInt,
+});
+export type McpGetComposerPromptResult = typeof McpGetComposerPromptResult.Type;
+
+export const McpCompleteComposerPromptResult = Schema.Struct({
+  values: Schema.Array(Schema.String),
+});
+export type McpCompleteComposerPromptResult = typeof McpCompleteComposerPromptResult.Type;
+
+export const McpComposerResource = Schema.Struct({
+  uri: TrimmedNonEmptyString,
+  name: Schema.String,
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  mimeType: Schema.optional(Schema.String),
+});
+export type McpComposerResource = typeof McpComposerResource.Type;
+
+export const McpComposerServerResources = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  resources: Schema.Array(McpComposerResource),
+  /** True when the server has more than the composer lists. */
+  truncated: Schema.Boolean,
+  error: Schema.optional(Schema.String),
+});
+export type McpComposerServerResources = typeof McpComposerServerResources.Type;
+
+export const McpListComposerResourcesResult = Schema.Struct({
+  servers: Schema.Array(McpComposerServerResources),
+});
+export type McpListComposerResourcesResult = typeof McpListComposerResourcesResult.Type;
+
+export const McpComposerResourceContent = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("text"),
+    uri: Schema.String,
+    mimeType: Schema.optional(Schema.String),
+    text: Schema.String,
+    /** The text was cut to fit the message's resource budget. */
+    truncated: Schema.Boolean,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("image"),
+    uri: Schema.String,
+    mimeType: TrimmedNonEmptyString,
+    /** Base64, as the server sent it. */
+    data: Schema.String,
+  }),
+]);
+export type McpComposerResourceContent = typeof McpComposerResourceContent.Type;
+
+export const McpReadComposerResourceResult = Schema.Struct({
+  contents: Schema.Array(McpComposerResourceContent),
+  /** Binary parts other than images, which are left out. */
+  omitted: NonNegativeInt,
+});
+export type McpReadComposerResourceResult = typeof McpReadComposerResourceResult.Type;
 
 export const McpApplyToLiveSessionsResult = Schema.Struct({
   scope: McpConfigScope,
@@ -300,6 +666,8 @@ export const McpImportCandidate = Schema.Struct({
   selectedByDefault: Schema.optional(Schema.Boolean),
   id: Schema.String,
   name: Schema.String,
+  /** The name in the source file when it was imported under another name. */
+  originalName: Schema.optional(Schema.String),
   source: Schema.String,
   server: Schema.optional(McpServerDefinition),
   issues: Schema.Array(McpImportIssue),

@@ -369,6 +369,104 @@ describe("started threads and managing worktrees", () => {
     });
   });
 
+  describe("long worktree paths", () => {
+    const root =
+      "/Users/someone/.f5/userdata-profiles/1e371049feb34fafbb0e46fccbeb6912/worktrees/f5-3fb59513056d";
+    const branch = "refactor/wave-2c-marketing-refresh-with-an-unusually-long-branch-name";
+    let restoreViewport: (() => Promise<void>) | undefined;
+    afterEach(async () => {
+      await restoreViewport?.();
+      restoreViewport = undefined;
+    });
+
+    async function openAt(width: number, path: string) {
+      const previous = { width: window.innerWidth, height: window.innerHeight };
+      restoreViewport = () => page.viewport(previous.width, previous.height);
+      await page.viewport(width, 800);
+      mockWorktree(path);
+      await open(
+        {
+          activeWorktreePath: path,
+          activeThreadBranch: branch,
+          branchCwd: path,
+          effectiveEnvMode: "worktree",
+        },
+        branch,
+      );
+      await expect.element(option(/Local · fix\/sidebar.*3 threads here/)).toBeVisible();
+      const frame = document
+        .querySelector<HTMLElement>('[data-slot="combobox-frame"]')!
+        .getBoundingClientRect();
+      const header = document.querySelector<HTMLElement>('[data-slot="workspace-path"]')!;
+      return {
+        popup: document.querySelector<HTMLElement>('[data-slot="combobox-popup"]')!,
+        frame,
+        header,
+        head: header.querySelector<HTMLElement>('[data-slot="middle-truncate-head"]')!,
+        tail: header.querySelector<HTMLElement>('[data-slot="middle-truncate-tail"]')!,
+        copy: page.getByRole("button", { name: "Copy path" }).element().getBoundingClientRect(),
+        within: (element: Element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.left >= frame.left - 0.5 && rect.right <= frame.right + 0.5;
+        },
+      };
+    }
+
+    it("keeps the popup's content inside its frame and the folder name visible", async () => {
+      const path = `${root}/t3code-57b01760-355254f9`;
+      const { popup, frame, header, head, tail, copy, within } = await openAt(1280, path);
+      expect(popup.getBoundingClientRect().width).toBeLessThanOrEqual(frame.width + 0.5);
+      expect(popup.scrollWidth).toBeLessThanOrEqual(popup.clientWidth);
+      expect(copy.right).toBeLessThanOrEqual(frame.right + 0.5);
+      expect(within(page.getByPlaceholder("Search branches and worktrees…").element())).toBe(true);
+      expect(within(page.getByText("3 threads here").element())).toBe(true);
+
+      expect(header.title).toBe(path);
+      expect(header.textContent).toBe(path);
+      // The middle truncates; the folder name stays whole at the visible end.
+      expect(head.scrollWidth).toBeGreaterThan(head.clientWidth);
+      expect(tail.textContent).toBe("/t3code-57b01760-355254f9");
+      expect(tail.scrollWidth).toBeLessThanOrEqual(tail.clientWidth);
+      expect(tail.getBoundingClientRect().right).toBeLessThanOrEqual(copy.left + 0.5);
+    });
+
+    it("clips a maximum-length folder name before the header buttons on a phone", async () => {
+      // allocateWorktreePath: slug(branch).slice(0, 32) + "-" + 8 hex = 41 characters.
+      const path = `${root}/refactor-wave-2c-marketing-refre-57b01760`;
+      const { popup, header, tail, copy } = await openAt(390, path);
+      expect(popup.scrollWidth).toBeLessThanOrEqual(popup.clientWidth);
+      expect(tail.getBoundingClientRect().right).toBeLessThanOrEqual(copy.left + 0.5);
+      expect(header.getBoundingClientRect().right).toBeLessThanOrEqual(copy.left + 0.5);
+    });
+  });
+
+  function mockWorktree(path: string) {
+    const branch = "refactor/wave-2c-marketing-refresh-with-an-unusually-long-branch-name";
+    api.git.listBranches.mockResolvedValue({
+      isRepo: true,
+      hasOriginRemote: false,
+      branches: [
+        { name: "fix/sidebar", current: true, isDefault: false, worktreePath: "/repo" },
+        { name: "main", current: false, isDefault: true, worktreePath: null },
+        { name: branch, current: false, isDefault: false, worktreePath: path },
+      ],
+    });
+    api.worktrees.list.mockResolvedValue({
+      projects: [
+        {
+          projectId,
+          name: "f5",
+          workspaceRoot: "/repo",
+          error: null,
+          entries: [
+            { path: "/repo", canonicalPath: "/repo", linkedThreads: linked("a", "b", "c") },
+            { path, canonicalPath: path, linkedThreads: linked("d") },
+          ],
+        },
+      ],
+    });
+  }
+
   it("disables moving a local conversation while its turn runs", async () => {
     await open({ isDraft: false, canMove: true, moveDisabled: true });
     await expect

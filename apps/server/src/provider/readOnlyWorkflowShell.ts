@@ -1,7 +1,11 @@
 import {
   parse,
   type Command,
+  type CommandNode,
+  type CompoundList,
   type DoubleQuotedChild,
+  type For,
+  type If,
   type PipelineNode,
   type Redirection,
   type Statement,
@@ -10,17 +14,70 @@ import {
 } from "unbash";
 
 /**
- * Whether a shell command only reads, for read-only workflow stages on providers that have no
- * OS sandbox (Cursor, Antigravity). Codex enforces read-only with its sandbox and Claude with its
- * native plan-mode classifier; these providers hand every command to F5 instead.
+ * Whether a shell command only reads, for read-only workflow stages without an OS sandbox: Cursor,
+ * and Antigravity and Codex where their sandbox can't start (F5's macOS desktop app). Claude enforces read-only with its native plan-mode classifier; these providers
+ * hand every command to F5 instead.
  *
  * The classifier fails closed: anything it cannot prove read-only is refused, and the model is
- * told no and can try a simpler command. Only plain commands joined by `|`, `&&`, `||` and `;`
- * are accepted, each running an allowlisted program with flags that cannot write or execute.
+ * told no and can try a simpler command. Only plain commands joined by `|`, `&&`, `||` and `;`,
+ * optionally inside `if`/`elif`/`else`, `{ …; }`, `( … )` or a `for` loop over literal words, are
+ * accepted, each running an allowlisted program with flags that cannot write or execute.
  */
 export type ReadOnlyShellClassification =
   | { readonly readOnly: true }
   | { readonly readOnly: false; readonly reason: string };
+
+/**
+ * Added to the environment of providers whose read-only stages use this classifier:
+ *
+ * - `GIT_OPTIONAL_LOCKS=0`: `git status` otherwise refreshes the index and holds `index.lock`,
+ *   which can fail a concurrent Git command in the same worktree;
+ * - `GIT_PAGER=cat`: on a terminal Git pipes `log`, `diff` and `show` through the pager named in
+ *   `core.pager` or `pager.<command>`, which a repository's own config can set to any program.
+ *   The variable outranks both;
+ * - `GIT_NO_LAZY_FETCH=1`: in a partial clone a read of a missing object otherwise fetches it
+ *   from the promisor remote, which reaches the network and writes to the object store.
+ */
+export const READ_ONLY_WORKFLOW_ENVIRONMENT = {
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_PAGER: "cat",
+  GIT_NO_LAZY_FETCH: "1",
+} as const;
+
+/**
+ * What an accepted command does with directories, in the order it is written: a `cd` and its
+ * target (undefined when the form has no single target, such as zsh's `cd old new`), or a `git`
+ * call and its `-C` directories. `readOnlyGitConfig.ts` works out from these which repositories
+ * the command's Git calls can read.
+ */
+export type ReadOnlyShellDirectoryUse =
+  | { readonly kind: "cd"; readonly path: string | undefined }
+  | { readonly kind: "git"; readonly path: ReadonlyArray<string> };
+
+/** Filled while `readOnlyShellDirectoryUses` runs the classifier, which is synchronous. */
+let directoryUses: ReadOnlyShellDirectoryUse[] | undefined;
+
+/** The `cd` and `git` calls of a command the classifier accepts, or undefined when it refuses. */
+export function readOnlyShellDirectoryUses(
+  command: string,
+): ReadonlyArray<ReadOnlyShellDirectoryUse> | undefined {
+  const uses: ReadOnlyShellDirectoryUse[] = [];
+  directoryUses = uses;
+  try {
+    return classifyReadOnlyShellCommand(command).readOnly ? uses : undefined;
+  } finally {
+    directoryUses = undefined;
+  }
+}
+
+/** Where `cd <args>` goes: `~` for none, undefined for a form with no single written target. */
+function cdTarget(args: ReadonlyArray<string>): string | undefined {
+  const operands = [...args];
+  while (operands.length > 0 && /^-[LPqs]+$/.test(operands[0]!)) operands.shift();
+  if (operands[0] === "--") operands.shift();
+  if (operands.length === 0) return "~";
+  return operands.length === 1 ? operands[0] : undefined;
+}
 
 const READ_ONLY: ReadOnlyShellClassification = { readOnly: true };
 const refuse = (reason: string): ReadOnlyShellClassification => ({ readOnly: false, reason });
@@ -45,6 +102,7 @@ const ALLOWED_PAGER_VALUES = new Set(["", "cat"]);
 const PLAIN_READ_PROGRAMS = new Set([
   "cat",
   "head",
+  "nl",
   "wc",
   "ls",
   "pwd",
@@ -65,6 +123,7 @@ const PLAIN_READ_PROGRAMS = new Set([
   "dirname",
   "realpath",
   "uname",
+  "shasum",
   "true",
   "false",
   "test",
@@ -90,8 +149,6 @@ const GIT_READ_SUBCOMMANDS = new Set([
   "describe",
   "merge-base",
   "shortlog",
-  // Not `grep`: its `-O<cmd>` opens matches in a program and git accepts it inside a group of
-  // short flags (`-iO'cmd'`), which a flag check cannot reliably catch.
   "name-rev",
   "show-ref",
   "for-each-ref",
@@ -106,17 +163,59 @@ const GIT_REFUSED_LONG_OPTIONS = [
   "open-files-in-pager",
 ];
 
-const GIT_BRANCH_READ_FLAGS = new Set([
-  "--show-current",
-  "--list",
-  "-a",
-  "--all",
-  "-r",
-  "--remotes",
-  "-v",
-  "-vv",
-  "--verbose",
+/** Options before the subcommand that neither run a program nor change which repository is read. */
+const GIT_GLOBAL_SWITCHES = new Set([
+  "--no-pager",
+  "-P",
+  "--no-optional-locks",
+  "--no-lazy-fetch",
+  "--no-replace-objects",
+  "--literal-pathspecs",
 ]);
+
+/**
+ * `git branch` and `git tag` create a ref from a bare name, so listing is accepted only in a form
+ * that cannot: switches spelled exactly as below (git's abbreviations are refused), and a name or
+ * pattern only as the value of a filter or after `--list`.
+ */
+const GIT_REF_LIST_SWITCHES = new Set([
+  "-i",
+  "--ignore-case",
+  "--no-color",
+  "--color",
+  "--column",
+  "--no-column",
+  "--omit-empty",
+]);
+/** `git branch` only: for `git tag`, `-a` creates an annotated tag and `-v` runs gpg. */
+const GIT_BRANCH_LIST_SWITCHES = new Set([
+  "--show-current",
+  "--all",
+  "--remotes",
+  "--verbose",
+  "--no-abbrev",
+]);
+const GIT_BRANCH_LIST_CLUSTER = /^-[arv]+$/;
+const GIT_REF_LIST_MODE = new Set(["-l", "--list"]);
+/** Each takes one value, attached with `=` or as the next argument. */
+const GIT_REF_LIST_VALUE_FLAGS = new Set([
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+  "--points-at",
+  "--sort",
+  "--format",
+]);
+/** Filters whose commit defaults to HEAD when nothing follows them. */
+const GIT_REF_LIST_HEAD_DEFAULT = new Set([
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+]);
+const GIT_REF_LIST_VALUE_SWITCH = /^--(?:color|column|abbrev)=[\w,-]+$/;
+const GIT_WORKTREE_LIST_FLAGS = new Set(["--porcelain", "-v", "--verbose", "-z"]);
 
 // A Map, not an object literal: `gh constructor x` must not reach `Object.prototype`.
 const GH_READ_SUBCOMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
@@ -142,7 +241,63 @@ const GH_API_SWITCHES = new Set([
 const GH_API_VALUE_FLAGS = new Set(["-q", "--jq", "-t", "--template"]);
 const GH_API_ACCEPT_HEADER = /^accept\s*:/i;
 
-const SED_PRINT_SCRIPT = /^(\d+|\$)(,(\d+|\$))?p$/;
+/** A sed address: a line number, `$`, or `/regex/` (with `\/` escapes and an optional `I`). */
+const SED_ADDRESS = String.raw`(?:\d+|\$|/(?:[^/\\\n]|\\[^\n])*/I?)`;
+/** One print command, `<address>[,<address>]p`, up to the `;`, newline or end that closes it. */
+const SED_PRINT_COMMAND = new RegExp(
+  String.raw`^${SED_ADDRESS}(?:,${SED_ADDRESS})?[ \t]*p[ \t]*(?=;|\n|$)`,
+);
+
+/**
+ * Whether a sed script only prints: one or more `<address>[,<address>]p` commands separated by
+ * `;` or newlines. Every other sed command is refused by not matching: `w` and `s///w` write a
+ * file, `e` runs a program and `r` reads any file into the output.
+ */
+function isSedPrintScript(script: string): boolean {
+  let rest = script;
+  for (let commands = 0; ; commands += 1) {
+    rest = rest.replace(/^[\s;]+/, "");
+    if (rest.length === 0) return commands > 0;
+    const match = SED_PRINT_COMMAND.exec(rest);
+    if (!match) return false;
+    rest = rest.slice(match[0].length);
+  }
+}
+
+const SHELL_PROGRAM = /^(?:(?:\/usr)?\/bin\/)?(?:ba|z|da)?sh$/;
+
+/** `sh`, `bash`, `zsh` or `dash`, bare or in `/bin` or `/usr/bin`. */
+export function isShellProgram(program: string): boolean {
+  return SHELL_PROGRAM.test(program);
+}
+
+/**
+ * The script inside `/bin/zsh -lc '<script>'`, the form Codex reports a shell command in, or the
+ * command unchanged when it isn't one. Only a lone shell call with `-c`, `-lc` or `-l -c` and one
+ * literal script is unwrapped; the script is then classified like any other command, and
+ * anything else is classified as written (where a shell is not on the allowlist).
+ */
+export function unwrapShellInvocation(command: string): string {
+  let script;
+  try {
+    script = parse(command);
+  } catch {
+    return command;
+  }
+  if ((script.errors && script.errors.length > 0) || script.commands.length !== 1) return command;
+  const statement = script.commands[0]!;
+  const node = statement.command;
+  if (statement.background || node.type !== "Command" || node.prefix.length > 0) return command;
+  if (!node.name || !isStaticWord(node.name) || !isShellProgram(node.name.value)) return command;
+  const args: string[] = [];
+  for (const entry of node.suffix) {
+    if (entry.type !== "Word" || !isStaticWord(entry)) return command;
+    args.push(entry.value);
+  }
+  if (args.length === 2 && (args[0] === "-c" || args[0] === "-lc")) return args[1]!;
+  if (args.length === 3 && args[0] === "-l" && args[1] === "-c") return args[2]!;
+  return command;
+}
 
 export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellClassification {
   if (command.trim().length === 0) return refuse("empty command");
@@ -154,42 +309,595 @@ export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellClas
   }
   if (script.errors && script.errors.length > 0) return refuse("command could not be parsed");
   if (script.commands.length === 0) return refuse("empty command");
+  const scope = new ShellScope();
   for (const statement of script.commands) {
-    const verdict = classifyStatement(statement);
+    const verdict = classifyTopLevelStatement(statement, scope);
     if (!verdict.readOnly) return verdict;
   }
   return READ_ONLY;
 }
 
-function classifyStatement(statement: Statement): ReadOnlyShellClassification {
+/**
+ * Script-local variables set earlier in the command, with their literal values. A model often
+ * writes `HEAD_SHA=abc123` once and then `git show "$HEAD_SHA"`; each later `$HEAD_SHA` is
+ * classified as the literal it stands for. Its value must itself be literal (or built from
+ * earlier variables), and it must be set at the top level:
+ *
+ * - as a statement of its own, or first in an `&&`/`||` chain: certainly set from then on;
+ * - later in an `&&` chain (`cd repo && F=a.ts && git show rev:$F`): certainly set for the rest
+ *   of that chain only. After it the name has `lapsed`: the chain may have stopped before the
+ *   assignment, and then `$F` is whatever the shell had before, which can be a variable from the
+ *   environment (`cd /nowhere && API_KEY=x; echo "$API_KEY"` prints the real key). Its value is
+ *   unknown, so a later use is refused like any other unknown variable;
+ * - a `for` variable holds each word inside the loop body, and has lapsed after `done`, where
+ *   the shell keeps the last word.
+ */
+class ShellScope extends Map<string, string> {
+  /** Names whose value stopped being known, with what to do about it. */
+  readonly lapsed = new Map<string, string>();
+  /** `for` loops currently being walked; see MAX_LOOP_DEPTH. */
+  loopDepth = 0;
+
+  /** A name set where it certainly runs: its value is known from here on. */
+  bind(name: string, value: string): void {
+    this.set(name, value);
+    this.lapsed.delete(name);
+  }
+
+  /** The value of `name` is no longer known; `advice` tells the model how to keep it known. */
+  lapse(name: string, advice: string): void {
+    this.delete(name);
+    this.lapsed.set(name, advice);
+  }
+
+  /** A copy for a loop body, with the loop variable certainly set. */
+  withLoopVariable(name: string, value: string): ShellScope {
+    const copy = new ShellScope(this);
+    for (const [entry, advice] of this.lapsed) copy.lapsed.set(entry, advice);
+    copy.bind(name, value);
+    copy.loopDepth = this.loopDepth + 1;
+    return copy;
+  }
+}
+
+/**
+ * Names a shell, or a program F5 allows, gives a meaning to. Setting one in the shell changes an
+ * exported value children inherit (`GIT_DIR`, `PAGER`, `LD_PRELOAD`) or the shell's own behavior
+ * (`IFS`, `PATH`, zsh's `path` array), so these are refused rather than tracked. Compared in upper
+ * case, so `home` and `Path` are refused too.
+ */
+const SPECIAL_VARIABLES = new Set([
+  "_",
+  "PATH",
+  "HOME",
+  "IFS",
+  "ENV",
+  "CDPATH",
+  "SHELL",
+  "SHELLOPTS",
+  "GLOBIGNORE",
+  "FIGNORE",
+  "PS1",
+  "PS2",
+  "PS3",
+  "PS4",
+  "PROMPT",
+  "RPROMPT",
+  "PROMPT_COMMAND",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "PWD",
+  "OLDPWD",
+  "USER",
+  "LOGNAME",
+  "MAIL",
+  "MAILCHECK",
+  "INPUTRC",
+  "TERM",
+  "TERMINFO",
+  "TERMCAP",
+  "PAGER",
+  "EDITOR",
+  "VISUAL",
+  "BROWSER",
+  "OPTIND",
+  "OPTARG",
+  "REPLY",
+  "NULLCMD",
+  "READNULLCMD",
+  "FUNCNEST",
+  "EXECIGNORE",
+  "POSIXLY_CORRECT",
+  "TIMEFORMAT",
+  "SECONDS",
+  "RANDOM",
+  "LINENO",
+  "COLUMNS",
+  "LINES",
+]);
+const SPECIAL_VARIABLE_PREFIXES = [
+  "LD_",
+  "DYLD_",
+  "GIT_",
+  "GH_",
+  "GITHUB_",
+  "GLAMOUR_",
+  "XDG_",
+  "NODE_",
+  "NPM_",
+  "YARN_",
+  "BUN_",
+  "PYTHON",
+  "PERL",
+  "RUBY",
+  "JAVA",
+  "LESS",
+  "RIPGREP_",
+  "FZF_",
+  "FD_",
+  "JQ_",
+  "SSH_",
+  "GPG",
+  "GNUPG",
+  "SSL_",
+  "CURL_",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "BASH",
+  "ZSH",
+  "HIST",
+  "LC_",
+  "TERM",
+];
+const SPECIAL_VARIABLE_SUFFIXES = [
+  "PATH",
+  "HOME",
+  "DIR",
+  "PAGER",
+  "EDITOR",
+  "_CONFIG",
+  "_OPTS",
+  "_OPTIONS",
+  "_ARGS",
+  "_FLAGS",
+  "_COMMAND",
+  "_CMD",
+  "_PROGRAM",
+  "_SHELL",
+  "_PROXY",
+];
+/** zsh's lowercase special parameters, several tied to an uppercase one (`path` is `PATH`). */
+const ZSH_SPECIAL_PARAMETERS = new Set([
+  "path",
+  "cdpath",
+  "fpath",
+  "manpath",
+  "mailpath",
+  "module_path",
+  "psvar",
+  "watch",
+  "histchars",
+  "prompt",
+  "argv",
+  "status",
+  "pipestatus",
+  "options",
+  "signals",
+  "parameters",
+  "commands",
+  "functions",
+  "aliases",
+  "galiases",
+  "saliases",
+  "builtins",
+  "jobstates",
+  "jobtexts",
+  "jobdirs",
+  "nameddirs",
+  "userdirs",
+  "dirstack",
+  "funcstack",
+  "history",
+  "historywords",
+  "modules",
+  "reswords",
+  "terminfo",
+  "termcap",
+  "widgets",
+  "keymaps",
+  "mapfile",
+  "match",
+  "mbegin",
+  "mend",
+  "reply",
+  "zle_highlight",
+]);
+
+function isSpecialVariable(name: string): boolean {
+  if (ZSH_SPECIAL_PARAMETERS.has(name)) return true;
+  const upper = name.toUpperCase();
+  return (
+    SPECIAL_VARIABLES.has(upper) ||
+    SPECIAL_VARIABLE_PREFIXES.some((prefix) => upper.startsWith(prefix)) ||
+    SPECIAL_VARIABLE_SUFFIXES.some((suffix) => upper.endsWith(suffix))
+  );
+}
+
+/** `NAME=value …` with nothing else: no program, redirection or argument. */
+function assignmentOnly(node: Statement["command"]): Command | undefined {
+  return node.type === "Command" &&
+    !node.name &&
+    node.suffix.length === 0 &&
+    node.prefix.length > 0 &&
+    node.prefix.every((entry) => entry.type === "Assignment")
+    ? node
+    : undefined;
+}
+
+const SET_BEFORE_CHAIN = (name: string) =>
+  `$${name} was set after \`&&\`, which may not have run, so its value here is unknown: set ${name} before the chain (\`${name}=…; cd … && …\`) or on a line of its own`;
+
+/**
+ * Adds an assignment-only command's variables to `scope`, left to right like the shell.
+ * `afterChain` is given for an assignment that may not run (not first in its `&&` chain): the
+ * names it newly sets are appended, to lapse once the chain ends.
+ */
+function bindVariables(
+  command: Command,
+  scope: ShellScope,
+  afterChain?: string[],
+): ReadOnlyShellClassification {
+  for (const entry of command.prefix) {
+    if (entry.type !== "Assignment") return refuse("a command name is required");
+    const name = entry.name;
+    if (isSpecialVariable(name))
+      return refuse(`setting ${name} is not allowed: write the value literally instead`);
+    if (entry.append || entry.index !== undefined || entry.value.type !== "Word")
+      return refuse(`${name} must be set to a literal value: write the value literally instead`);
+    const value = resolveWord(entry.value, scope, { splits: false });
+    if (!value.ok) return refuse(value.reason);
+    if (afterChain === undefined) {
+      scope.bind(name, value.value);
+      continue;
+    }
+    const previous = scope.get(name);
+    // Certainly set with this value already: the assignment changes nothing either way.
+    if (previous === value.value && !afterChain.includes(name)) continue;
+    if (previous !== undefined && !afterChain.includes(name))
+      return refuse(`${name} is already set: use another name, or set it on a line of its own`);
+    scope.bind(name, value.value);
+    if (!afterChain.includes(name)) afterChain.push(name);
+  }
+  return READ_ONLY;
+}
+
+function classifyTopLevelStatement(
+  statement: Statement,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
+  if (statement.background) return refuse("background commands are not allowed");
+  const node = statement.command;
+  const assignments = assignmentOnly(node);
+  if (assignments) return bindVariables(assignments, scope);
+  if (node.type !== "AndOr") return classifyPipelineNode(node, 0, scope);
+  // After an `||` a command also runs when an earlier one failed, so a variable set mid-chain
+  // would not be certainly set even for the rest of the chain.
+  const onlyAnd = node.operators.every((operator) => operator === "&&");
+  const afterChain: string[] = [];
+  for (const [index, entry] of node.commands.entries()) {
+    const assigned = index === 0 || onlyAnd ? assignmentOnly(entry) : undefined;
+    const verdict = assigned
+      ? bindVariables(assigned, scope, index === 0 ? undefined : afterChain)
+      : classifyPipelineNode(entry, 0, scope);
+    if (!verdict.readOnly) return verdict;
+  }
+  for (const name of afterChain) scope.lapse(name, SET_BEFORE_CHAIN(name));
+  return READ_ONLY;
+}
+
+type ResolvedWord =
+  | { readonly ok: true; readonly value: string }
+  | { readonly ok: false; readonly reason: string };
+
+const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** An unquoted value with any of these would be split into words or matched as a glob. */
+const SPLITS_OR_GLOBS = /[\s*?[\]]/;
+
+/** A line continuation: the shell removes it before it reads what follows. */
+const LINE_CONTINUATIONS = /^(?:\\\n)+/;
+/**
+ * What may follow a `$` that the parser left as text and still be text in zsh (checked against
+ * `zsh -f` 5.9 for every printable character): the end of the text, white space, a backslash that
+ * escapes the next character, or one of these.
+ */
+const AFTER_LITERAL_DOLLAR = /^(?:$|[\s\\%,./:;\])}|])/;
+const ZSH_DOLLAR_REASON =
+  "a `$` here must start `$NAME` or `${NAME}`: zsh expands forms such as `$=NAME`, `$~NAME` and `$^NAME`";
+
+/**
+ * Whether unquoted or double-quoted source text holds a `$` that zsh would expand although the
+ * parser, which follows bash, read it as text. zsh takes a flag between `$` and the name
+ * (`$=X` splits the value, `$~X` globs it, `$^X` distributes it), so `git diff $=X` passes X's
+ * value, not the four characters checked here, and `echo $~GH_TOKEN` prints the token. `raw` is
+ * the text as written: the parser's value has lost the backslashes that tell `\$` from `$`.
+ */
+function hasUnparsedDollar(raw: string): boolean {
+  for (let index = 0; index < raw.length; index += 1) {
+    if (raw[index] === "\\") {
+      index += 1;
+      continue;
+    }
+    if (raw[index] !== "$") continue;
+    if (!AFTER_LITERAL_DOLLAR.test(raw.slice(index + 1).replace(LINE_CONTINUATIONS, "")))
+      return true;
+  }
+  return false;
+}
+
+/** `hasUnparsedDollar` for a whole word. Single-quoted and `$'…'` text is exempt: `$` is text there. */
+function wordHasUnparsedDollar(word: Word): boolean {
+  if (!word.parts) return hasUnparsedDollar(word.text);
+  const visit = (parts: ReadonlyArray<WordPart | DoubleQuotedChild>): boolean =>
+    parts.some((part) =>
+      part.type === "Literal"
+        ? hasUnparsedDollar(part.text)
+        : part.type === "DoubleQuoted" || part.type === "LocaleString"
+          ? visit(part.parts)
+          : false,
+    );
+  return visit(word.parts);
+}
+
+/**
+ * A word's value with the scope's variables expanded, or why it can't be known. Any other
+ * expansion (command substitution, `$1`, `${X:-y}`, unknown variables) is refused. `splits` is
+ * false for assignment values, which the shell neither splits nor globs; elsewhere an unquoted
+ * variable must expand to exactly one plain word.
+ */
+function resolveWord(
+  word: Word,
+  scope: ShellScope,
+  options: { readonly splits: boolean },
+): ResolvedWord {
+  if (wordHasUnparsedDollar(word)) return { ok: false, reason: ZSH_DOLLAR_REASON };
+  if (!word.parts) return { ok: true, value: word.value };
+  let value = "";
+  const visit = (
+    parts: ReadonlyArray<WordPart | DoubleQuotedChild>,
+    quoted: boolean,
+  ): string | undefined => {
+    for (const [index, part] of parts.entries()) {
+      switch (part.type) {
+        case "Literal":
+        case "SingleQuoted":
+        case "AnsiCQuoted":
+          value += part.value;
+          continue;
+        case "DoubleQuoted":
+        case "LocaleString": {
+          const failure = visit(part.parts, true);
+          if (failure) return failure;
+          continue;
+        }
+        case "SimpleExpansion":
+        case "ParameterExpansion": {
+          const name =
+            part.type === "SimpleExpansion"
+              ? part.text.slice(1)
+              : part.prefix === undefined &&
+                  part.index === undefined &&
+                  part.operation === undefined
+                ? part.parameter
+                : undefined;
+          if (name === undefined || !VARIABLE_NAME.test(name))
+            return "arguments must be literal: no substitutions or special expansions";
+          // zsh, which Codex and the ACP agents run commands in, reads `$NAME:…` as history
+          // modifiers (`$X:s/a/--flag/` rewrites the value into any text) and `$NAME[…]` as a
+          // subscript, so the word would not be the literal checked here. The text as written
+          // decides: `$NAME\:h` is the value followed by a literal `:h`, while a line
+          // continuation before the `:` changes nothing.
+          const next = parts[index + 1];
+          const delimiter =
+            part.type === "SimpleExpansion" && next?.type === "Literal"
+              ? next.text.replace(LINE_CONTINUATIONS, "")[0]
+              : undefined;
+          if (delimiter === ":" || delimiter === "[")
+            return `write \${${name}} with braces before \`${delimiter}\`: zsh reads $${name}${delimiter}… as a modifier or subscript`;
+          const known = scope.get(name);
+          if (known === undefined)
+            return (
+              scope.lapsed.get(name) ??
+              `$${name} is not set earlier in this command: set ${name}=value before using it, or write the value literally`
+            );
+          if (!quoted && options.splits && (known === "" || SPLITS_OR_GLOBS.test(known)))
+            return `quote "$${name}": its value is empty or has spaces or wildcards`;
+          value += known;
+          continue;
+        }
+        default:
+          return "arguments must be literal: no command substitutions or other expansions";
+      }
+    }
+    return undefined;
+  };
+  const failure = visit(word.parts, false);
+  return failure === undefined ? { ok: true, value } : { ok: false, reason: failure };
+}
+
+/**
+ * Deeper nesting of `if`, `{ }` and `( )` is refused rather than walked. An `elif` is not nesting:
+ * it stays at its `if`'s depth and counts toward MAX_ELIF_CLAUSES instead.
+ */
+const MAX_COMPOUND_DEPTH = 8;
+const MAX_ELIF_CLAUSES = 32;
+
+function classifyStatement(
+  statement: Statement,
+  depth: number,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
   if (statement.background) return refuse("background commands are not allowed");
   const node = statement.command;
   if (node.type === "AndOr") {
     for (const entry of node.commands) {
-      const verdict = classifyPipelineNode(entry);
+      const verdict = classifyPipelineNode(entry, depth, scope);
       if (!verdict.readOnly) return verdict;
     }
     return READ_ONLY;
   }
-  return classifyPipelineNode(node);
+  return classifyPipelineNode(node, depth, scope);
 }
 
-function classifyPipelineNode(node: PipelineNode): ReadOnlyShellClassification {
+function classifyPipelineNode(
+  node: PipelineNode,
+  depth: number,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
   if (node.type === "Pipeline") {
     if (node.operators.some((operator) => operator !== "|"))
       return refuse("only plain `|` pipes are allowed");
     for (const entry of node.commands) {
-      if (entry.type !== "Command") return refuse(`${entry.type} commands are not allowed`);
-      const verdict = classifyCommand(entry);
+      const verdict = classifyCommandNode(entry, depth, scope);
       if (!verdict.readOnly) return verdict;
     }
     return READ_ONLY;
   }
-  if (node.type !== "Command") return refuse(`${node.type} commands are not allowed`);
-  return classifyCommand(node);
+  if (node.type === "Time" || node.type === "Negation")
+    return refuse(`${node.type} commands are not allowed`);
+  return classifyCommandNode(node, depth, scope);
 }
 
-function classifyCommand(command: Command): ReadOnlyShellClassification {
+/**
+ * A simple command, or an `if`/`elif`/`else`, `{ …; }`, `( … )` or `for` over literal words whose
+ * every nested statement is read-only. Redirections on a compound pass the same `/dev/null`-only
+ * check as a simple command's. `while`/`until`, `case`, functions, coprocesses and
+ * `[[ ]]`/`(( ))` stay refused: those loops can run without end and the others add expansions
+ * this classifier does not inspect.
+ */
+function classifyCommandNode(
+  node: CommandNode,
+  depth: number,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
+  switch (node.type) {
+    case "Command":
+      return classifyCommand(node, scope);
+    case "Redirected": {
+      for (const redirection of node.redirects) {
+        const verdict = classifyRedirection(redirection);
+        if (!verdict.readOnly) return verdict;
+      }
+      return classifyCommandNode(node.command, depth, scope);
+    }
+    case "If":
+      if (depth >= MAX_COMPOUND_DEPTH) return refuse("commands are nested too deeply");
+      return classifyIfChain(node, depth + 1, scope);
+    case "BraceGroup":
+    case "Subshell":
+      if (depth >= MAX_COMPOUND_DEPTH) return refuse("commands are nested too deeply");
+      return classifyCompoundList(node.body, depth + 1, scope);
+    case "For":
+      if (depth >= MAX_COMPOUND_DEPTH) return refuse("commands are nested too deeply");
+      return classifyForLoop(node, depth + 1, scope);
+    default:
+      return refuse(`${node.type} commands are not allowed`);
+  }
+}
+
+/** A `for` list longer than this, or loops nested deeper, are refused rather than walked. */
+const MAX_LOOP_WORDS = 64;
+const MAX_LOOP_DEPTH = 2;
+/** Unquoted, these make the shell produce words other than the one written. */
+const LOOP_WORD_EXPANDS = /[*?[\]{}]|^~/;
+
+/**
+ * `for NAME in word …; do …; done` over literal words. The loop runs once per word, so the body
+ * is classified once per word with NAME set to it: every command it can run is checked as the
+ * text it will be. A list with a glob, a brace expansion, `~` or a variable is refused, since the
+ * words would only be known when it runs; so is `for NAME; do` (the positional parameters).
+ */
+function classifyForLoop(node: For, depth: number, scope: ShellScope): ReadOnlyShellClassification {
+  const literalList = refuse(
+    "`for` is only allowed over literal words: `for f in a.ts b.ts; do …; done`",
+  );
+  if (scope.loopDepth >= MAX_LOOP_DEPTH) return refuse("`for` loops are nested too deeply");
+  if (!isStaticWord(node.name) || !VARIABLE_NAME.test(node.name.value)) return literalList;
+  const name = node.name.value;
+  if (isSpecialVariable(name))
+    return refuse(`looping over ${name} is not allowed: use another variable name`);
+  // The loop would replace that value, here and for every command after `done`.
+  if (scope.has(name))
+    return refuse(`${name} is already set: use another name for the loop variable`);
+  const words = node.wordlist;
+  if (words === undefined || words.length === 0) return literalList;
+  if (words.length > MAX_LOOP_WORDS)
+    return refuse(`\`for\` lists are limited to ${MAX_LOOP_WORDS} words`);
+  for (const word of words) {
+    if (!isStaticWord(word)) return literalList;
+    const unquoted = word.parts
+      ? word.parts.map((part) => (part.type === "Literal" ? part.value : "")).join("")
+      : word.value;
+    if (LOOP_WORD_EXPANDS.test(unquoted)) return literalList;
+  }
+  for (const word of words) {
+    const verdict = classifyCompoundList(
+      node.body,
+      depth,
+      scope.withLoopVariable(name, word.value),
+    );
+    if (!verdict.readOnly) return verdict;
+  }
+  // After `done` the shell keeps the last word in NAME. The body ran in copies of the scope, so
+  // the name is unknown here, and stays so: a later `$NAME` is refused rather than read as the
+  // value some earlier statement gave it.
+  scope.lapse(
+    name,
+    `$${name} was a \`for\` variable, which is only known inside its loop: set ${name}=value on a line of its own to use it after \`done\``,
+  );
+  return READ_ONLY;
+}
+
+/**
+ * An `if` and its `elif` clauses, which unbash stores as an `If` in the previous clause's `else`.
+ * Walked in a loop so a flat chain neither counts as nesting nor recurses per clause.
+ */
+function classifyIfChain(node: If, depth: number, scope: ShellScope): ReadOnlyShellClassification {
+  let clause: If = node;
+  for (let clauses = 1; ; clauses += 1) {
+    if (clauses > MAX_ELIF_CLAUSES) return refuse("too many `elif` clauses");
+    for (const list of [clause.clause, clause.then]) {
+      const verdict = classifyCompoundList(list, depth, scope);
+      if (!verdict.readOnly) return verdict;
+    }
+    const rest = clause.else;
+    if (rest === undefined) return READ_ONLY;
+    if (rest.type !== "If") return classifyCompoundList(rest, depth, scope);
+    clause = rest;
+  }
+}
+
+function classifyCompoundList(
+  list: CompoundList,
+  depth: number,
+  scope: ShellScope,
+): ReadOnlyShellClassification {
+  if (list.commands.length === 0) return refuse("empty command");
+  for (const statement of list.commands) {
+    const verdict = classifyStatement(statement, depth, scope);
+    if (!verdict.readOnly) return verdict;
+  }
+  return READ_ONLY;
+}
+
+function classifyCommand(command: Command, scope: ShellScope): ReadOnlyShellClassification {
+  // Variables count only where the classifier can follow them (classifyTopLevelStatement).
+  if (assignmentOnly(command))
+    return refuse(
+      "variables must be set at the top level, on their own or in an `&&` chain, not inside `if`, `{ }`, `( )`, a loop, a pipe or after `||`: or write the value literally",
+    );
   for (const entry of command.prefix) {
     if (entry.type === "Assignment") {
       const isPager = PAGER_ASSIGNMENTS.has(entry.name);
@@ -216,22 +924,42 @@ function classifyCommand(command: Command): ReadOnlyShellClassification {
   const program = name.value;
   if (program.includes("/")) return refuse("programs must be named without a path");
 
-  // Every argument must be literal. A substitution runs a command, a variable could expand to a
-  // flag that writes or executes, and `echo $GH_TOKEN` would put a secret in the model's context.
-  // `cmd NAME=value` is a plain argument for every allowed program.
+  // Every argument must be literal, or a variable this command set to a literal earlier, which
+  // is checked as the value it stands for. A substitution runs a command, any other variable could
+  // expand to a flag that writes or executes, and `echo $GH_TOKEN` would put a secret in the
+  // model's context.
+  const args = resolveArguments(command, scope);
+  return typeof args === "string" ? refuse(args) : classifyProgram(program, args);
+}
+
+/**
+ * The arguments the program receives, or why they can't be known. `cmd NAME=value` is one
+ * argument, like any other word.
+ */
+function resolveArguments(command: Command, scope: ShellScope): string[] | string {
   const args: string[] = [];
   for (const entry of command.suffix) {
     if (entry.type === "Assignment") {
-      if (!(entry.value.type === "Word" && isStaticWord(entry.value)))
-        return refuse("arguments must be literal");
+      if (entry.value.type !== "Word" || entry.index !== undefined)
+        return "arguments must be literal";
+      const value = resolveWord(entry.value, scope, { splits: true });
+      if (!value.ok) return value.reason;
+      args.push(`${entry.name}${entry.append ? "+" : ""}=${value.value}`);
       continue;
     }
     if (entry.type !== "Word") continue;
-    if (!isStaticWord(entry))
-      return refuse("arguments must be literal: no variables or substitutions");
-    args.push(entry.value);
+    const value = resolveWord(entry, scope, { splits: true });
+    if (!value.ok) return value.reason;
+    args.push(value.value);
   }
+  return args;
+}
 
+function classifyProgram(
+  program: string,
+  args: ReadonlyArray<string>,
+): ReadOnlyShellClassification {
+  if (program === "cd") directoryUses?.push({ kind: "cd", path: cdTarget(args) });
   if (PLAIN_READ_PROGRAMS.has(program)) return READ_ONLY;
 
   switch (program) {
@@ -283,6 +1011,8 @@ function classifyCommand(command: Command): ReadOnlyShellClassification {
       return classifyUniq(args);
     case "sed":
       return classifySed(args);
+    case "base64":
+      return classifyBase64(args);
     case "git":
       return classifyGit(args);
     case "gh":
@@ -397,43 +1127,75 @@ function classifyUniq(args: ReadonlyArray<string>): ReadOnlyShellClassification 
 
 function classifySed(args: ReadonlyArray<string>): ReadOnlyShellClassification {
   let quiet = false;
-  let scriptSeen = false;
-  for (const arg of args) {
-    if (arg.startsWith("-") && arg !== "-") {
-      if (/^-[nEr]+$/.test(arg)) {
-        if (arg.includes("n")) quiet = true;
-        continue;
-      }
-      if (arg === "--quiet" || arg === "--silent") {
-        quiet = true;
-        continue;
-      }
-      if (arg === "--regexp-extended") continue;
-      return refuse(`\`sed ${arg}\` is not allowed`);
+  // With `-e`, every operand is a file; without it the first operand is the script.
+  const expressions: string[] = [];
+  let firstOperand: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (!arg.startsWith("-") || arg === "-") {
+      firstOperand ??= arg;
+      continue;
     }
-    if (!scriptSeen) {
-      if (!SED_PRINT_SCRIPT.test(arg)) return refuse("`sed` may only print line ranges");
-      scriptSeen = true;
+    // macOS `sed` stops reading options at the first operand: `sed -n 'w out' -e p` runs
+    // `w out` as the script and takes `-e` and `p` for file names. GNU `sed` reorders them.
+    // Only the order both read the same way is accepted.
+    if (firstOperand !== undefined)
+      return refuse("`sed` options must come before the script and the files");
+    if (arg === "--quiet" || arg === "--silent") {
+      quiet = true;
+      continue;
+    }
+    if (arg === "--regexp-extended") continue;
+    if (arg.startsWith("--expression=")) {
+      expressions.push(arg.slice("--expression=".length));
+      continue;
+    }
+    // `-n`, `-E`, `-r` in any group, optionally ending in `-e`, which takes the next argument.
+    const cluster = arg === "--expression" ? ["", "", "e"] : /^-([nEr]*)(e?)$/.exec(arg);
+    if (!cluster) return refuse(`\`sed ${arg}\` is not allowed`);
+    if (cluster[1]!.includes("n")) quiet = true;
+    if (cluster[2]) {
+      const expression = args[index + 1];
+      if (expression === undefined) return refuse("`sed -e` needs a script");
+      expressions.push(expression);
+      index += 1;
     }
   }
-  return quiet && scriptSeen ? READ_ONLY : refuse("`sed` is only allowed as `sed -n 'N,Mp'`");
+  const scripts =
+    expressions.length > 0 ? expressions : firstOperand === undefined ? [] : [firstOperand];
+  if (!quiet || scripts.length === 0)
+    return refuse("`sed` is only allowed as `sed -n '<lines or /regex/>p'`");
+  return scripts.every(isSedPrintScript)
+    ? READ_ONLY
+    : refuse("`sed` may only print lines: `sed -n '10,20p;/regex/,$p'`");
+}
+
+/** `base64` writes its output to a file with `-o`/`--output` (macOS); everything else reads. */
+function classifyBase64(args: ReadonlyArray<string>): ReadOnlyShellClassification {
+  return args.some((arg) => /^-[a-zA-Z]*o/.test(arg) || abbreviatesLongOption(arg, "output"))
+    ? refuse("`base64 -o` writes a file")
+    : READ_ONLY;
 }
 
 function classifyGit(args: ReadonlyArray<string>): ReadOnlyShellClassification {
   let index = 0;
+  const directories: string[] = [];
   while (index < args.length && args[index]!.startsWith("-")) {
     const arg = args[index]!;
     if (arg === "-C") {
       if (index + 1 >= args.length) return refuse("`git -C` needs a directory");
+      directories.push(args[index + 1]!);
       index += 2;
       continue;
     }
-    if (arg === "--no-pager" || arg === "--no-optional-locks") {
+    if (GIT_GLOBAL_SWITCHES.has(arg)) {
       index += 1;
       continue;
     }
+    if (arg === "--version" && args.length === 1) return READ_ONLY;
     return refuse(`\`git ${arg}\` is not allowed`);
   }
+  directoryUses?.push({ kind: "git", path: directories });
   const subcommand = args[index];
   if (subcommand === undefined) return refuse("a git subcommand is required");
   const rest = args.slice(index + 1);
@@ -449,16 +1211,79 @@ function classifyGit(args: ReadonlyArray<string>): ReadOnlyShellClassification {
     return refuse(`\`git ${subcommand}\` flags that write or execute are not allowed`);
 
   if (GIT_READ_SUBCOMMANDS.has(subcommand)) return READ_ONLY;
-  if (subcommand === "branch")
-    return rest.every((arg) => GIT_BRANCH_READ_FLAGS.has(arg))
-      ? READ_ONLY
-      : refuse("`git branch` is only allowed for listing");
-  if (subcommand === "remote") {
-    if (rest.length === 1 && (rest[0] === "-v" || rest[0] === "--verbose")) return READ_ONLY;
-    if (rest.length === 2 && rest[0] === "get-url" && !rest[1]!.startsWith("-")) return READ_ONLY;
-    return refuse("`git remote` is only allowed as `-v` or `get-url`");
+  switch (subcommand) {
+    case "grep":
+      // `-O[<pager>]` opens the matching files in a program. git accepts it inside a group of
+      // short flags (`-nO`, `-iOless`), so any group with an `O` is refused; `--open-files-in-pager`
+      // and `--textconv` are refused above. A pattern attached to its flag (`-eOK`) is refused
+      // too: write it as a separate argument.
+      return rest.some((arg) => /^-[^-]*O/.test(arg))
+        ? refuse("`git grep -O` opens files in a program")
+        : READ_ONLY;
+    case "branch":
+      return classifyGitRefListing("branch", rest);
+    case "tag":
+      return classifyGitRefListing("tag", rest);
+    case "remote":
+      if (rest.length === 0) return READ_ONLY;
+      if (rest.length === 1 && (rest[0] === "-v" || rest[0] === "--verbose")) return READ_ONLY;
+      if (rest.length === 2 && rest[0] === "get-url" && !rest[1]!.startsWith("-")) return READ_ONLY;
+      return refuse("`git remote` is only allowed bare, as `-v` or as `get-url`");
+    case "worktree":
+      return rest[0] === "list" && rest.slice(1).every((arg) => GIT_WORKTREE_LIST_FLAGS.has(arg))
+        ? READ_ONLY
+        : refuse("`git worktree` is only allowed as `git worktree list`");
+    case "stash":
+      // `list` takes `git log` options, which are checked like `git log`'s above.
+      return rest[0] === "list"
+        ? READ_ONLY
+        : refuse("`git stash` is only allowed as `git stash list`");
+    default:
+      return refuse(`\`git ${subcommand}\` is not on the read-only allowlist`);
   }
-  return refuse(`\`git ${subcommand}\` is not on the read-only allowlist`);
+}
+
+/**
+ * `git branch` or `git tag` in a form that can only list (GIT_REF_LIST_SWITCHES). A bare name
+ * would create a ref, so an operand is accepted only as the value of a filter (`--contains
+ * <commit>`) or, as a pattern, when `--list` is given.
+ */
+function classifyGitRefListing(
+  subcommand: "branch" | "tag",
+  args: ReadonlyArray<string>,
+): ReadOnlyShellClassification {
+  const refused = refuse(
+    `\`git ${subcommand}\` is only allowed for listing: put names and patterns after \`--list\``,
+  );
+  // Before Git 2.20, `git branch -l <name>` meant `--create-reflog` and created the branch, so
+  // for `branch` only the long form admits a name. `git tag -l` has always listed.
+  const listMode = args.some((arg) =>
+    subcommand === "branch" ? arg === "--list" : GIT_REF_LIST_MODE.has(arg),
+  );
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (GIT_REF_LIST_MODE.has(arg) || GIT_REF_LIST_SWITCHES.has(arg)) continue;
+    if (GIT_REF_LIST_VALUE_SWITCH.test(arg)) continue;
+    if (
+      subcommand === "branch"
+        ? GIT_BRANCH_LIST_SWITCHES.has(arg) || GIT_BRANCH_LIST_CLUSTER.test(arg)
+        : /^-n\d*$/.test(arg)
+    )
+      continue;
+    if (GIT_REF_LIST_VALUE_FLAGS.has(arg)) {
+      const value = args[index + 1];
+      // As the last argument these four mean HEAD. Anywhere else git takes the next argument
+      // as the commit, whatever it looks like.
+      if (value === undefined && GIT_REF_LIST_HEAD_DEFAULT.has(arg)) continue;
+      if (value === undefined || value.startsWith("-")) return refused;
+      index += 1;
+      continue;
+    }
+    const assigned = /^(--[a-z-]+)=/.exec(arg);
+    if (assigned && GIT_REF_LIST_VALUE_FLAGS.has(assigned[1]!)) continue;
+    if (arg.startsWith("-") || !listMode) return refused;
+  }
+  return READ_ONLY;
 }
 
 function classifyGh(args: ReadonlyArray<string>): ReadOnlyShellClassification {
@@ -522,7 +1347,7 @@ function classifyGhApi(args: ReadonlyArray<string>): ReadOnlyShellClassification
 
 /** A word with no expansion of any kind: its value is exactly what the program receives. */
 function isStaticWord(word: Word): boolean {
-  return (word.parts ?? []).every(isStaticPart);
+  return !wordHasUnparsedDollar(word) && (word.parts ?? []).every(isStaticPart);
 }
 
 function isStaticPart(part: WordPart | DoubleQuotedChild): boolean {

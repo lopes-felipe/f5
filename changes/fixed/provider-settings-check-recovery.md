@@ -1,1 +1,0 @@
-- Changing provider settings still triggers a fresh check after a previous check failed.
