@@ -281,6 +281,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       hubOmissionWarnings.delete(threadId);
       if (attachment) void attachment.dispose();
     };
+    manager.mcpHubAsksBeforeCall = (threadId, serverName, toolName) =>
+      hubAttachments.get(threadId)?.asksBeforeCall?.(serverName, toolName) ?? false;
     const useMcpHub = Effect.gen(function* () {
       if (!options?.mcpHub?.available) return false;
       const passthrough = options.mcpNativePassthrough

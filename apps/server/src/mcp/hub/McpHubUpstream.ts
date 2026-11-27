@@ -27,6 +27,7 @@ import { createMcpDiagnosticsSanitizer, isMcpCredentialKey } from "@t3tools/shar
 import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 
 import { ProbeStdioTransport } from "../McpProbe.ts";
+import { resolvedMcpSecretsIn } from "../mcpResolvedSecrets.ts";
 import { mcpOAuthFetch, type McpOAuthProvider } from "./McpOAuth.ts";
 
 export const HUB_STDERR_LIMIT = 64 * 1024;
@@ -166,6 +167,9 @@ export class McpHubUpstream {
   private readonly urlElicitations = new Map<string, McpHubInFlightCall>();
   /** A released session connection stops once its calls in flight finish. */
   private stopWhenDrained = false;
+  /** The latest stop's close, so a later stop waits for the process to exit too. */
+  private stopping: Promise<void> | undefined;
+  private stopSettled = true;
 
   constructor(options: McpHubUpstreamOptions) {
     this.options = options;
@@ -174,6 +178,10 @@ export class McpHubUpstream {
     this.scope = options.scope;
     const sanitizer = createMcpDiagnosticsSanitizer({ [options.name]: options.definition }, [
       ...mcpBearerRedactionValues(options.definition, options.environment),
+      // Stored secrets inside arguments or the URL are redacted on their own.
+      ...resolvedMcpSecretsIn(
+        [...(options.definition.args ?? []), options.definition.url ?? ""].join("\n"),
+      ),
       ...Object.entries(options.environment).flatMap(([name, value]) =>
         value && isMcpCredentialKey(name) ? [value] : [],
       ),
@@ -391,8 +399,20 @@ export class McpHubUpstream {
     this.tools = undefined;
     this.toolsLoading = undefined;
     this.state = reason === "stopped" ? "stopped" : "idle";
+    this.stopSettled = false;
+    const closing = Promise.allSettled([this.stopping, client?.close(), transport?.close()]).then(
+      () => {
+        if (this.stopping === closing) this.stopSettled = true;
+      },
+    );
+    this.stopping = closing;
     this.options.onChange?.();
-    await Promise.allSettled([client?.close(), transport?.close()]);
+    await closing;
+  }
+
+  /** Stopped, with its process (if any) gone, and nothing left to wait for. */
+  get finished(): boolean {
+    return this.state === "stopped" && this.stopSettled && this.inFlight.size === 0;
   }
 
   private connect(): Promise<Client> {

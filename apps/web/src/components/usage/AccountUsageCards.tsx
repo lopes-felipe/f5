@@ -486,6 +486,8 @@ export function accountStatusText(account: UsageAccount): string | null {
   if (!account.enabled)
     return `${providerLabel(account.provider)} is disabled in provider settings.`;
   for (const section of account.sections) {
+    if (section.outcome === "unsupported" && account.provider === "antigravity")
+      return "Subscription quota is unavailable for Antigravity.";
     if (section.outcome === "unsupported")
       return `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`;
     if (section.errorCode) return accountErrorMessage(account.provider, section.errorCode);
@@ -643,7 +645,13 @@ export function AccountUsageCard(props: {
               key={section.kind}
               first={index === 0}
               label={SECTION_LABELS[section.kind]}
-              meta={<SectionMeta section={section} />}
+              meta={
+                account.provider === "antigravity" &&
+                section.kind === "provider-limits" &&
+                section.snapshot?.data.plan === "Billed per token" ? null : (
+                  <SectionMeta section={section} />
+                )
+              }
             >
               <AccountSectionBody
                 account={account}

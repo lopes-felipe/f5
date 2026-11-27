@@ -10,6 +10,8 @@ export function makeFakeMcpHub(
     readonly omitted?: ReadonlyArray<McpHubOmission>;
     /** Servers every update reports as needing a longer provider timeout. */
     readonly timeoutRaised?: ReadonlyArray<string>;
+    /** Whether F5 would ask before a tool call (Ask policy or a changed tool). */
+    readonly asksBeforeCall?: (serverName: string, toolName: string) => boolean;
   } = {},
 ) {
   const attaches: McpHubAttachInput[] = [];
@@ -63,6 +65,7 @@ export function makeFakeMcpHub(
             timeoutRaised: options.timeoutRaised ?? [],
           };
         },
+        ...(options.asksBeforeCall ? { asksBeforeCall: options.asksBeforeCall } : {}),
         decline: (names) => {
           declined.push(...names);
         },

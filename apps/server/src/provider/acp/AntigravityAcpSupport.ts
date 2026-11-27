@@ -16,11 +16,15 @@ import {
 import { findModelConfigOption, type AcpSessionModeState } from "./AcpRuntimeModel.ts";
 import {
   acpReadOnlyWorkflowDecision,
-  type AcpReadOnlyWorkflowToolCall,
+  acpReadOnlyWorkflowVerdict,
+  type AcpReadOnlyWorkflowDecisionInput,
+  type AcpReadOnlyWorkflowVerdict,
 } from "./AcpReadOnlyWorkflowPolicy.ts";
 import { antigravityEditTargetsInWorkspace } from "./AntigravityEditLocation.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
 import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
+import { makeReadOnlyGitGuard, type ReadOnlyGitGuard } from "../readOnlyGitConfig.ts";
+import { appendGitConfigPairs } from "../../git/gitConfigEnvironment.ts";
 import {
   ANTIGRAVITY_PERSONAL_AUTH,
   antigravityLaunchEnvironment,
@@ -138,14 +142,16 @@ async function publishProfileFile(file: string, contents: string | Buffer): Prom
   }
 }
 
+export function antigravityProfilesDirectory(stateDir: string): string {
+  return path.join(stateDir, "providers", "antigravity", "accounts");
+}
+
+export function antigravityProfileKey(instanceId: string): string {
+  return createHash("sha256").update(instanceId).digest("hex");
+}
+
 export function antigravityProfileDirectory(stateDir: string, instanceId: string): string {
-  return path.join(
-    stateDir,
-    "providers",
-    "antigravity",
-    "accounts",
-    createHash("sha256").update(instanceId).digest("hex"),
-  );
+  return path.join(antigravityProfilesDirectory(stateDir), antigravityProfileKey(instanceId));
 }
 
 export async function linkAntigravityUserSkills(home: string, userHome: string): Promise<void> {
@@ -374,6 +380,28 @@ export const makeAntigravityAcpRuntime = (input: {
       }),
       (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
     );
+    const childEnvironment: NodeJS.ProcessEnv = {
+      ...antigravityEnvironment(
+        input.environment,
+        prepared.home,
+        prepared.executable.harnessPath,
+        prepared.browser,
+        auth,
+      ),
+      TMPDIR: tempDirectory,
+      TMP: tempDirectory,
+      TEMP: tempDirectory,
+      ...(input.readOnlySandbox === true || input.readOnlyWorkflow === true
+        ? READ_ONLY_WORKFLOW_ENVIRONMENT
+        : {}),
+    };
+    // Without the sandbox, commands F5 approves run unsandboxed: a repository's own Git helpers
+    // must not run for them (readOnlyGitConfig.ts). Git is asked with the child's environment,
+    // whose home differs from F5's, so it reads the config the child's Git will.
+    const readOnlyGitGuard =
+      input.readOnlyWorkflow === true && input.readOnlySandbox !== true
+        ? yield* Effect.promise(() => makeReadOnlyGitGuard(input.cwd, childEnvironment))
+        : undefined;
     const context = yield* Layer.build(
       AcpSessionRuntime.layer({
         cwd: input.cwd,
@@ -399,21 +427,7 @@ export const makeAntigravityAcpRuntime = (input: {
           command: prepared.executable.executablePath,
           args: antigravityAcpArgs(prepared.home, input.readOnlySandbox === true),
           cwd: input.cwd,
-          env: {
-            ...antigravityEnvironment(
-              input.environment,
-              prepared.home,
-              prepared.executable.harnessPath,
-              prepared.browser,
-              auth,
-            ),
-            TMPDIR: tempDirectory,
-            TMP: tempDirectory,
-            TEMP: tempDirectory,
-            ...(input.readOnlySandbox === true || input.readOnlyWorkflow === true
-              ? READ_ONLY_WORKFLOW_ENVIRONMENT
-              : {}),
-          },
+          env: appendGitConfigPairs({ ...childEnvironment }, readOnlyGitGuard?.pairs ?? []),
           extendEnv: false,
         },
         transformStdoutLine: (line) => {
@@ -475,8 +489,14 @@ export const makeAntigravityAcpRuntime = (input: {
       setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})),
     };
     antigravityLaunchedVersions.set(shaped, prepared.executable.version ?? null);
+    if (readOnlyGitGuard) antigravityReadOnlyGitGuards.set(shaped, readOnlyGitGuard);
     return shaped;
   });
+
+/** The Git guard of a runtime launched for a policy-enforced read-only stage. */
+const antigravityReadOnlyGitGuards = new WeakMap<object, ReadOnlyGitGuard>();
+export const antigravityReadOnlyGitGuard = (runtime: object): ReadOnlyGitGuard | undefined =>
+  antigravityReadOnlyGitGuards.get(runtime);
 
 /**
  * The Antigravity version each runtime was spawned from. Checks that depend on the version (the
@@ -806,12 +826,17 @@ const writeAntigravitySessionMode = <E>(input: {
  * thread grants and Full access, and never opens an approval prompt. The policy itself is shared
  * with Cursor: see `acpReadOnlyWorkflowDecision`.
  */
-export function antigravityReadOnlyWorkflowDecision(input: {
-  readonly toolCall: AcpReadOnlyWorkflowToolCall;
-  readonly computerRequest: boolean;
-  readonly f5ThreadServerName?: string | undefined;
-}): "allow" | "deny" {
+export function antigravityReadOnlyWorkflowDecision(
+  input: AcpReadOnlyWorkflowDecisionInput,
+): "allow" | "deny" {
   return acpReadOnlyWorkflowDecision(input);
+}
+
+/** `antigravityReadOnlyWorkflowDecision` with the reason for a refusal. */
+export function antigravityReadOnlyWorkflowVerdict(
+  input: AcpReadOnlyWorkflowDecisionInput,
+): AcpReadOnlyWorkflowVerdict {
+  return acpReadOnlyWorkflowVerdict(input);
 }
 
 /** Read-only workflow sessions never run with native auto-approval, whatever the thread says. */

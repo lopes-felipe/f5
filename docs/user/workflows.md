@@ -134,6 +134,26 @@ shows the template, cost and per-step context.
     and F5 answers with the same command allowlist it uses for Cursor. File edits and requests
     for more permissions are refused. Antigravity launches without `--sandbox`, under the same
     allowlist.
+  - Commands F5 approves without a sandbox (Cursor always, Codex and Antigravity when
+    policy-enforced) can't run a repository's own Git helpers: an external diff, a diff driver's
+    command or textconv, a clean or smudge filter, a filter process, an fsmonitor hook, a pager
+    or a GPG program set in its `.git/config`. Helpers from your own Git config, such as a
+    globally installed Git LFS, still run.
+    - **In the stage's folder:** when the stage starts, F5 turns off the helpers that
+      repository's config defines. A textconv or a clean or smudge filter passes the content
+      through instead, so `git diff` and `git status` keep working and show what is stored. A
+      file that Git LFS manages through the repository's own config (`git lfs install --local`)
+      then shows its stored pointer and can appear as modified. An external diff or a diff
+      driver's command can't be stood in for, so `git diff` fails with `cannot run` for the
+      paths that need it; `git diff --no-ext-diff` works.
+    - **Anywhere else:** before F5 approves a command that runs Git, it reads the config of
+      each repository the command can reach (through `cd`, `git -C`, a submodule or a nested
+      repository) and refuses the command when one defines a helper F5 didn't turn off. That
+      includes a helper added to the stage's own repository after the stage started. The model
+      is told which setting it was and reads that repository with `gh` or F5's forge tools
+      instead.
+    - Git also runs without a pager and never fetches a missing object from a partial clone's
+      remote.
   - If your organisation's Codex requirements (`allowed_approval_policies` or
     `allowed_sandbox_modes` in a managed `requirements.toml`) don't allow `untrusted` with
     `danger-full-access`, Codex can't be made to ask before every command:
@@ -145,7 +165,10 @@ shows the template, cost and per-step context.
     - With only `never` allowed, the stage stays in Codex's read-only sandbox, recorded as
       **sandboxed**, and the thread shows a configuration warning saying so. In the desktop app
       shell commands then fail, and the stage reads pull requests and files through F5's forge
-      tools.
+      tools. Those reach only what's pushed: a stage that must review unpushed local changes
+      needs a working shell, so run it with another provider.
+    - Allowing neither `untrusted`, `on-request` nor `never` leaves no mode F5 can use, and the
+      stage fails to start.
   - Claude runs in Plan mode, where Claude Code decides which commands only read.
   - OpenCode and Pi run with their write tools turned off.
   - Antigravity runs only on a certified runtime (see
@@ -162,11 +185,10 @@ shows the template, cost and per-step context.
 - Cursor has no read-only sandbox yet, so F5 decides each of its permission requests in a read-only
   stage. Read, search, think and fetch tools run, and so do shell commands on the read-only
   allowlist that Antigravity also uses (see
-  [Antigravity](../providers/antigravity.md#read-only-workflow-turns)). A script may set a
-  variable to a literal (`HEAD_SHA=abc123`) and use it later in the same command. Everything else
-  is refused and the model is told no; a turn with three refused operations fails the stage, on
-  any provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
-  labelling its tools' kinds correctly.
+  [shell commands in policy-enforced stages](#shell-commands-in-policy-enforced-stages)).
+  Everything else is refused and the model is told no (see
+  [when a command is refused](#when-a-command-is-refused)). Unlike Antigravity, Cursor is not
+  certified per version, so F5 relies on Cursor labelling its tools' kinds correctly.
 - F5 only sees the Cursor commands that Cursor asks about, so read-only Cursor stages run with an
   F5-owned copy of your Cursor CLI config (`CURSOR_CONFIG_DIR`):
   - **Ignored in these stages:** your allowlist (`permissions.allow`, `permissions.json`), an
@@ -183,6 +205,61 @@ shows the template, cost and per-step context.
 - Fetch stays allowed in read-only stages on Cursor and Antigravity, as for Codex and Claude plan
   mode. Text planted in the code under review could get the model to put repository content into
   a URL it fetches, so don't run workflows on code you don't trust with secrets in the workspace.
+
+### Shell commands in policy-enforced stages
+
+Where no sandbox holds a read-only stage (Cursor, and Codex and Antigravity in the macOS desktop
+app), F5 reads every shell command the model asks to run and approves it only when it can tell
+the command just reads. It refuses anything it can't follow, so a refusal doesn't mean the
+command was harmful.
+
+- **Runs:**
+  - reading and searching files: `cat`, `head`, `tail`, `nl`, `wc`, `ls`, `stat`, `file`, `find`,
+    `fd`, `rg`, `grep`, `diff`, `cmp`, `sort`, `uniq`, `cut`, `tr`, `jq`, `shasum`, and `base64`
+    without `-o`;
+  - `sed -n` with print commands only (`sed -n '10,20p;/start/,/end/p'`), options before the
+    script;
+  - git reads: `status`, `log`, `show`, `diff`, `grep`, `blame`, `rev-parse`, `rev-list`,
+    `merge-base`, `ls-files`, `ls-tree`, `cat-file`, `for-each-ref` and the like;
+  - git listings: `git branch` and `git tag` with filters such as `--contains` or with
+    `--list <pattern>`, `git remote`, `git worktree list`, `git stash list`;
+  - `gh` reads (`gh pr view`, `gh pr diff`, `gh pr checks`, `gh api` with GET).
+- **Shell syntax it follows:**
+  - pipes, `&&`, `||`, `;`, `if`, `{ }`, `( )` and output sent to `/dev/null`;
+  - a variable set to a literal and used later (`SHA=abc123; git show "${SHA}:README.md"`).
+    Before a `:` or `[` the name needs braces, because zsh reads `$SHA:…` as a modifier;
+  - a variable set after `&&` (`cd dir && SHA=abc123 && git show $SHA`), for the rest of that
+    `&&` chain only. After the chain it is refused, because the assignment may not have run and
+    the name could then hold anything, including a credential from your environment. Set it
+    first instead: `SHA=abc123; cd dir && git show $SHA`;
+  - `for f in a.ts b.ts; do …; done` over up to 64 words written out in full. The loop variable
+    needs a name that isn't set yet, and is not known after `done`.
+- **Refused:**
+  - writing a file, including `> file` and `sed -i`;
+  - `$(…)` and backticks, brace lists (`src/{a,b}.ts`), globs in a `for` list, heredocs,
+    functions, `while`;
+  - `awk`, `xargs` and interpreters (`bun`, `node`, `python3`);
+  - `curl`, `git fetch`, `git ls-remote` and `git -c`;
+  - a program named with a path (`/usr/bin/grep`).
+
+Reviewers that want to run tests or scripts need a stage that isn't read-only.
+
+#### When a command is refused
+
+- **The model is told the rules first.** Codex, Cursor and Antigravity only hear "rejected" when
+  F5 refuses a command, without a reason. So a policy-enforced stage starts with a short list of
+  what runs and what doesn't, and is told not to retry a refused command.
+- **The thread shows why.** A refusal appears in the timeline as "Command refused in a read-only
+  stage", with the command and F5's reason, for example
+  ``touch marker (`touch` is not on the read-only allowlist)``.
+- **A refusal doesn't fail the stage.** Nothing ran, and a model that tries something else keeps
+  going. The stage fails when the model asks for the same refused operation three times, or is
+  refused fifteen times in one turn, on any provider.
+- **Antigravity ends its turn when a command is refused.** When it does so without writing a
+  reply, F5 tells it what was refused and why, and asks it to finish, inside the same turn. A
+  model that tries a different command each time keeps getting the explanation, up to the limit
+  of fifteen refusals. The stage fails when two follow-ups in a row end on a command F5 had
+  already explained. The failure gives F5's reason, and the thread lists the refused commands.
 
 ### Repository config in read-only stages
 

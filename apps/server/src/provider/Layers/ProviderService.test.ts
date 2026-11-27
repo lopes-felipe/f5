@@ -8,6 +8,10 @@ import { ProviderControlTarget } from "../controlTarget.ts";
 import { DeliveryAttemptContext, TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker.ts";
+import {
+  McpHubGovernanceService,
+  type McpHubGovernanceShape,
+} from "../../mcp/hub/McpHubGovernanceLive.ts";
 import { readPersistedSessionGeneration } from "../sessionCapabilities.ts";
 import { reloadCodexMcpConfigAfterLogin } from "../../mcp/reloadCodexMcpConfigAfterLogin.ts";
 import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
@@ -1001,10 +1005,27 @@ it.effect.each([
   },
   // F5's macOS desktop backend runs in a Seatbelt sandbox, so Codex's can't start inside it.
   { nestedSandbox: false, enforcement: "policy", summary: "Read-only stage: policy-enforced" },
-])(
-  "records how a read-only workflow stage is enforced when its session starts (nested sandbox: $nestedSandbox)",
-  ({ nestedSandbox, enforcement, summary }) => {
+  // Codex's managed requirements left the requested policy stage only the sandbox: the line
+  // shows what the session reports, not what F5 asked for.
+  {
+    nestedSandbox: false,
+    enforcement: "policy",
+    effective: "sandbox",
+    summary: "Read-only stage: sandboxed (Codex native sandbox)",
+  },
+] as const)(
+  "records how a read-only workflow stage is enforced when its session starts (nested sandbox: $nestedSandbox, effective: $effective)",
+  ({ nestedSandbox, enforcement, summary, ...rest }) => {
+    const effective = "effective" in rest ? rest.effective : undefined;
     const codex = makeFakeCodexAdapter();
+    if (effective) {
+      const start = codex.startSession.getMockImplementation()!;
+      codex.startSession.mockImplementationOnce((input) =>
+        start(input).pipe(
+          Effect.map((session) => ({ ...session, readOnlyEnforcement: effective })),
+        ),
+      );
+    }
     const adapter = {
       ...codex.adapter,
       capabilities: { ...codex.adapter.capabilities, enforcesReadOnlyWorkflow: true },
@@ -1035,9 +1056,78 @@ it.effect.each([
       assert.equal(codex.startSession.mock.calls[0]?.[0].readOnlyEnforcement, enforcement);
       const event = Option.getOrThrow(yield* Fiber.join(configured));
       assert.deepEqual(event.type === "session.configured" ? event.payload.config : undefined, {
-        f5ReadOnlyEnforcement: enforcement,
+        f5ReadOnlyEnforcement: effective ?? enforcement,
         f5ReadOnlyEnforcementSummary: summary,
       });
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
+it.effect.each([
+  // What the adapter reports at the first start and at the recovered one (undefined: as asked).
+  { effective: ["sandbox", "sandbox"], lines: ["sandbox"] },
+  { effective: [undefined, undefined], lines: ["policy"] },
+  // Requirements were relaxed in between: "sandboxed" must not stay over an unsandboxed stage.
+  { effective: ["sandbox", undefined], lines: ["sandbox", "policy"] },
+  { effective: [undefined, "sandbox"], lines: ["policy", "sandbox"] },
+] as const)(
+  "labels a recovered read-only stage again only when its mode changed (effective: $effective)",
+  ({ effective, lines }) => {
+    const codex = makeFakeCodexAdapter();
+    const start = codex.startSession.getMockImplementation()!;
+    let starts = 0;
+    codex.startSession.mockImplementation((input) => {
+      const reported = effective[Math.min(starts++, effective.length - 1)];
+      return start(input).pipe(
+        Effect.map((session) =>
+          reported ? { ...session, readOnlyEnforcement: reported } : session,
+        ),
+      );
+    });
+    const adapter = {
+      ...codex.adapter,
+      capabilities: { ...codex.adapter.capabilities, enforcesReadOnlyWorkflow: true },
+    };
+    const layer = makeProviderServiceLayerForAdapters(
+      new Map([["codex", adapter]]),
+      {},
+      {},
+      makeProjectMcpConfigServiceTestLayer({}),
+      { nestedSandboxAvailable: () => false },
+    );
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("recovered-read-only-stage");
+      const seen: Array<unknown> = [];
+      yield* Stream.runForEach(
+        Stream.filter(
+          provider.streamEvents,
+          (event) => event.type === "session.configured" && event.threadId === threadId,
+        ),
+        (event) =>
+          Effect.sync(() => {
+            if (event.type === "session.configured")
+              seen.push(event.payload.config.f5ReadOnlyEnforcement);
+          }),
+      ).pipe(Effect.forkChild);
+      yield* sleep(20);
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "attended-readonly",
+      });
+      yield* codex.stopAll();
+      yield* provider.sendTurn({ threadId, input: "resume", attachments: [] });
+      // Wait for the expected lines, then a moment more for one that shouldn't come.
+      for (let attempt = 0; attempt < 100 && seen.length < lines.length; attempt++)
+        yield* sleep(20);
+      yield* sleep(20);
+      // The recovered start asks for the recorded request again.
+      assert.equal(codex.startSession.mock.calls.length, 2);
+      assert.equal(codex.startSession.mock.calls[1]?.[0].readOnlyEnforcement, "policy");
+      assert.deepEqual(seen, [...lines]);
     }).pipe(Effect.provide(layer), Effect.scoped);
   },
 );
@@ -5674,3 +5764,82 @@ it.live(
     ).pipe(Effect.provide(layer));
   },
 );
+
+it.effect("shows the MCP hub's approvals and answers them without the provider", () => {
+  const codex = makeFakeCodexAdapter();
+  const answers: Array<[string, string, string]> = [];
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    const governance = {
+      approvalEvents: Stream.fromPubSub(events),
+      isHubRequest: (requestId: string) => requestId.startsWith("mcp-hub-"),
+      respondToApproval: (threadId: string, requestId: string, decision: string) => {
+        answers.push([threadId, requestId, decision]);
+        return requestId === "mcp-hub-open";
+      },
+    } as unknown as McpHubGovernanceShape;
+    const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const layer = Layer.mergeAll(
+      makeProviderServiceLive().pipe(
+        Layer.provide(providerServiceConfigLayer),
+        Layer.provide(
+          Layer.succeed(ProviderAdapterRegistry, makeAdapterRegistryMock({ codex: codex.adapter })),
+        ),
+        Layer.provide(directoryLayer),
+        Layer.provide(makeProjectMcpConfigServiceTestLayer()),
+        Layer.provide(Layer.succeed(McpHubGovernanceService, governance)),
+      ),
+      NodeServices.layer,
+    );
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("hub-approval");
+      const seen = yield* provider.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      for (let turn = 0; turn < 5; turn++) yield* Effect.yieldNow;
+      yield* PubSub.publish(events, {
+        type: "request.opened",
+        eventId: EventId.makeUnsafe("hub-event"),
+        provider: "codex",
+        threadId,
+        createdAt: new Date().toISOString(),
+        requestId: "mcp-hub-open",
+        payload: { requestType: "mcp_elicitation_approval", appName: "github" },
+      } as unknown as ProviderRuntimeEvent);
+      const [opened] = [...(yield* Fiber.join(seen))];
+      assert.equal(opened?.type, "request.opened");
+
+      // No provider session exists: the hub answers on its own.
+      yield* provider.respondToRequest({
+        threadId,
+        requestId: asRequestId("mcp-hub-open"),
+        decision: "accept",
+      });
+      assert.deepEqual(answers, [[threadId, "mcp-hub-open", "accept"]]);
+      assert.equal(codex.respondToRequest.mock.calls.length, 0);
+      const always = yield* provider
+        .respondToRequest({
+          threadId,
+          requestId: asRequestId("mcp-hub-open"),
+          decision: "acceptAlways",
+        })
+        .pipe(Effect.flip);
+      assert.include(String(always.message), "set it to Allow in MCP settings");
+      const stale = yield* provider
+        .respondToRequest({
+          threadId,
+          requestId: asRequestId("mcp-hub-gone"),
+          decision: "decline",
+        })
+        .pipe(Effect.flip);
+      assert.include(String(stale.message), "no longer waiting");
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+});

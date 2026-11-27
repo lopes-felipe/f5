@@ -941,6 +941,19 @@ export function createWsNativeApi(): NativeApi {
       startHubSignIn: requestMethod(WS_METHODS.mcpStartHubSignIn),
       completeHubSignIn: requestMethod(WS_METHODS.mcpCompleteHubSignIn),
       signOutHubServer: requestMethod(WS_METHODS.mcpSignOutHubServer),
+      listToolPins: requestMethod(WS_METHODS.mcpListToolPins),
+      acceptToolChanges: requestMethod(WS_METHODS.mcpAcceptToolChanges),
+      listActivity: requestMethod(WS_METHODS.mcpListActivity),
+      getThreadServers: requestMethod(WS_METHODS.mcpGetThreadServers),
+      setThreadServerEnabled: requestMethod(WS_METHODS.mcpSetThreadServerEnabled),
+      listComposerPrompts: requestMethod(WS_METHODS.mcpListComposerPrompts),
+      getComposerPrompt: requestMethod(WS_METHODS.mcpGetComposerPrompt),
+      completeComposerPrompt: requestMethod(WS_METHODS.mcpCompleteComposerPrompt),
+      listComposerResources: requestMethod(WS_METHODS.mcpListComposerResources),
+      readComposerResource: requestMethod(WS_METHODS.mcpReadComposerResource),
+      searchCatalog: requestMethod(WS_METHODS.mcpSearchCatalog),
+      getRepositoryServers: requestMethod(WS_METHODS.mcpGetRepositoryServers),
+      setRepositoryServerTrust: requestMethod(WS_METHODS.mcpSetRepositoryServerTrust),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
         return () => {

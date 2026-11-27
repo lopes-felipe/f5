@@ -423,6 +423,9 @@ import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { McpHub } from "./mcp/hub/McpHub.ts";
 import { McpHubAuth } from "./mcp/hub/McpHubAuth.ts";
+import { McpHubGovernanceService } from "./mcp/hub/McpHubGovernanceLive.ts";
+import { makeMcpCatalog } from "./mcp/McpCatalog.ts";
+import { McpRepositoryServers } from "./mcp/McpRepositoryServers.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
@@ -1121,7 +1124,15 @@ export const createServer = Effect.fn(function* (
   const mcpRuntimeService = yield* McpRuntimeService;
   const mcpHub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
   const mcpHubAuth = Option.getOrUndefined(yield* Effect.serviceOption(McpHubAuth));
+  const mcpHubGovernance = Option.getOrUndefined(
+    yield* Effect.serviceOption(McpHubGovernanceService),
+  );
   const projectMcpConfigService = yield* ProjectMcpConfigService;
+  // Registry pages are cached for an hour across every client of this server.
+  const mcpCatalog = makeMcpCatalog();
+  const mcpRepositoryServers = Option.getOrUndefined(
+    yield* Effect.serviceOption(McpRepositoryServers),
+  );
   const previewAutomationBroker = yield* PreviewAutomationBroker;
   const computerAutomationBroker = yield* Effect.serviceOption(ComputerAutomationBroker);
   const forgeAccounts = yield* Effect.serviceOption(ForgeAccounts);
@@ -3945,6 +3956,9 @@ export const createServer = Effect.fn(function* (
         mcpRuntimeService,
         mcpHub,
         mcpHubAuth,
+        mcpHubGovernance,
+        mcpRepositoryServers,
+        mcpCatalog,
         codexMcpEventBus,
         providerService,
         profileSecrets,

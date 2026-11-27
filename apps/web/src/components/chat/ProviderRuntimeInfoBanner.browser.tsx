@@ -23,7 +23,13 @@ const {
   openExternal,
   getHubAuthStatus,
   startHubSignIn,
+  getThreadServers,
+  setThreadServerEnabled,
 } = vi.hoisted(() => ({
+  getThreadServers: vi.fn(async () => ({ disabledServers: [] as string[] })),
+  setThreadServerEnabled: vi.fn(async (input: { serverName: string; enabled: boolean }) => ({
+    disabledServers: input.enabled ? [] : [input.serverName],
+  })),
   getHubAuthStatus: vi.fn(async () => ({
     servers: [{ name: "search", signedIn: false, refreshable: false }],
   })),
@@ -56,6 +62,8 @@ vi.mock("../../nativeApi", () => ({
       startLogin,
       getHubAuthStatus,
       startHubSignIn,
+      getThreadServers,
+      setThreadServerEnabled,
       onStatusUpdated: () => () => {},
     },
     shell: { openExternal },
@@ -358,6 +366,58 @@ it("uses F5 sign-in for servers the hub serves a Codex conversation, and Codex's
   } finally {
     openExternal.mockClear();
     startHubSignIn.mockClear();
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("turns a hub server off for this conversation only", async () => {
+  getEffectiveConfig.mockResolvedValue({
+    projectId: "project-1",
+    effectiveVersion: "v1",
+    servers: {},
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const root = createRootRoute({ component: () => <Outlet /> });
+  const index = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => (
+      <ProviderRuntimeInfoBanner
+        provider="grok"
+        projectId={ProjectId.make("project-1")}
+        threadId={ThreadId.make("thread-1")}
+        entries={[{ label: "MCP", value: "1/1 connected" }]}
+        mcpServers={[{ name: "search", status: "ready" }]}
+        mcpHubServerNames={new Set(["search"])}
+      />
+    ),
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([index]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await router.load();
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "MCP: 1/1 connected" }).click();
+    const toggle = page.getByRole("switch", { name: "Use search in this conversation" });
+    await expect.element(toggle).toBeChecked();
+    await toggle.click();
+    await vi.waitFor(() =>
+      expect(setThreadServerEnabled).toHaveBeenCalledWith({
+        threadId: "thread-1",
+        serverName: "search",
+        enabled: false,
+      }),
+    );
+    await expect.element(toggle).not.toBeChecked();
+    await expect.element(page.getByText("Off in this conversation")).toBeVisible();
+  } finally {
     queryClient.clear();
     await screen.unmount();
   }
