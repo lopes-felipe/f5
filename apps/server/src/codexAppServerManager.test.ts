@@ -1677,11 +1677,13 @@ describe("startSession", () => {
           ]),
         );
 
+        // Written as the shell reads it: a backslash would escape the next character.
+        const otherInCommand = other.replaceAll("\\", "/");
         started.ask(1, "git diff --stat");
-        started.ask(2, `git -C ${other} diff`);
+        started.ask(2, `git -C ${otherInCommand} diff`);
         started.ask(3, "git status --short", other);
-        started.ask(4, `cd ${other} && git log -p -1`);
-        started.ask(5, `cat ${other}/README.md`);
+        started.ask(4, `cd ${otherInCommand} && git log -p -1`);
+        started.ask(5, `cat ${otherInCommand}/README.md`);
         await vi.waitFor(() => expect(started.writeMessage).toHaveBeenCalledTimes(5));
         // A helper added to the stage's repository after the launch has no override.
         execFileSync("git", ["-C", stage, "config", "filter.late.clean", "./late.sh"]);

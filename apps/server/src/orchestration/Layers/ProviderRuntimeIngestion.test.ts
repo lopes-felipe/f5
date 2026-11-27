@@ -2241,7 +2241,10 @@ describe("ProviderRuntimeIngestion", () => {
     async ({ reason, released }) => {
       const harness = await createHarness({ startIngestion: false });
       const threadId = asThreadId("thread-1");
-      const worktree = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "drifted-worktree-")));
+      // Canonical as Git lists it: the native realpath also expands a Windows short name.
+      const worktree = fs.realpathSync.native(
+        fs.mkdtempSync(path.join(os.tmpdir(), "drifted-worktree-")),
+      );
       await Effect.runPromise(
         harness.engine.dispatch({
           type: "thread.meta.update",
