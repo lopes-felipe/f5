@@ -59,6 +59,8 @@ export interface WorkspaceTransitionsShape {
    */
   readonly reactivate: (
     record: WorkspaceTransitionRecord,
+    /** The target as the folder is now, when the first plan may have gone stale. */
+    plan?: Partial<Pick<WorkspaceTransitionRecord, "target">>,
   ) => Effect.Effect<WorkspaceTransitionRecord, WorkspaceTransitionError>;
   readonly update: (
     record: WorkspaceTransitionRecord,

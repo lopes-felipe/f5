@@ -55,7 +55,17 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
         version: number;
       }>`SELECT record_json AS record,phase,version FROM workspace_transitions WHERE thread_id = ${threadId}
     AND (${activeOnly ? 1 : 0} = 0 OR phase IN ('reserved','stopping','applying','applied')) ORDER BY CASE WHEN phase IN ('reserved','stopping','applying','applied') THEN 0 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1`.pipe(
-        Effect.flatMap(decode),
+        Effect.flatMap((rows) =>
+          decode(rows).pipe(
+            // A row that ended and no longer decodes holds nothing: it reads as
+            // no row, so the thread can still be switched.
+            Effect.catch((cause) =>
+              ["completed", "failed", "cancelled"].includes(rows[0]?.phase ?? "")
+                ? Effect.succeed(null)
+                : Effect.fail(cause),
+            ),
+          ),
+        ),
         Effect.mapError(error),
       );
   const update: import("../Services/WorkspaceTransitions.ts").WorkspaceTransitionsShape["update"] =
@@ -169,29 +179,30 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
           }),
         )
         .pipe(Effect.mapError(error));
-  const reactivate = (record: WorkspaceTransitionRecord) =>
-    sql
-      .withTransaction(
-        Effect.gen(function* () {
-          const current = yield* get(record.operationId);
-          if (
-            !current ||
-            current.version !== record.version ||
-            !["failed", "cancelled"].includes(current.phase) ||
-            current.mutationAttempted
-          )
-            return yield* fail("The workspace switch changed or already touched Git.");
-          yield* validateReservation(current, true);
-          return yield* update(current, { phase: "reserved", error: null });
-        }),
-      )
-      .pipe(Effect.mapError(error));
+  const reactivate: import("../Services/WorkspaceTransitions.ts").WorkspaceTransitionsShape["reactivate"] =
+    (record, plan = {}) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const current = yield* get(record.operationId);
+            if (
+              !current ||
+              current.version !== record.version ||
+              !["failed", "cancelled"].includes(current.phase) ||
+              current.mutationAttempted
+            )
+              return yield* fail("The workspace switch changed or already touched Git.");
+            yield* validateReservation(current, true);
+            return yield* update(current, { ...plan, phase: "reserved", error: null });
+          }),
+        )
+        .pipe(Effect.mapError(error));
   const unsettledRows = sql<{
     record: string;
     phase: string;
     version: number;
   }>`SELECT record_json AS record,phase,version FROM workspace_transitions WHERE phase IN ('reserved','stopping','applying','applied','needs_recovery') ORDER BY created_at, rowid`;
-  // A row that no longer decodes is skipped here; archive and delete still end it.
+  // A row that no longer decodes is skipped here; startup ends it by its key.
   const unsettled = unsettledRows.pipe(
     Effect.flatMap((rows) =>
       Effect.forEach(rows, (row) => decode([row]).pipe(Effect.orElseSucceed(() => null))),
@@ -202,6 +213,19 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
   const reconcile = sql
     .withTransaction(
       Effect.gen(function* () {
+        // A row that no longer decodes can never be settled, and its phase alone
+        // would go on refusing the thread's sends. It is ended by its key; the
+        // payload is left as it is for diagnosis, and Git is not touched.
+        const now = new Date().toISOString();
+        for (const row of yield* sql<{
+          operationId: string;
+          record: string;
+          phase: string;
+          version: number;
+        }>`SELECT operation_id AS operationId,record_json AS record,phase,version FROM workspace_transitions WHERE phase IN ('reserved','stopping','applying','applied','needs_recovery')`) {
+          if ((yield* decode([row]).pipe(Effect.orElseSucceed(() => null))) !== null) continue;
+          yield* sql`UPDATE workspace_transitions SET phase='cancelled',version=version+1,updated_at=${now} WHERE operation_id=${row.operationId} AND version=${row.version}`;
+        }
         for (const record of yield* unsettled) {
           const proof =
             yield* sql`SELECT 1 FROM orchestration_command_receipts r JOIN projection_threads t ON t.thread_id = r.aggregate_id

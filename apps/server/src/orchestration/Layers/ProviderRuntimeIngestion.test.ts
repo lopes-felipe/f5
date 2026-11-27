@@ -2186,13 +2186,9 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
-  it.each([
-    { pause: null, released: false },
-    { pause: "worktree_missing", released: true },
-    { pause: "manual_pause", released: false },
-  ] as const)(
-    "retains a missing worktree and holds no queue for it: %o",
-    async ({ pause, released }) => {
+  it.each([{ pause: null }, { pause: "worktree_missing" }, { pause: "manual_pause" }] as const)(
+    "retains a missing worktree, and neither pauses its queue nor releases it: %o",
+    async ({ pause }) => {
       const harness = await createHarness({ startIngestion: false });
       const threadId = asThreadId("thread-1");
       const missingPath = path.join(os.tmpdir(), `missing-worktree-${crypto.randomUUID()}`);
@@ -2224,12 +2220,60 @@ describe("ProviderRuntimeIngestion", () => {
         missingPath,
       );
       // Startup never asks Git whether the worktree can come back: the next
-      // message restores it. Only a pause an older version left for this reason
-      // is lifted, so that message gets its try.
+      // message restores it, so no queue is paused for it. A message that is
+      // already waiting behind a pause stays there: releasing it would recreate
+      // the folder and send it without anyone asking.
       expect(git.calls.branchExists).toHaveLength(0);
-      expect(setPaused).toHaveBeenCalledTimes(released ? 1 : 0);
-      if (released)
-        expect(setPaused).toHaveBeenCalledWith({ threadId, paused: false, expectedRevision: 7 });
+      expect(setPaused).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { reason: "worktree_missing", released: true },
+    { reason: "manual_pause", released: false },
+  ] as const)(
+    "releases the pause an older version left on a worktree that is on another branch: %o",
+    async ({ reason, released }) => {
+      const harness = await createHarness({ startIngestion: false });
+      const threadId = asThreadId("thread-1");
+      const worktree = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "drifted-worktree-")));
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("drifted-worktree"),
+          threadId,
+          branch: "feature",
+          worktreePath: worktree,
+        }),
+      );
+      // The folder is this repository's worktree, on a branch the thread does not record.
+      const git = makeFakeGitCore({
+        listWorktrees: () =>
+          Effect.succeed([
+            { path: worktree, canonicalPath: worktree, branch: "agent-branch", isMain: false },
+          ] as never),
+        inspectCheckoutIdentity: () =>
+          Effect.succeed({
+            canonicalRoot: worktree,
+            commonDir: worktree,
+            branch: "agent-branch",
+          } as never),
+        resolveCommonDir: () => Effect.succeed(worktree),
+      });
+      const setPaused = vi.fn(() => Effect.void);
+      await Effect.runPromise(
+        cleanupStaleWorktrees(harness.engine).pipe(
+          Effect.provideService(NextTurnQueueStore, {
+            setPaused,
+            listByThread: () =>
+              Effect.succeed({ state: { paused: true, revision: 7, pauseReasonCode: reason } }),
+          } as never),
+          Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
+        ),
+      );
+      expect(setPaused.mock.calls).toEqual(
+        released ? [[{ threadId, paused: false, expectedRevision: 7 }]] : [],
+      );
     },
   );
 

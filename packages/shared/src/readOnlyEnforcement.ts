@@ -108,7 +108,7 @@ export const ANTIGRAVITY_READ_ONLY_WORKFLOW_CERTIFIED_RUNTIMES: ReadonlyArray<Re
 
 /**
  * Cursor CLI builds whose native read-only sandbox (`--sandbox enabled` with a
- * `workspace_readonly` sandbox.json) passed gates C1-C3 in `docs/reviews/cursor-live-gates.md`.
+ * `workspace_readonly` sandbox.json) passed gates C1-C3 in `docs/reviews/read-only-live-gates.md`.
  * Until a row exists Cursor read-only stages use F5's command policy.
  */
 export const CURSOR_READ_ONLY_SANDBOX_CERTIFIED_RUNTIMES: ReadonlyArray<ReadOnlyCertificationRow> =

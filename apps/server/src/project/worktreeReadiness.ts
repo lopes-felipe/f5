@@ -31,6 +31,14 @@ export const readWorktreeState = (
 ) =>
   Effect.gen(function* () {
     const target = input.worktreePath ?? input.projectCwd;
+    const isDirectory = Effect.tryPromise(() => stat(target)).pipe(
+      Effect.map((entry) => entry.isDirectory()),
+      Effect.catch((error) =>
+        (error.cause as NodeJS.ErrnoException)?.code === "ENOENT"
+          ? Effect.succeed(false)
+          : Effect.fail(error),
+      ),
+    );
     if (input.worktreePath && git.inspectWorktreeGroup) {
       const group = yield* git.inspectWorktreeGroup({
         projectRoot: input.projectCwd,
@@ -44,7 +52,15 @@ export const readWorktreeState = (
           worktreePath: input.worktreePath,
           branch: input.branch,
           directoryExists: group.ready,
-          registration: group.ready ? "matching" : group.recoverable ? "stale" : "foreign",
+          // A group that cannot be recovered is foreign only while a folder is
+          // in the way. A removed group whose branch is gone too is missing.
+          registration: group.ready
+            ? "matching"
+            : group.recoverable
+              ? "stale"
+              : (yield* isDirectory)
+                ? "foreign"
+                : "none",
           branchExists: group.recoverable,
           defaultBranch: null,
           // Readiness no longer says which branch a group's root is on.
@@ -54,14 +70,7 @@ export const readWorktreeState = (
         } as const;
     }
     const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(target));
-    const directoryExists = yield* Effect.tryPromise(() => stat(target)).pipe(
-      Effect.map((entry) => entry.isDirectory()),
-      Effect.catch((error) =>
-        (error.cause as NodeJS.ErrnoException)?.code === "ENOENT"
-          ? Effect.succeed(false)
-          : Effect.fail(error),
-      ),
-    );
+    const directoryExists = yield* isDirectory;
     const entries = yield* git.listWorktrees(input.projectCwd);
     const entry = entries.find((entry) => entry.canonicalPath === canonical);
     const branchExists =

@@ -1,5 +1,6 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
+import { readWorktreeState } from "../../project/worktreeReadiness.ts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { Option } from "effect";
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -59,9 +60,27 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
     const project = readModel.projects.find((entry) => entry.id === thread.projectId);
     if (!project || project.deletedAt === null) {
       // A missing worktree is not a reason to hold a queue: the next message
-      // restores it, and the thread's status says so when it cannot. Queues an
-      // older version paused here are released, so that message gets its try.
-      if (Option.isSome(queue)) {
+      // restores it, and the thread's status says so when it cannot. So nothing
+      // is paused here.
+      //
+      // A `worktree_missing` pause that is already there is released only when
+      // the worktree is in place: an older version set it for a folder on
+      // another branch, or the folder has come back since. Nothing has to be
+      // recreated to send that message. A worktree that is still missing keeps
+      // its pause, so a message that has waited is not sent into a recreated
+      // folder on its own; the thread's card offers the restore.
+      const inPlace =
+        project !== undefined &&
+        probe.exists &&
+        (yield* readWorktreeState(
+          git,
+          { projectCwd: project.workspaceRoot, worktreePath, branch: thread.branch },
+          false,
+        ).pipe(
+          Effect.map((state) => state.registration === "matching"),
+          Effect.orElseSucceed(() => false),
+        ));
+      if (inPlace && Option.isSome(queue)) {
         const store = queue.value;
         yield* store.listByThread(thread.id).pipe(
           Effect.flatMap(({ state }) =>

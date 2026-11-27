@@ -11,11 +11,14 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+  ElicitationCompleteNotificationSchema,
   ElicitRequestSchema,
   ListRootsRequestSchema,
   PromptListChangedNotificationSchema,
   ResourceListChangedNotificationSchema,
   ToolListChangedNotificationSchema,
+  type ElicitRequest,
+  type ElicitResult,
   type ServerCapabilities,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -37,6 +40,26 @@ const MAX_STARTUP_TIMEOUT_MS = 120_000;
 const MAX_LISTED_TOOLS = 1_000;
 
 export type McpHubConnectionScope = "session" | "shared";
+
+/**
+ * A tool call in flight through one provider connection. When the upstream asks
+ * the user something (elicitation), the hub forwards it to the provider whose call
+ * is waiting, which shows it in that conversation.
+ */
+export interface McpHubInFlightCall {
+  readonly threadId: string;
+  readonly startedAt: number;
+  /** Absent when the provider's connection does not accept elicitation. */
+  readonly elicit?: (
+    request: ElicitRequest["params"],
+    signal: AbortSignal,
+  ) => Promise<ElicitResult>;
+  /** Present when the provider accepts URL-mode questions and their completion notice. */
+  readonly completeElicitation?: (elicitationId: string) => void;
+}
+
+/** URL-mode questions remembered for their completion notice; the oldest are dropped. */
+const MAX_PENDING_URL_ELICITATIONS = 64;
 
 export type McpHubUpstreamState =
   | "idle"
@@ -138,6 +161,11 @@ export class McpHubUpstream {
   /** True once a connection was ready, so a later one tells providers to list again. */
   private everConnected = false;
   private readonly listeners = new Set<(change: McpHubListChange) => void>();
+  private readonly inFlight = new Set<McpHubInFlightCall>();
+  /** URL-mode questions forwarded to a provider, by elicitation id. */
+  private readonly urlElicitations = new Map<string, McpHubInFlightCall>();
+  /** A released session connection stops once its calls in flight finish. */
+  private stopWhenDrained = false;
 
   constructor(options: McpHubUpstreamOptions) {
     this.options = options;
@@ -165,6 +193,7 @@ export class McpHubUpstream {
       this.lastError = undefined;
     }
     this.attachments += 1;
+    this.stopWhenDrained = false;
     if (this.idleTimer) {
       this.clearTimer(this.idleTimer);
       this.idleTimer = undefined;
@@ -181,14 +210,23 @@ export class McpHubUpstream {
     this.options.onChange?.();
     if (this.attachments > 0) return;
     if (this.scope === "session") {
-      void this.stop();
+      this.stopWhenIdle();
       return;
     }
     // Stopped (not idle), so the hub forgets the entry and its resolved environment.
     this.idleTimer = this.setTimer(() => {
       this.idleTimer = undefined;
-      if (this.attachments === 0) void this.stop();
+      if (this.attachments === 0) this.stopWhenIdle();
     }, HUB_SHARED_IDLE_MS);
+  }
+
+  /** Stops now, or after the calls still running (for example across an Apply) finish. */
+  private stopWhenIdle(): void {
+    if (this.inFlight.size > 0) {
+      this.stopWhenDrained = true;
+      return;
+    }
+    void this.stop();
   }
 
   get attachmentCount(): number {
@@ -198,6 +236,49 @@ export class McpHubUpstream {
   onListChanged(listener: (change: McpHubListChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Registers a tool call while it runs; returns its release. */
+  trackCall(call: McpHubInFlightCall): () => void {
+    this.inFlight.add(call);
+    return () => {
+      this.inFlight.delete(call);
+      if (this.stopWhenDrained && this.inFlight.size === 0 && this.attachments === 0) {
+        this.stopWhenDrained = false;
+        void this.stop();
+      }
+    };
+  }
+
+  /**
+   * Answers an upstream elicitation. MCP gives the client no link from the request
+   * to the tool call that caused it, so it is forwarded only when every call in
+   * flight belongs to one conversation (always the case for session connections);
+   * otherwise, or when that provider cannot show it, it is declined.
+   */
+  async elicit(request: ElicitRequest["params"], signal: AbortSignal): Promise<ElicitResult> {
+    const calls = [...this.inFlight];
+    const threads = new Set(calls.map((call) => call.threadId));
+    if (threads.size !== 1) return { action: "decline" };
+    const target = calls
+      .filter((call) => call.elicit)
+      .toSorted((left, right) => right.startedAt - left.startedAt)[0];
+    if (!target?.elicit) return { action: "decline" };
+    try {
+      const result = await target.elicit(request, signal);
+      // The server announces when the person finished the URL flow; that notice goes to
+      // the provider that showed the question.
+      if (request.mode === "url" && result.action === "accept" && target.completeElicitation) {
+        this.urlElicitations.set(request.elicitationId, target);
+        for (const id of this.urlElicitations.keys()) {
+          if (this.urlElicitations.size <= MAX_PENDING_URL_ELICITATIONS) break;
+          this.urlElicitations.delete(id);
+        }
+      }
+      return result;
+    } catch {
+      return { action: "cancel" };
+    }
   }
 
   // ── Status ────────────────────────────────────────────────────────────
@@ -306,6 +387,7 @@ export class McpHubUpstream {
     this.client = undefined;
     this.transport = undefined;
     this.connecting = undefined;
+    this.urlElicitations.clear();
     this.tools = undefined;
     this.toolsLoading = undefined;
     this.state = reason === "stopped" ? "stopped" : "idle";
@@ -326,14 +408,22 @@ export class McpHubUpstream {
       const transport = this.makeTransport();
       const client = new Client(
         { name: "f5-mcp-hub", version: "1.0.0" },
-        { capabilities: { roots: { listChanged: true }, elicitation: {} } },
+        { capabilities: { roots: { listChanged: true }, elicitation: { form: {}, url: {} } } },
       );
       // Roots are the working directory this connection serves.
       client.setRequestHandler(ListRootsRequestSchema, () => ({
         roots: [{ uri: pathToFileUri(this.options.cwd), name: this.options.cwd }],
       }));
-      // F5 has no elicitation surface for hub servers yet; declining keeps calls moving.
-      client.setRequestHandler(ElicitRequestSchema, () => ({ action: "decline" as const }));
+      // Questions go to the conversation whose call is waiting (see `elicit`).
+      client.setRequestHandler(ElicitRequestSchema, (request, extra) =>
+        this.elicit(request.params, extra.signal),
+      );
+      client.setNotificationHandler(ElicitationCompleteNotificationSchema, (notification) => {
+        const id = notification.params.elicitationId;
+        const target = this.urlElicitations.get(id);
+        this.urlElicitations.delete(id);
+        target?.completeElicitation?.(id);
+      });
       client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
         this.tools = undefined;
         this.toolsLoading = undefined;

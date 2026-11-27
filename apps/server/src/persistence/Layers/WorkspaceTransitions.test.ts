@@ -196,5 +196,47 @@ it.layer(WorkspaceTransitionsLive.pipe(Layer.provideMerge(SqlitePersistenceMemor
         expect((yield* store.get(failed.operationId))?.phase).toBe("failed");
       }),
     );
+    it.effect("runs an unfinished attempt again against the target as it is now", () =>
+      Effect.gen(function* () {
+        const store = yield* WorkspaceTransitions;
+        yield* seed("replanned");
+        const failed = yield* store.update(yield* store.reserve(record("replanned")), {
+          phase: "failed",
+          error: "The target checkout changed during workspace switching.",
+        });
+        const target = { ...failed.target, branch: "moved-on", headSha: "f".repeat(40) };
+        const again = yield* store.reactivate(failed, { target });
+        expect(again).toMatchObject({ phase: "reserved", error: null, target });
+        expect(yield* store.get(failed.operationId)).toEqual(again);
+      }),
+    );
+    it.effect("startup ends a running row that no longer decodes, so it stops refusing sends", () =>
+      Effect.gen(function* () {
+        const store = yield* WorkspaceTransitions;
+        const sql = yield* SqlClient.SqlClient;
+        yield* seed("unreadable");
+        const running = yield* store.update(yield* store.reserve(record("unreadable")), {
+          phase: "applying",
+          mutationAttempted: true,
+        });
+        // The payload is from a version this one cannot read; the indexed phase still says running.
+        yield* sql`UPDATE workspace_transitions SET record_json='{"from":"another version"}' WHERE operation_id=${running.operationId}`;
+        const held = sql<{
+          phase: string;
+        }>`SELECT phase FROM workspace_transitions WHERE thread_id='unreadable' AND phase IN ('reserved','stopping','applying','applied')`;
+        expect(yield* held).toHaveLength(1);
+        const restarted = yield* makeWorkspaceTransitions;
+        yield* restarted.reconcile;
+        expect(yield* held).toHaveLength(0);
+        // The payload is kept for diagnosis.
+        expect(
+          yield* sql`SELECT phase,record_json AS record FROM workspace_transitions WHERE operation_id=${running.operationId}`,
+        ).toEqual([{ phase: "cancelled", record: '{"from":"another version"}' }]);
+        // The ended row reads as no row, and the thread can be switched again.
+        expect(yield* restarted.forThread(running.threadId)).toBeNull();
+        const next = yield* restarted.reserve(record("after-unreadable", running.threadId));
+        expect(next.phase).toBe("reserved");
+      }),
+    );
   },
 );

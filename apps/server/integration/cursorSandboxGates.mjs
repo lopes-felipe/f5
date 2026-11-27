@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Live gates C1-C6 for Cursor read-only workflow stages (docs/reviews/cursor-live-gates.md):
+// Live gates C1-C6 for Cursor read-only workflow stages (docs/reviews/read-only-live-gates.md):
 // C2-C4 test Cursor's native sandbox, C5-C6 test F5's read-only config override. Run it from a
 // normal Terminal: macOS does not let the sandbox start inside another sandbox, such as an
 // agent's shell. Each gate spends one Cursor prompt (C5 two, with its control); --gates picks
@@ -323,7 +323,7 @@ for (const gate of ["C2", "C3", "C4"].filter((name) => selected.includes(name)))
 }
 if (report.gates.C4?.verdict === "PASS")
   console.log(
-    "\nC4 passed. Before certifying, run the positive control in docs/reviews/cursor-live-gates.md: it shows the CLI reads the workspace policy at all.",
+    "\nC4 passed. Before certifying, run the positive control in docs/reviews/read-only-live-gates.md: it shows the CLI reads the workspace policy at all.",
   );
 
 // ── C5-C6: F5's read-only config override and repository config ─────────────

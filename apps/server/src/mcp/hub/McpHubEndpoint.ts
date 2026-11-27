@@ -21,6 +21,8 @@ import {
   McpError,
   ReadResourceRequestSchema,
   type CallToolResult,
+  type ReadResourceResult,
+  type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { ThreadId } from "@t3tools/contracts";
 
@@ -48,34 +50,126 @@ export class McpHubSlot {
   readonly id: string;
   readonly serverName: string;
   readonly threadId: ThreadId;
-  readonly upstream: McpHubUpstream;
+  private current: McpHubUpstream | undefined;
   private readonly token: Buffer;
   private readonly connections = new Map<string, DownstreamConnection>();
   private readonly pending = new Set<DownstreamConnection>();
-  private readonly unsubscribe: () => void;
+  private unsubscribe: () => void = () => undefined;
   private closed = false;
+  private generation = 0;
 
   constructor(options: McpHubSlotOptions) {
     this.id = options.id;
     this.serverName = options.serverName;
     this.threadId = options.threadId;
-    this.upstream = options.upstream;
     this.token = Buffer.from(options.token);
-    this.unsubscribe = options.upstream.onListChanged((change) => {
-      for (const { server } of this.connections.values()) {
-        const send =
-          change === "tools"
-            ? server.sendToolListChanged()
-            : change === "resources"
-              ? server.sendResourceListChanged()
-              : server.sendPromptListChanged();
-        void send.catch(() => undefined);
-      }
-    });
+    this.bind(options.upstream);
+  }
+
+  /** The upstream this endpoint forwards to; none once its server was removed. */
+  get upstream(): McpHubUpstream | undefined {
+    return this.current;
+  }
+
+  /**
+   * Changes whenever the endpoint is re-bound, so an MCP App approval reviewed
+   * against one connection never authorizes a call on its replacement.
+   */
+  get binding(): string {
+    return `${this.id}:${this.generation}`;
+  }
+
+  /**
+   * Points the endpoint at another upstream (a saved change) or at none (the server
+   * was removed), keeping the provider's connection. Providers are told the lists
+   * changed so they list again.
+   */
+  rebind(upstream: McpHubUpstream | undefined): void {
+    if (this.closed || upstream === this.current) return;
+    this.bind(upstream);
+    for (const change of ["tools", "resources", "prompts"] as const) this.notify(change);
+  }
+
+  private bind(upstream: McpHubUpstream | undefined): void {
+    this.unsubscribe();
+    this.generation += 1;
+    this.current = upstream;
+    this.unsubscribe = upstream
+      ? upstream.onListChanged((change) => this.notify(change))
+      : () => undefined;
+  }
+
+  private notify(change: "tools" | "resources" | "prompts"): void {
+    for (const { server } of this.connections.values()) {
+      const send =
+        change === "tools"
+          ? server.sendToolListChanged()
+          : change === "resources"
+            ? server.sendResourceListChanged()
+            : server.sendPromptListChanged();
+      void send.catch(() => undefined);
+    }
+  }
+
+  /** The current upstream, or an error explaining that the server was removed. */
+  private requireUpstream(): McpHubUpstream {
+    if (this.closed) throw new McpError(ErrorCode.InvalidRequest, "This MCP endpoint is closed.");
+    if (this.current) return this.current;
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      `'${this.serverName}' was removed from F5's MCP settings.`,
+    );
   }
 
   get connectionCount(): number {
     return this.connections.size;
+  }
+
+  /** MCP Apps: the tools this session's provider sees, read from the hub directly. */
+  async appListTools(): Promise<Tool[]> {
+    if (!this.current) return [];
+    const upstream = this.requireUpstream();
+    return upstream.filterTools(await upstreamCall(upstream, () => upstream.listTools()));
+  }
+
+  /** MCP Apps: one tool call on this session's connection, with the server's own timeout. */
+  async appCallTool(
+    name: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult> {
+    const upstream = this.requireUpstream();
+    if (!upstream.isToolAllowed(name))
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `The tool '${name}' is turned off in F5's MCP settings.`,
+      );
+    const client = await upstreamClient(upstream);
+    // Tracked like a provider call, so a question the server asks meanwhile is never
+    // forwarded to another conversation (an app has no way to answer it, so it is declined).
+    const release = upstream.trackCall({ threadId: this.threadId, startedAt: Date.now() });
+    try {
+      return await upstreamCall(
+        upstream,
+        async () =>
+          (await client.callTool({ name, arguments: args }, undefined, {
+            signal,
+            timeout: upstream.toolTimeoutMs(),
+            resetTimeoutOnProgress: true,
+          })) as CallToolResult,
+      );
+    } finally {
+      release();
+    }
+  }
+
+  /** MCP Apps: reads a `ui://` resource on this session's connection. */
+  async appReadResource(uri: string, signal: AbortSignal): Promise<ReadResourceResult> {
+    const upstream = this.requireUpstream();
+    const client = await upstreamClient(upstream);
+    if (!client.getServerCapabilities()?.resources)
+      throw new McpError(ErrorCode.MethodNotFound, "This server has no resources.");
+    return upstreamCall(upstream, () => client.readResource({ uri }, { signal }));
   }
 
   authorizes(token: string | null | undefined): boolean {
@@ -104,8 +198,9 @@ export class McpHubSlot {
       return writeError(response, 400, "Initialize an MCP session with POST first.");
     // The server's instructions arrive with the upstream's own initialize. Wait briefly
     // so the provider's first connection carries them; a slow server never stalls it long.
+    // An unbound slot has no instructions to wait for.
     await Promise.race([
-      this.upstream.ensureConnected().catch(() => undefined),
+      (this.upstream?.ensureConnected() ?? Promise.resolve()).catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, INSTRUCTIONS_WAIT_MS).unref()),
     ]);
     // Oldest connections give way to new ones, so reconnects never exhaust the slot.
@@ -158,8 +253,7 @@ export class McpHubSlot {
   }
 
   private createServer(): Server {
-    const upstream = this.upstream;
-    const instructions = upstream.instructions();
+    const instructions = this.current?.instructions();
     // Capabilities are advertised up front so a provider's initialize never waits on
     // the upstream; requests connect it on demand.
     const server = new Server(
@@ -175,13 +269,18 @@ export class McpHubSlot {
       },
     );
 
+    // Handlers read the upstream per request, so a re-bound endpoint serves the new one.
     server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const upstream = this.current;
+      if (!upstream) return { tools: [] };
       const tools = await upstreamCall(upstream, () => upstream.listTools());
       return { tools: upstream.filterTools(tools) };
     });
 
     server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      const upstream = this.current;
       const name = request.params.name;
+      if (!upstream) return toolError(`'${this.serverName}' was removed from F5's MCP settings.`);
       if (!upstream.isToolAllowed(name))
         return toolError(`The tool '${name}' is turned off in F5's MCP settings.`);
       let client;
@@ -191,6 +290,38 @@ export class McpHubSlot {
         return toolError(upstream.redact(messageOf(error)));
       }
       const progressToken = request.params._meta?.progressToken;
+      const elicitation = server.getClientCapabilities()?.elicitation as
+        | { readonly url?: object }
+        | undefined;
+      const startedAt = Date.now();
+      const release = upstream.trackCall({
+        threadId: this.threadId,
+        startedAt,
+        ...(elicitation
+          ? {
+              elicit: async (params, signal) => {
+                if (params.mode === "url" && !elicitation.url) return { action: "decline" };
+                // A person may take a while: the question may use the call's remaining
+                // time, not the SDK's 60 s request default.
+                const remaining = startedAt + upstream.toolTimeoutMs() - Date.now();
+                return server.elicitInput(params, {
+                  signal,
+                  relatedRequestId: extra.requestId,
+                  timeout: Math.max(1_000, remaining),
+                });
+              },
+              ...(elicitation.url
+                ? {
+                    completeElicitation: (elicitationId: string) => {
+                      void server
+                        .createElicitationCompletionNotifier(elicitationId)()
+                        .catch(() => undefined);
+                    },
+                  }
+                : {}),
+            }
+          : {}),
+      });
       try {
         return (await client.callTool(request.params, undefined, {
           signal: extra.signal,
@@ -215,10 +346,14 @@ export class McpHubSlot {
         upstream.noteRequestFailure(client, error);
         if (extra.signal.aborted) throw error;
         return toolError(upstream.redact(messageOf(error)));
+      } finally {
+        release();
       }
     });
 
     server.setRequestHandler(ListResourcesRequestSchema, async (request, extra) => {
+      if (!this.current) return { resources: [] };
+      const upstream = this.requireUpstream();
       const client = await upstreamClient(upstream);
       if (!client.getServerCapabilities()?.resources) return { resources: [] };
       return upstreamCall(upstream, () =>
@@ -227,6 +362,8 @@ export class McpHubSlot {
     });
 
     server.setRequestHandler(ListResourceTemplatesRequestSchema, async (request, extra) => {
+      if (!this.current) return { resourceTemplates: [] };
+      const upstream = this.requireUpstream();
       const client = await upstreamClient(upstream);
       if (!client.getServerCapabilities()?.resources) return { resourceTemplates: [] };
       return upstreamCall(upstream, () =>
@@ -235,6 +372,7 @@ export class McpHubSlot {
     });
 
     server.setRequestHandler(ReadResourceRequestSchema, async (request, extra) => {
+      const upstream = this.requireUpstream();
       const client = await upstreamClient(upstream);
       if (!client.getServerCapabilities()?.resources)
         throw new McpError(ErrorCode.MethodNotFound, "This server has no resources.");
@@ -244,6 +382,8 @@ export class McpHubSlot {
     });
 
     server.setRequestHandler(ListPromptsRequestSchema, async (request, extra) => {
+      if (!this.current) return { prompts: [] };
+      const upstream = this.requireUpstream();
       const client = await upstreamClient(upstream);
       if (!client.getServerCapabilities()?.prompts) return { prompts: [] };
       return upstreamCall(upstream, () =>
@@ -252,6 +392,7 @@ export class McpHubSlot {
     });
 
     server.setRequestHandler(GetPromptRequestSchema, async (request, extra) => {
+      const upstream = this.requireUpstream();
       const client = await upstreamClient(upstream);
       if (!client.getServerCapabilities()?.prompts)
         throw new McpError(ErrorCode.MethodNotFound, "This server has no prompts.");
@@ -261,6 +402,7 @@ export class McpHubSlot {
     });
 
     server.setRequestHandler(CompleteRequestSchema, async (request, extra) => {
+      const upstream = this.requireUpstream();
       const client = await upstreamClient(upstream);
       if (!client.getServerCapabilities()?.completions)
         return { completion: { values: [], hasMore: false } };
