@@ -25,6 +25,19 @@ export const WorktreesRemoveInput = Schema.Struct({
   approvedIgnoredEntries: Schema.optional(
     Schema.Array(Schema.String.check(Schema.isMaxLength(65_535))).check(Schema.isMaxLength(32_768)),
   ),
+  /**
+   * Remove the ignored files without naming them, but only when every one is
+   * build or cache output of the kind automatic cleanup already removes. The
+   * server checks that under its locks and refuses otherwise.
+   */
+  disposableIgnoredOnly: Schema.optional(Schema.Boolean),
+  /**
+   * Nobody confirmed this removal. Under its locks the server then also refuses
+   * a worktree any thread still uses, archived ones included, and a group of
+   * worktrees, and it treats ignored files as `disposableIgnoredOnly` does. It
+   * is everything `safeToRemoveSilently` promised, checked again.
+   */
+  silent: Schema.optional(Schema.Boolean),
 });
 export type WorktreesRemoveInput = typeof WorktreesRemoveInput.Type;
 

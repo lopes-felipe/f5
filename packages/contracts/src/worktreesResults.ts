@@ -14,8 +14,16 @@ export const WorktreesInspectResult = Schema.Struct({
       truncated: Schema.Boolean,
       requiresApproval: Schema.Boolean,
       canRemoveAfterApproval: Schema.Boolean,
+      /** Every entry is build or cache output of the kind automatic cleanup removes. */
+      disposableOnly: Schema.Boolean,
     }),
   ),
+  /**
+   * Nothing here needs a person to look first: the tree is clean, no thread
+   * that still exists uses the worktree, nothing blocks removal, and the only
+   * ignored files are build or cache output. Removal checks all of it again.
+   */
+  safeToRemoveSilently: Schema.Boolean,
   linkedThreads: WorktreeLinkedThreads,
   deletedThreadClaims: Schema.Array(ThreadId),
   branch: Schema.NullOr(Schema.String),

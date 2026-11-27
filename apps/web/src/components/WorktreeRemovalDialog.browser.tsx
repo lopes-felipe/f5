@@ -3,7 +3,9 @@ import { ProjectId } from "@t3tools/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
+import { useWorktreeRemovalDialogStore } from "../worktreeRemovalDialogStore";
 import { WorktreeRemovalDialog } from "./WorktreeRemovalDialog";
+import { WorktreeRemovalDialogHost } from "./WorktreeRemovalDialogHost";
 
 const api = vi.hoisted(() => ({
   worktrees: { inspect: vi.fn(), remove: vi.fn() },
@@ -74,7 +76,9 @@ it("defaults merged branches on, keeps pushed branches optional, and disables bl
   await expect
     .element(screen.getByRole("checkbox", { name: "/blocked", exact: true }))
     .toBeDisabled();
-  await expect.element(screen.getByText(/Linked idle conversations will recreate/)).toBeVisible();
+  await expect
+    .element(screen.getByText(/These threads restore it on their next message/))
+    .toBeVisible();
   await screen.getByRole("button", { name: "Remove selected" }).click();
   await expect.poll(() => api.worktrees.remove.mock.calls.length).toBe(2);
   expect(api.worktrees.remove.mock.calls[0]?.[0]).toMatchObject({
@@ -139,6 +143,53 @@ it("shows all ignored paths and requires explicit confirmation before sending th
     deleteBranch: false,
     expectedHead: "abc",
   });
+});
+
+it("asks for no second confirmation when the only ignored content is build and cache output", async () => {
+  const entries = ["node_modules/", "dist/"];
+  api.worktrees.inspect.mockResolvedValue(
+    inspection("feature", {
+      branchMerged: false,
+      blockedReasons: ["Ignored files and folders require explicit deletion confirmation."],
+      ignoredFiles: {
+        entries,
+        truncated: false,
+        requiresApproval: true,
+        canRemoveAfterApproval: true,
+        disposableOnly: true,
+      },
+    }),
+  );
+  api.worktrees.remove.mockResolvedValue({
+    removed: true,
+    branchDeleted: false,
+    blockedReasons: [],
+  });
+  const close = vi.fn();
+  const screen = await mount(
+    <WorktreeRemovalDialog rows={[{ projectId, path: "/built" }]} onClose={close} />,
+  );
+  // Still listed, so nothing is deleted unseen.
+  for (const entry of entries)
+    await expect.element(screen.getByText(entry, { exact: true })).toBeVisible();
+  await expect.element(screen.getByRole("checkbox", { name: "/built", exact: true })).toBeChecked();
+  await expect
+    .element(screen.getByRole("checkbox", { name: /Also delete the ignored files and folders/ }))
+    .not.toBeInTheDocument();
+  await screen.getByRole("button", { name: "Remove selected" }).click();
+  await expect.poll(() => close.mock.calls.length).toBe(1);
+  // The server checks the list against the same rule again; no entries are approved by name.
+  expect(api.worktrees.remove.mock.calls).toEqual([
+    [
+      {
+        projectId,
+        path: "/built",
+        deleteBranch: false,
+        expectedHead: "abc",
+        disposableIgnoredOnly: true,
+      },
+    ],
+  ]);
 });
 
 it.each(["local changes", "truncated"])(
@@ -308,4 +359,21 @@ it("closes when selected removals succeed even when other rows are kept or block
   await screen.getByRole("button", { name: "Remove selected" }).click();
   await expect.poll(() => close.mock.calls.length).toBe(1);
   expect(api.worktrees.remove).toHaveBeenCalledOnce();
+});
+it("refreshes the worktree and Git lists when worktrees were removed without the dialog", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  useWorktreeRemovalDialogStore.setState({ requests: [], silentRemovals: 0 });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <WorktreeRemovalDialogHost />
+    </QueryClientProvider>,
+  );
+  expect(invalidate).not.toHaveBeenCalled();
+  useWorktreeRemovalDialogStore.getState().recordSilentRemovals(2);
+  await expect
+    .poll(() => invalidate.mock.calls.map(([filters]) => filters?.queryKey))
+    .toEqual([["git"], ["worktrees"]]);
+  // Nothing was asked.
+  expect(screen.getByRole("dialog").elements()).toHaveLength(0);
 });
