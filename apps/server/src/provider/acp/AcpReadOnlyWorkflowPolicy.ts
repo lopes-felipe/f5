@@ -43,14 +43,26 @@ function rawInputValues(record: Record<string, unknown>, keys: ReadonlySet<strin
   );
 }
 
+/** How a provider titles an MCP tool call: `mcp__server__tool`, `MCP: server / tool`, `Run mcp_server_tool`. */
+const MCP_TITLE_PREFIX = /^\s*(?:Run\s+)?mcp(?:__|[_:/.])|^\s*MCP:/i;
+const MCP_TITLE_MENTION = /\bmcp(?:__|[_:/.])/i;
+
 /**
  * A tool call that names an MCP server. The only MCP server a read-only workflow session gets
  * is F5's read-only thread server.
+ *
+ * A server key in the raw input always counts. So does a title that mentions an MCP tool name
+ * anywhere, except on a shell command: its title is the command's own text, so
+ * `rg x src/mcp/tools.ts` would read as an MCP call. There only a title that starts with a
+ * provider's MCP form counts, and the command is otherwise classified as the command it is.
  */
 export function acpMcpToolCall(toolCall: AcpReadOnlyWorkflowToolCall): boolean {
-  if (/\bmcp(?:__|[_:/.])/i.test(toolCall.title ?? "")) return true;
   const record = rawInputRecord(toolCall.rawInput);
-  return record !== undefined && rawInputValues(record, MCP_SERVER_KEYS).length > 0;
+  if (record !== undefined && rawInputValues(record, MCP_SERVER_KEYS).length > 0) return true;
+  const title = toolCall.title ?? "";
+  const shellCommand =
+    toolCall.kind === "execute" && acpExecuteCommand(toolCall.rawInput) !== undefined;
+  return (shellCommand ? MCP_TITLE_PREFIX : MCP_TITLE_MENTION).test(title);
 }
 
 /** Kinds that change things or run code; never treated as a call to F5's thread server. */
@@ -133,23 +145,55 @@ export function acpSandboxEscalation(rawInput: unknown): boolean {
  * reads); edits, deletes, moves, other commands, commands that ask to leave the sandbox,
  * computer control, other MCP tools and requests with an unknown or missing kind are denied.
  */
-export function acpReadOnlyWorkflowDecision(input: {
+export function acpReadOnlyWorkflowDecision(
+  input: AcpReadOnlyWorkflowDecisionInput,
+): "allow" | "deny" {
+  return acpReadOnlyWorkflowVerdict(input).decision;
+}
+
+export interface AcpReadOnlyWorkflowDecisionInput {
   readonly toolCall: AcpReadOnlyWorkflowToolCall;
   readonly computerRequest: boolean;
   /** The generated name of this session's read-only F5 thread server, when attached. */
   readonly f5ThreadServerName?: string | undefined;
-}): "allow" | "deny" {
-  if (input.computerRequest) return "deny";
+}
+
+export type AcpReadOnlyWorkflowVerdict =
+  | { readonly decision: "allow" }
+  /** `reason` is shown next to the refused operation in the thread; it says why, not what. */
+  | { readonly decision: "deny"; readonly reason: string };
+
+const ALLOW: AcpReadOnlyWorkflowVerdict = { decision: "allow" };
+const deny = (reason: string): AcpReadOnlyWorkflowVerdict => ({ decision: "deny", reason });
+
+/** `acpReadOnlyWorkflowDecision` with the reason for a refusal. */
+export function acpReadOnlyWorkflowVerdict(
+  input: AcpReadOnlyWorkflowDecisionInput,
+): AcpReadOnlyWorkflowVerdict {
+  if (input.computerRequest) return deny("computer control is not allowed in a read-only stage");
   if (acpMcpToolCall(input.toolCall))
-    return acpF5ReadOnlyThreadToolCall(input.toolCall, input.f5ThreadServerName) ? "allow" : "deny";
+    return acpF5ReadOnlyThreadToolCall(input.toolCall, input.f5ThreadServerName)
+      ? ALLOW
+      : deny("only F5's read-only tools may be called over MCP in a read-only stage");
   const kind = input.toolCall.kind;
-  if (kind && ACP_READ_ONLY_WORKFLOW_TOOL_KINDS.has(kind)) return "allow";
+  if (kind && ACP_READ_ONLY_WORKFLOW_TOOL_KINDS.has(kind)) return ALLOW;
   if (kind === "execute") {
-    if (acpSandboxEscalation(input.toolCall.rawInput)) return "deny";
+    if (acpSandboxEscalation(input.toolCall.rawInput))
+      return deny("running outside the sandbox is not allowed in a read-only stage");
     const command = acpExecuteCommand(input.toolCall.rawInput);
-    return command !== undefined && classifyReadOnlyShellCommand(command).readOnly
-      ? "allow"
-      : "deny";
+    if (command === undefined) return deny("the command to run was not reported");
+    const verdict = classifyReadOnlyShellCommand(command);
+    return verdict.readOnly ? ALLOW : deny(verdict.reason);
   }
-  return "deny";
+  return deny(
+    kind ? `${kind} operations are not allowed in a read-only stage` : "the operation has no kind",
+  );
+}
+
+/**
+ * The timeline detail for a refused operation: what was asked, then why F5 refused it. `subject`
+ * is the provider's own description (the command, usually) and may be missing.
+ */
+export function acpReadOnlyRefusalDetail(subject: string | undefined, reason: string): string {
+  return subject ? `${subject} (${reason})` : reason;
 }

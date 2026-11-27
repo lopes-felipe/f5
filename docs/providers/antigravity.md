@@ -127,8 +127,11 @@ On a certified version, F5 keeps every workflow turn read-only:
   files. Calls to that F5 server run; it serves only those tools.
 - Everything else is denied without asking you: edits, deletes, moves, other commands, computer
   use, other MCP tools, and any request without a recognised kind. Each denial appears in the
-  thread and the model is told no, so it can try something else. A turn that has three
-  operations denied fails the stage.
+  thread with F5's reason. Antigravity itself is only told "rejected" and ends its turn, so the
+  stage's prompt carries the shell rules up front, and when a turn ends on a denial without a
+  reply F5 sends the reason and asks the agent to finish, up to twice (see
+  [when a command is refused](../user/workflows.md#when-a-command-is-refused)). A turn fails the
+  stage when the same operation is denied three times or fifteen operations are denied.
 - Unattended stages decline Antigravity's questions; attended stages ask you as usual.
 - Fetch stays allowed in every stage, including unattended reviews, so a reviewer can read the
   documentation a change depends on. This matches how Codex and Claude plan mode treat web

@@ -331,13 +331,15 @@ export const ProfiledFailureInterruptTimeout = ServiceMap.Reference<Duration.Dur
  * Request details quoted in profile-violation messages are redacted, then cut to this many
  * characters: redacting first keeps a credential near the start from surviving the cut.
  */
-const PROFILE_VIOLATION_DETAIL_CHARS = 200;
+const PROFILE_VIOLATION_DETAIL_CHARS = 320;
+const PROFILE_VIOLATION_DETAIL_TAIL_CHARS = 140;
 const profileViolationDetail = (detail: string | undefined): string => {
   const trimmed = detail ? redactProviderFailureText(detail).trim() : "";
   if (!trimmed) return "";
-  return trimmed.length > PROFILE_VIOLATION_DETAIL_CHARS
-    ? `${trimmed.slice(0, PROFILE_VIOLATION_DETAIL_CHARS)}…`
-    : trimmed;
+  if (trimmed.length <= PROFILE_VIOLATION_DETAIL_CHARS) return trimmed;
+  // A refusal reads `<command> (<reason>)`: keep the end, so a long command still says why.
+  const tail = trimmed.slice(-PROFILE_VIOLATION_DETAIL_TAIL_CHARS);
+  return `${trimmed.slice(0, PROFILE_VIOLATION_DETAIL_CHARS - PROFILE_VIOLATION_DETAIL_TAIL_CHARS)}…${tail}`;
 };
 // Tool items that never complete are evicted oldest first past this many.
 const MAX_TRACKED_TOOL_UPDATES = 512;
@@ -2841,18 +2843,31 @@ const make = Effect.gen(function* () {
 
   /**
    * Per-turn count of operations an adapter already refused under a read-only profile
-   * (`request.opened` with `autoDeclined`). Nothing ran and the model was told no, so one refusal
-   * is recoverable; a model that keeps trying is failed once the allowance is spent.
+   * (`request.opened` with `autoDeclined`). Nothing ran and the model was told no, so a refusal is
+   * recoverable: a model that then tries something else keeps going. The turn fails when the
+   * model is stuck, asking for the same refused operation again and again, or when it has been
+   * refused so often that it is plainly not doing read-only work.
    */
-  const autoDeclinedRequestCounts = new Map<ThreadId, { readonly turnId: TurnId; count: number }>();
-  const MAX_AUTO_DECLINED_REQUESTS_PER_TURN = 3;
+  const autoDeclinedRequestCounts = new Map<
+    ThreadId,
+    { readonly turnId: TurnId; count: number; readonly byOperation: Map<string, number> }
+  >();
+  const MAX_AUTO_DECLINED_REQUESTS_PER_TURN = 15;
+  const MAX_REPEATS_OF_AN_AUTO_DECLINED_REQUEST = 3;
 
-  const countAutoDeclinedRequest = (threadId: ThreadId, turnId: TurnId) =>
+  /** Counts a refusal; `repeats` is how often this same operation was refused this turn. */
+  const countAutoDeclinedRequest = (threadId: ThreadId, turnId: TurnId, operation: string) =>
     Effect.sync(() => {
       const existing = autoDeclinedRequestCounts.get(threadId);
-      const next = existing && existing.turnId === turnId ? existing.count + 1 : 1;
-      autoDeclinedRequestCounts.set(threadId, { turnId, count: next });
-      return next;
+      const entry =
+        existing && existing.turnId === turnId
+          ? existing
+          : { turnId, count: 0, byOperation: new Map<string, number>() };
+      entry.count += 1;
+      const repeats = (entry.byOperation.get(operation) ?? 0) + 1;
+      entry.byOperation.set(operation, repeats);
+      autoDeclinedRequestCounts.set(threadId, entry);
+      return { count: entry.count, repeats };
     });
 
   const clearAutoDeclinedRequests = (threadId: ThreadId, turnId?: TurnId) =>
@@ -5308,23 +5323,32 @@ const make = Effect.gen(function* () {
         // nothing is pending. Killing the turn would discard the work it already did, so the
         // refusal is recorded and the stage only fails when the model keeps trying. The
         // watchdog stays armed: the turn is still unattended and time-bounded.
-        const declinedCount = yield* countAutoDeclinedRequest(thread.id, profiledTurnId);
+        const declined = yield* countAutoDeclinedRequest(
+          thread.id,
+          profiledTurnId,
+          `${event.payload.requestType}\n${event.payload.detail ?? ""}`,
+        );
         // The raw command or URL stays out of the server log; it is in the thread's activity.
         yield* Effect.logInfo("read-only workflow stage attempted a refused operation", {
           threadId: thread.id,
           turnId: profiledTurnId,
           requestId: event.requestId,
           requestType: event.payload.requestType,
-          declinedCount,
+          declinedCount: declined.count,
+          repeats: declined.repeats,
         });
-        if (declinedCount >= MAX_AUTO_DECLINED_REQUESTS_PER_TURN) {
+        const stuck = declined.repeats >= MAX_REPEATS_OF_AN_AUTO_DECLINED_REQUEST;
+        if (stuck || declined.count >= MAX_AUTO_DECLINED_REQUESTS_PER_TURN) {
           const detail = profileViolationDetail(event.payload.detail);
+          const operation = `${event.payload.requestType}${detail ? `: ${detail}` : ""}`;
           yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
           yield* clearAutoDeclinedRequests(thread.id, profiledTurnId);
           yield* recordProfiledTurnFailure({
             threadId: thread.id,
             turnId: profiledTurnId,
-            error: `Workflow read-only profile violation: the provider attempted ${declinedCount} operations that are not allowed in a read-only stage (last: ${event.payload.requestType}${detail ? `: ${detail}` : ""}). The turn was interrupted.`,
+            error: stuck
+              ? `Workflow read-only profile violation: the provider asked ${declined.repeats} times for the same operation, which is not allowed in a read-only stage (${operation}). The turn was interrupted.`
+              : `Workflow read-only profile violation: the provider attempted ${declined.count} operations that are not allowed in a read-only stage (last: ${operation}). The turn was interrupted.`,
             retryable: false,
             createdAt: now,
           });

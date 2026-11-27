@@ -163,9 +163,9 @@ shows the template, cost and per-step context.
   stage. Read, search, think and fetch tools run, and so do shell commands on the read-only
   allowlist that Antigravity also uses (see
   [shell commands in policy-enforced stages](#shell-commands-in-policy-enforced-stages)).
-  Everything else is refused and the model is told no; a turn with three refused operations fails
-  the stage, on any provider. Unlike Antigravity, Cursor is not certified per version, so F5
-  relies on Cursor labelling its tools' kinds correctly.
+  Everything else is refused and the model is told no (see
+  [when a command is refused](#when-a-command-is-refused)). Unlike Antigravity, Cursor is not
+  certified per version, so F5 relies on Cursor labelling its tools' kinds correctly.
 - F5 only sees the Cursor commands that Cursor asks about, so read-only Cursor stages run with an
   F5-owned copy of your Cursor CLI config (`CURSOR_CONFIG_DIR`):
   - **Ignored in these stages:** your allowlist (`permissions.allow`, `permissions.json`), an
@@ -215,6 +215,21 @@ command was harmful.
   - a program named with a path (`/usr/bin/grep`).
 
 Reviewers that want to run tests or scripts need a stage that isn't read-only.
+
+#### When a command is refused
+
+- **The model is told the rules first.** Codex, Cursor and Antigravity only hear "rejected" when
+  F5 refuses a command, without a reason. So a policy-enforced stage starts with a short list of
+  what runs and what doesn't, and is told not to retry a refused command.
+- **The thread shows why.** A refusal appears in the timeline as "Command refused in a read-only
+  stage", with the command and F5's reason, for example
+  ``touch marker (`touch` is not on the read-only allowlist)``.
+- **A refusal doesn't fail the stage.** Nothing ran, and a model that tries something else keeps
+  going. The stage fails when the model asks for the same refused operation three times, or is
+  refused fifteen times in one turn, on any provider.
+- **Antigravity ends its turn when a command is refused.** When it does so without writing a
+  reply, F5 tells it what was refused and why, and asks it to finish, inside the same turn. After
+  two such follow-ups without a reply the stage fails and names the refused command.
 
 ### Repository config in read-only stages
 

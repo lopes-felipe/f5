@@ -18,13 +18,14 @@ import {
   ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
-import { Cause, Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
+import { Cause, Effect, Exit, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
 
 import { vi } from "vitest";
 import * as GrokAcpSupport from "../acp/GrokAcpSupport.ts";
 import { ServerConfig } from "../../config.ts";
 import type { GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { makeGrokAdapter, type GrokAdapterLiveOptions } from "./GrokAdapter.ts";
+import { READ_ONLY_SHELL_GUIDE } from "../readOnlyShellGuide.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import type { InteractionSession } from "../../mcp/interactionMcpTools.ts";
 import type { PreviewMcpHttpServerShape } from "../../mcp/PreviewMcpHttpServer.ts";
@@ -1427,6 +1428,102 @@ rootIt.layer(
       });
       assert.include(selected, "reject-once");
       yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
+  );
+
+  /** A read-only workflow turn against an agent that asks to run `rm -rf build`. */
+  const refusedWorkflowTurn = (threadName: string, env: Record<string, string>) =>
+    Effect.gen(function* () {
+      const harness = yield* antigravityProfileAdapter({
+        env: {
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+          T3_ACP_PERMISSION_ANTIGRAVITY_SHAPE: "1",
+          T3_ACP_PERMISSION_COMMAND: "rm -rf build",
+          ...env,
+        },
+        options: () => ({
+          antigravity: {
+            accountRevision: Effect.succeed(0),
+            nativeReaders: () => Effect.succeed(false),
+            readOnlyWorkflowCertified: () => true,
+          },
+        }),
+      });
+      const threadId = ThreadId.make(threadName);
+      yield* harness.adapter.startSession({
+        threadId,
+        provider: "antigravity",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const turn = yield* harness.adapter
+        .sendTurn({
+          threadId,
+          input: "Review it",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.timeout("20 seconds"), Effect.exit);
+      const prompts = (yield* harness.requests()).flatMap((frame) => {
+        const request = frame as {
+          method?: string;
+          params?: { prompt?: ReadonlyArray<{ text?: string }> };
+        };
+        return request.method === "session/prompt"
+          ? [(request.params?.prompt ?? []).map((part) => part.text ?? "")]
+          : [];
+      });
+      yield* harness.adapter.stopSession(threadId).pipe(Effect.ignore);
+      return { ...harness, turn, prompts };
+    });
+
+  it.effect("tells a read-only stage the shell rules, and why a command was refused", () =>
+    Effect.gen(function* () {
+      const { events, turn, prompts } = yield* refusedWorkflowTurn("agy-refusal-reason", {});
+      assert.ok(Exit.isSuccess(turn));
+      const opened = events.find((event) => event.type === "request.opened");
+      assert.ok(opened?.type === "request.opened");
+      assert.equal(opened.payload.autoDeclined, true);
+      assert.include(opened.payload.detail ?? "", "(`rm` is not on the read-only allowlist)");
+      // The agent replied after the refusal, so nothing more is sent.
+      assert.deepEqual(prompts, [["Review it", READ_ONLY_SHELL_GUIDE]]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("explains a refusal to an agent that ended its turn on it without a reply", () =>
+    Effect.gen(function* () {
+      const { events, turn, prompts } = yield* refusedWorkflowTurn("agy-refusal-follow-up", {
+        T3_ACP_SILENT_REJECTED_PROMPTS: "1",
+      });
+      assert.ok(Exit.isSuccess(turn));
+      assert.equal(prompts.length, 2);
+      assert.equal(prompts[1]?.length, 1);
+      assert.include(prompts[1]?.[0] ?? "", "F5 refused this operation");
+      assert.include(prompts[1]?.[0] ?? "", "(`rm` is not on the read-only allowlist)");
+      assert.include(prompts[1]?.[0] ?? "", "Do not retry");
+      // One F5 turn, which now ends with the agent's reply.
+      assert.equal(events.filter((event) => event.type === "turn.completed").length, 1);
+      assert.ok(
+        events.some(
+          (event) =>
+            event.type === "content.delta" &&
+            event.payload.delta.includes("finished without the refused command"),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("fails the turn when the agent keeps ending on a refusal", () =>
+    Effect.gen(function* () {
+      const { turn, prompts } = yield* refusedWorkflowTurn("agy-refusal-stuck", {
+        T3_ACP_SILENT_REJECTED_PROMPTS: "9",
+      });
+      assert.equal(prompts.length, 3);
+      assert.ok(Exit.isFailure(turn));
+      const message = String(Cause.squash(turn.cause));
+      assert.include(message, "stopped without a reply after F5 refused");
+      assert.include(message, "(`rm` is not on the read-only allowlist)");
     }).pipe(Effect.scoped),
   );
 

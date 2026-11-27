@@ -22,6 +22,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { makeCursorAdapter } from "./CursorAdapter.ts";
+import { READ_ONLY_SHELL_GUIDE } from "../readOnlyShellGuide.ts";
 import { TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* CursorAdapter`.
@@ -1883,7 +1884,9 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
           makeMockAgentWrapper({
             T3_ACP_EMIT_TOOL_CALLS: "1",
             T3_ACP_PERMISSION_REQUEST_COUNT: "2",
-            T3_ACP_PERMISSION_COMMAND: "gh pr view 743438 --repo x/y --json title",
+            // A path under `src/mcp/` is not an MCP tool call: the command is what gets checked.
+            T3_ACP_PERMISSION_COMMAND:
+              "git log --oneline -3 -- apps/server/src/mcp/OrchestratorMcpService.test.ts",
             T3_ACP_SECOND_PERMISSION_COMMAND: "rm -rf build",
             T3_ACP_REQUEST_LOG_PATH: requestLogPath,
           }),
@@ -1911,7 +1914,19 @@ cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
         const denied = opened[0];
         assert.ok(denied?.type === "request.opened");
         assert.equal(denied.payload.autoDeclined, true);
-        assert.include(denied.payload.detail ?? "", "rm -rf build");
+        // What was asked and why it was refused: Cursor itself is only told "rejected".
+        assert.equal(
+          denied.payload.detail,
+          "rm -rf build (`rm` is not on the read-only allowlist)",
+        );
+        // So the stage is told the rules up front, after its own prompt.
+        const prompts = (yield* Effect.promise(() => readJsonLines(requestLogPath)))
+          .filter((line) => line.method === "session/prompt")
+          .map((line) => (line.params as { prompt: ReadonlyArray<{ text?: string }> }).prompt);
+        assert.deepEqual(
+          prompts.map((parts) => parts.map((part) => part.text)),
+          [["review the PR", READ_ONLY_SHELL_GUIDE]],
+        );
         assert.ok(
           events.some(
             (event) =>

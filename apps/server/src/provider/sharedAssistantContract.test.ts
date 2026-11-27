@@ -9,6 +9,7 @@ import {
   buildCodexInstructionsText as codexInstructionsText,
   buildCodexModeInstructions,
   buildInstructionProfile,
+  buildReadOnlyShellGuide,
   buildSharedAssistantContractText,
   CLAUDE_PLAN_MODE_EDITS,
   CLAUDE_SUPPLEMENT_VERSION,
@@ -19,6 +20,7 @@ import {
   SHARED_ASSISTANT_CONTRACT_VERSION,
   splitUtf8Chunks,
 } from "./sharedAssistantContract";
+import { READ_ONLY_SHELL_GUIDE } from "./readOnlyShellGuide.ts";
 
 describe("buildCodexAdditionalContext", () => {
   it("uses tool availability in Default mode instead of claiming questions are unavailable", () => {
@@ -77,7 +79,7 @@ describe("buildCodexAdditionalContext", () => {
       readOnlyEnforcement: "policy",
     });
     const keys = Object.keys(policy);
-    expect(keys.at(-1)).toBe("f5_workflow_escalation");
+    expect(keys.slice(-2)).toEqual(["f5_workflow_escalation", "f5_workflow_shell"]);
     expect(keys).toEqual(keys.toSorted());
     expect(policy.f5_workflow_escalation?.value).toBe(CODEX_READ_ONLY_ESCALATION_HINT);
     expect(policy.f5_workflow_escalation?.value).toContain('"require_escalated"');
@@ -86,6 +88,31 @@ describe("buildCodexAdditionalContext", () => {
       { readOnlyEnforcement: "policy" },
     ] as const)
       expect(buildCodexAdditionalContext(input)).not.toHaveProperty("f5_workflow_escalation");
+  });
+
+  it("gives a policy-enforced read-only stage the shell rules up front", () => {
+    const policy = buildCodexAdditionalContext({
+      workflowExecutionProfile: "unattended-readonly",
+      readOnlyEnforcement: "policy",
+    });
+    expect(policy.f5_workflow_shell?.value).toBe(READ_ONLY_SHELL_GUIDE);
+    expect(policy.f5_workflow_shell?.value).toContain("Do not retry it");
+    expect(
+      codexInstructionsText({
+        workflowExecutionProfile: "attended-readonly",
+        readOnlyEnforcement: "policy",
+      }),
+    ).toContain("# Read-Only Shell Rules");
+    // A sandboxed stage runs what its sandbox allows, and a normal thread has no such rules.
+    for (const input of [
+      { workflowExecutionProfile: "unattended-readonly", readOnlyEnforcement: "sandbox" },
+      { workflowExecutionProfile: "unattended-readonly", readOnlyEnforcement: "f5-sandbox" },
+      { workflowExecutionProfile: "unattended-readonly" },
+      { readOnlyEnforcement: "policy" },
+    ] as const) {
+      expect(buildCodexAdditionalContext(input)).not.toHaveProperty("f5_workflow_shell");
+      expect(buildReadOnlyShellGuide(input)).toBeUndefined();
+    }
   });
 
   it("omits the mode prompt, which travels in the collaboration mode", () => {
@@ -551,16 +578,16 @@ describe("sharedAssistantContract", () => {
   });
 
   it("exposes stable version metadata", () => {
-    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v7");
+    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v8");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
     expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v14");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
-      contractVersion: "v7",
+      contractVersion: "v8",
       providerSupplementVersion: "v4",
       strategy: "codex.developer_instructions",
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
-      contractVersion: "v7",
+      contractVersion: "v8",
       providerSupplementVersion: "v14",
       strategy: "claude.append_system_prompt",
     });

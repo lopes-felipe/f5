@@ -30,6 +30,13 @@ const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const exitDuringPrompt = process.env.T3_ACP_EXIT_DURING_PROMPT === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+/**
+ * Like Antigravity, end the turn without a reply when a permission request is rejected, for this
+ * many prompts. A later prompt replies without asking again.
+ */
+const silentRejectedPrompts =
+  Number.parseInt(process.env.T3_ACP_SILENT_REJECTED_PROMPTS ?? "0", 10) || 0;
+let toolCallPrompts = 0;
 const promptDelayMs = Math.max(
   0,
   Number.parseInt(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0", 10) || 0,
@@ -983,6 +990,17 @@ const program = Effect.gen(function* () {
       }
       if (emitToolCalls) {
         const toolCallId = "tool-call-1";
+        toolCallPrompts += 1;
+        if (silentRejectedPrompts > 0 && toolCallPrompts > silentRejectedPrompts) {
+          yield* agent.client.sessionUpdate({
+            sessionId: requestedSessionId,
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "finished without the refused command" },
+            },
+          });
+          return { stopReason: "end_turn" };
+        }
 
         yield* agent.client.sessionUpdate({
           sessionId: requestedSessionId,
@@ -1071,6 +1089,12 @@ const program = Effect.gen(function* () {
           cancelled =
             cancelledSessions.delete(requestedSessionId) ||
             permission.outcome.outcome === "cancelled";
+          if (
+            silentRejectedPrompts > 0 &&
+            permission.outcome.outcome === "selected" &&
+            permission.outcome.optionId === "reject-once"
+          )
+            return { stopReason: "end_turn" };
         }
 
         yield* agent.client.sessionUpdate({

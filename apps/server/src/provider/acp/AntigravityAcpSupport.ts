@@ -16,7 +16,9 @@ import {
 import { findModelConfigOption, type AcpSessionModeState } from "./AcpRuntimeModel.ts";
 import {
   acpReadOnlyWorkflowDecision,
-  type AcpReadOnlyWorkflowToolCall,
+  acpReadOnlyWorkflowVerdict,
+  type AcpReadOnlyWorkflowDecisionInput,
+  type AcpReadOnlyWorkflowVerdict,
 } from "./AcpReadOnlyWorkflowPolicy.ts";
 import { antigravityEditTargetsInWorkspace } from "./AntigravityEditLocation.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
@@ -806,12 +808,17 @@ const writeAntigravitySessionMode = <E>(input: {
  * thread grants and Full access, and never opens an approval prompt. The policy itself is shared
  * with Cursor: see `acpReadOnlyWorkflowDecision`.
  */
-export function antigravityReadOnlyWorkflowDecision(input: {
-  readonly toolCall: AcpReadOnlyWorkflowToolCall;
-  readonly computerRequest: boolean;
-  readonly f5ThreadServerName?: string | undefined;
-}): "allow" | "deny" {
+export function antigravityReadOnlyWorkflowDecision(
+  input: AcpReadOnlyWorkflowDecisionInput,
+): "allow" | "deny" {
   return acpReadOnlyWorkflowDecision(input);
+}
+
+/** `antigravityReadOnlyWorkflowDecision` with the reason for a refusal. */
+export function antigravityReadOnlyWorkflowVerdict(
+  input: AcpReadOnlyWorkflowDecisionInput,
+): AcpReadOnlyWorkflowVerdict {
+  return acpReadOnlyWorkflowVerdict(input);
 }
 
 /** Read-only workflow sessions never run with native auto-approval, whatever the thread says. */

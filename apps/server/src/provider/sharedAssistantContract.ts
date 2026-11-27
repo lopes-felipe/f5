@@ -8,7 +8,9 @@ import {
 } from "@t3tools/contracts";
 import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
-export const SHARED_ASSISTANT_CONTRACT_VERSION = "v7";
+import { READ_ONLY_SHELL_GUIDE } from "./readOnlyShellGuide.ts";
+
+export const SHARED_ASSISTANT_CONTRACT_VERSION = "v8";
 export const CODEX_SUPPLEMENT_VERSION = "v4";
 export const CLAUDE_SUPPLEMENT_VERSION = "v14";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
@@ -752,6 +754,20 @@ function buildWorkflowHostContract(
 }
 
 /**
+ * The shell rules for a read-only stage that F5's command classifier enforces (`policy`), or
+ * undefined: a sandboxed stage runs whatever its sandbox lets through. Codex gets it as a context
+ * entry; Cursor and Antigravity, which have no instruction channel, as a block of the stage
+ * prompt.
+ */
+export function buildReadOnlyShellGuide(
+  input: Pick<SharedInstructionInput, "workflowExecutionProfile" | "readOnlyEnforcement">,
+): string | undefined {
+  return input.workflowExecutionProfile && input.readOnlyEnforcement === "policy"
+    ? READ_ONLY_SHELL_GUIDE
+    : undefined;
+}
+
+/**
  * Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`.
  *
  * Only the mode prompt belongs here: when the model catalog ships its own text
@@ -851,6 +867,7 @@ export function buildCodexAdditionalContext(
         ? CODEX_READ_ONLY_ESCALATION_HINT
         : undefined,
     ],
+    ["f5_workflow_shell", buildReadOnlyShellGuide(input)],
   ];
   const context: Record<string, CodexAdditionalContextEntry> = {};
   for (const [key, value] of sections) {

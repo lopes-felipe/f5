@@ -79,7 +79,11 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
-import { acpReadOnlyWorkflowDecision } from "../acp/AcpReadOnlyWorkflowPolicy.ts";
+import {
+  acpReadOnlyRefusalDetail,
+  acpReadOnlyWorkflowVerdict,
+} from "../acp/AcpReadOnlyWorkflowPolicy.ts";
+import { READ_ONLY_SHELL_GUIDE } from "../readOnlyShellGuide.ts";
 import { type AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
@@ -1407,17 +1411,20 @@ export function makeCursorAdapter(
                   // and web fetch. Read-only operations run once; anything else is refused here
                   // and recorded, and the model is told no and keeps working.
                   const computerRequest = Boolean(catalogs.classify(params.toolCall));
-                  if (
-                    acpReadOnlyWorkflowDecision({
-                      toolCall: params.toolCall,
-                      computerRequest,
-                      f5ThreadServerName: catalogs.readOnlyThreadServerName(),
-                    }) === "allow"
-                  ) {
+                  const verdict = acpReadOnlyWorkflowVerdict({
+                    toolCall: params.toolCall,
+                    computerRequest,
+                    f5ThreadServerName: catalogs.readOnlyThreadServerName(),
+                  });
+                  if (verdict.decision === "allow") {
                     const allowOnce = acpPermissionOutcome("accept", params.options);
                     if (allowOnce !== undefined)
                       return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
                   }
+                  const refusalReason =
+                    verdict.decision === "deny"
+                      ? verdict.reason
+                      : "Cursor offered no way to approve it once";
                   const permissionRequest = parsePermissionRequest(params);
                   const deniedRequestId = RuntimeRequestId.make(crypto.randomUUID());
                   yield* offerRuntimeEvent(
@@ -1428,9 +1435,13 @@ export function makeCursorAdapter(
                       turnId: ctx?.activeTurnId,
                       requestId: deniedRequestId,
                       permissionRequest,
+                      // What was asked, then why F5 refused it: the model is only told no.
                       detail: computerRequest
                         ? "Tool inputs hidden while computer control is enabled"
-                        : (permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000)),
+                        : acpReadOnlyRefusalDetail(
+                            permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000),
+                            refusalReason,
+                          ),
                       args: params,
                       source: "acp.jsonrpc",
                       method: "session/request_permission",
@@ -1986,6 +1997,10 @@ export function makeCursorAdapter(
             if (attachmentContext) {
               promptParts.push({ type: "text", text: attachmentContext });
             }
+            // F5 answers every command of a read-only stage with its classifier, and Cursor is
+            // only told "rejected". ACP has no instruction channel, so the rules go in the prompt.
+            if (input.workflowExecutionProfile && promptParts.length > 0)
+              promptParts.push({ type: "text", text: READ_ONLY_SHELL_GUIDE });
             if (input.attachments && input.attachments.length > 0) {
               for (const attachment of input.attachments) {
                 switch (attachment.type) {

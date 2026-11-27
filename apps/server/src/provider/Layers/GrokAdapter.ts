@@ -151,11 +151,17 @@ import {
   parsePermissionRequest,
 } from "../acp/AcpRuntimeModel.ts";
 import {
+  promptWithReadOnlyRefusalFollowUps,
+  readOnlyRefusalFailureText,
+} from "../acp/AcpReadOnlyRefusalFollowUp.ts";
+import { acpReadOnlyRefusalDetail } from "../acp/AcpReadOnlyWorkflowPolicy.ts";
+import { READ_ONLY_SHELL_GUIDE } from "../readOnlyShellGuide.ts";
+import {
   AntigravityModelUnavailableError,
   AntigravityModeUnavailableError,
   antigravityAdvertisedModes,
   antigravityApprovalDecision,
-  antigravityReadOnlyWorkflowDecision,
+  antigravityReadOnlyWorkflowVerdict,
   antigravityWorkflowRuntimeMode,
   enterAntigravityWorkflowPlanMode,
   antigravityLaunchedVersion,
@@ -347,6 +353,13 @@ interface GrokSessionContext {
    * agent output clears it, so only a quota notice that ends the turn explains its outcome.
    */
   antigravityTrailingText: (AntigravityTurnNotice & { readonly turnId: TurnId }) | undefined;
+  /**
+   * Antigravity read-only stages: what F5 refused since the last prompt was sent (as recorded in
+   * the thread), and whether the agent has written text since the latest one. Antigravity ends
+   * its turn on a refusal, so the prompt loop explains it (AcpReadOnlyRefusalFollowUp).
+   */
+  antigravityReadOnlyRefusals: string[];
+  antigravityRepliedSinceRefusal: boolean;
   /** Antigravity: private-format readers are certified for the runtime this session launched. */
   readonly antigravityNativeReaders: boolean;
   /** Antigravity: the launched runtime's step numbering was checked, so any error step fails. */
@@ -1484,17 +1497,28 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                   if (readOnlyWorkflowProfile) {
                     // Runs before the access-mode policy, saved grants and Full access, and
                     // never prompts: a workflow turn either reads or is refused.
+                    const verdict = antigravityReadOnlyWorkflowVerdict({
+                      toolCall: params.toolCall,
+                      computerRequest: Boolean(computerRequest),
+                      f5ThreadServerName: catalogs.readOnlyThreadServerName(),
+                    });
                     const allowOnce =
-                      antigravityReadOnlyWorkflowDecision({
-                        toolCall: params.toolCall,
-                        computerRequest: Boolean(computerRequest),
-                        f5ThreadServerName: catalogs.readOnlyThreadServerName(),
-                      }) === "allow"
+                      verdict.decision === "allow"
                         ? selectPermissionOptionId(params, "accept")
                         : undefined;
                     if (allowOnce !== undefined)
                       return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
+                    const refusalReason =
+                      verdict.decision === "deny"
+                        ? verdict.reason
+                        : "Antigravity offered no way to approve it once";
                     const deniedRequest = parsePermissionRequest(params);
+                    if (live && !computerRequest) {
+                      live.antigravityReadOnlyRefusals.push(
+                        acpReadOnlyRefusalDetail(deniedRequest.detail, refusalReason),
+                      );
+                      live.antigravityRepliedSinceRefusal = false;
+                    }
                     // Persisted like an asked request, so a large `rawOutput` or `content` is
                     // bounded the same way.
                     const deniedParams = boundPermissionRequestPayload(params);
@@ -1507,11 +1531,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         turnId: sessions.get(input.threadId)?.activeTurnId,
                         requestId: deniedRequestId,
                         permissionRequest: deniedRequest,
+                        // What was asked, then why F5 refused it: the model is only told no.
                         detail: computerRequest
                           ? "Tool inputs hidden while computer control is enabled"
-                          : (deniedRequest.detail ??
-                            encodeJsonStringForDiagnostics(deniedParams)?.slice(0, 2000) ??
-                            "[unserializable params]"),
+                          : acpReadOnlyRefusalDetail(
+                              deniedRequest.detail ??
+                                encodeJsonStringForDiagnostics(deniedParams)?.slice(0, 2000) ??
+                                "[unserializable params]",
+                              refusalReason,
+                            ),
                         args: deniedParams,
                         source: "acp.jsonrpc",
                         method: "session/request_permission",
@@ -1868,6 +1896,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             antigravityPlanArtifacts: new AntigravityPlanArtifactTracker(brainRoots),
             antigravityPendingWarning: undefined,
             antigravityTrailingText: undefined,
+            antigravityReadOnlyRefusals: [],
+            antigravityRepliedSinceRefusal: false,
             antigravityNativeReaders,
             antigravityStepLayoutVerified:
               PROVIDER === "antigravity" &&
@@ -1917,6 +1947,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     event._tag === "PlanUpdated" ||
                     event._tag === "AssistantItemStarted")
                 ) {
+                  if (event._tag === "ContentDelta" && event.streamKind === undefined)
+                    ctx.antigravityRepliedSinceRefusal = true;
                   const previous = ctx.antigravityTrailingText;
                   ctx.antigravityTrailingText =
                     event._tag === "ContentDelta" &&
@@ -2472,6 +2504,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
                 ...(text ? [{ type: "text" as const, text }] : []),
                 ...(attachmentContext ? [{ type: "text" as const, text: attachmentContext }] : []),
+                // F5 answers every command of a read-only stage with its classifier, and the
+                // agent is only told "rejected". ACP has no instruction channel, so the rules go
+                // in the prompt.
+                ...(PROVIDER === "antigravity" && ctx.antigravityWorkflowProfile && text
+                  ? [{ type: "text" as const, text: READ_ONLY_SHELL_GUIDE }]
+                  : []),
                 ...imagePromptParts,
               ];
               if (PROVIDER === "antigravity") {
@@ -2611,22 +2649,52 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               yield* Effect.sleep(Duration.millis(Math.min(remaining, 1_000)));
             }
           });
-          const prompt = prepared.acp
-            .prompt({
-              prompt: prepared.promptParts,
-            })
-            .pipe(
-              Effect.mapError((error) =>
-                mapAcpToAdapterError(
-                  PROVIDER,
-                  input.threadId,
-                  "session/prompt",
-                  error,
-                  automationCatalogs.get(input.threadId)?.scrubDiagnostic,
-                  automationCatalogs.get(input.threadId)?.hasSensitiveConfiguration() ?? false,
+          const sendPrompt = (parts: ReadonlyArray<EffectAcpSchema.ContentBlock>) =>
+            prepared.acp
+              .prompt({ prompt: parts })
+              .pipe(
+                Effect.mapError((error) =>
+                  mapAcpToAdapterError(
+                    PROVIDER,
+                    input.threadId,
+                    "session/prompt",
+                    error,
+                    automationCatalogs.get(input.threadId)?.scrubDiagnostic,
+                    automationCatalogs.get(input.threadId)?.hasSensitiveConfiguration() ?? false,
+                  ),
                 ),
-              ),
-            );
+              );
+          // Antigravity ends its turn when a permission request is refused, which would leave a
+          // read-only stage without a reply: explain the refusal and let it finish.
+          const prompt =
+            PROVIDER === "antigravity" &&
+            prepared.context.antigravityWorkflowProfile !== undefined &&
+            !prepared.steering
+              ? promptWithReadOnlyRefusalFollowUps({
+                  first: prepared.promptParts,
+                  send: sendPrompt,
+                  followUp: (text): ReadonlyArray<EffectAcpSchema.ContentBlock> => [
+                    { type: "text", text },
+                  ],
+                  endedTurn: (response) => response.stopReason === "end_turn",
+                  settle: prepared.acp.awaitEventBarrier,
+                  take: () => {
+                    const state = {
+                      refusals: prepared.context.antigravityReadOnlyRefusals,
+                      repliedSinceRefusal: prepared.context.antigravityRepliedSinceRefusal,
+                    };
+                    prepared.context.antigravityReadOnlyRefusals = [];
+                    prepared.context.antigravityRepliedSinceRefusal = false;
+                    return state;
+                  },
+                  fail: (refusal) =>
+                    new ProviderAdapterRequestError({
+                      provider: PROVIDER,
+                      method: "session/prompt",
+                      detail: readOnlyRefusalFailureText(providerLabel, refusal),
+                    }),
+                })
+              : sendPrompt(prepared.promptParts);
           // The prompt request resolves only when the turn ends. Report the delivery accepted
           // once the agent shows progress on it; a steer joins a turn already accepted.
           const acceptance = yield* TurnAcceptanceSignal;

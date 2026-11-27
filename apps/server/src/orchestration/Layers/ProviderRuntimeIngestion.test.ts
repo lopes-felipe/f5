@@ -6554,18 +6554,67 @@ describe("ProviderRuntimeIngestion", () => {
       ]);
       expect(refusals[0]?.summary).toBe("Command refused in a read-only stage");
 
-      emitRequest(harness, turnId, "req-soft-3", "git push origin main", true);
+      // A model that tries something else after each refusal keeps going: 14 different refused
+      // operations leave the turn running, and the 15th fails it.
+      for (let index = 3; index <= 14; index += 1)
+        emitRequest(harness, turnId, `req-soft-${index}`, `touch file-${index}`, true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+      expect(harness.interruptedTurns).toEqual([]);
+
+      emitRequest(harness, turnId, "req-soft-15", "git push origin main", true);
       const failed = await waitForThread(
         harness.engine,
         (thread) => thread.session?.status === "error",
       );
-      expect(failed.session?.lastError).toContain("attempted 3 operations");
+      expect(failed.session?.lastError).toContain("attempted 15 operations");
       expect(failed.session?.lastError).toContain("git push origin main");
       expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
       expect(harness.requestResponses).toEqual([]);
       expect(harness.interruptedTurns).toEqual([
         expect.objectContaining({ threadId: "thread-1", turnId }),
       ]);
+    });
+
+    it("fails a turn that asks for the same refused operation three times", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-stuck");
+      await startProfiledTurn(harness, turnId);
+      const refused = "touch marker (`touch` is not on the read-only allowlist)";
+
+      emitRequest(harness, turnId, "req-stuck-1", refused, true);
+      emitRequest(harness, turnId, "req-other", "rm -rf build", true);
+      emitRequest(harness, turnId, "req-stuck-2", refused, true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+
+      emitRequest(harness, turnId, "req-stuck-3", refused, true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("asked 3 times for the same operation");
+      expect(failed.session?.lastError).toContain(refused);
+      expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
+      expect(harness.interruptedTurns).toEqual([
+        expect.objectContaining({ threadId: "thread-1", turnId }),
+      ]);
+    });
+
+    it("keeps the reason when the refused command is long", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-long-command");
+      await startProfiledTurn(harness, turnId);
+      const refused = `cat ${"very/long/path/".repeat(40)}x > out (output may only be redirected to /dev/null)`;
+
+      for (const id of ["a", "b", "c"])
+        emitRequest(harness, turnId, `req-long-${id}`, refused, true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("cat very/long/path/");
+      expect(failed.session?.lastError).toContain("(output may only be redirected to /dev/null)");
     });
 
     it("keeps the first violation instead of overwriting it with later ones", async () => {
