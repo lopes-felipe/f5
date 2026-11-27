@@ -1,0 +1,1 @@
+- Added a skippable Quick Setup wizard to the first-run onboarding screen that shows auto-detected provider readiness, copyable sign-in commands, a live refresh action, and a plain-English default permission mode picker for new threads.
