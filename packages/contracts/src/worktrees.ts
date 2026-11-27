@@ -6,6 +6,9 @@ export * from "./worktreeTransitionSchemas";
 export * from "./worktreesResults";
 export * from "./worktreesInventory";
 
+/** Thread activity kind: the thread's folder moved to another branch. */
+export const WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND = "workspace.branch-changed";
+
 export const WorktreesInspectInput = Schema.Struct({ projectId: ProjectId, path: FilesystemPath });
 export type WorktreesInspectInput = typeof WorktreesInspectInput.Type;
 

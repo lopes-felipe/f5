@@ -1,4 +1,9 @@
-import { CommandId, EventId, type ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  type ThreadId,
+  WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
+} from "@t3tools/contracts";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
@@ -19,7 +24,7 @@ import { dispatchVerifiedWorkspace, WorkspaceWriteContext } from "./workspaceTra
  * is what a removed worktree is recreated from. Temporary branches are skipped
  * too, since F5 renames them itself.
  */
-export const WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND = "workspace.branch-changed";
+export { WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND };
 
 export interface ObservedBranchDeps {
   readonly engine: Pick<OrchestrationEngineShape, "dispatch" | "getReadModel">;
