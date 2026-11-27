@@ -162,6 +162,13 @@ const GIT_REF_LIST_VALUE_FLAGS = new Set([
   "--sort",
   "--format",
 ]);
+/** Filters whose commit defaults to HEAD when nothing follows them. */
+const GIT_REF_LIST_HEAD_DEFAULT = new Set([
+  "--contains",
+  "--no-contains",
+  "--merged",
+  "--no-merged",
+]);
 const GIT_REF_LIST_VALUE_SWITCH = /^--(?:color|column|abbrev)=[\w,-]+$/;
 const GIT_WORKTREE_LIST_FLAGS = new Set(["--porcelain", "-v", "--verbose", "-z"]);
 
@@ -277,22 +284,37 @@ export function classifyReadOnlyShellCommand(command: string): ReadOnlyShellClas
  * earlier variables), and it must be set at the top level:
  *
  * - as a statement of its own, or first in an `&&`/`||` chain: certainly set from then on;
- * - later in an `&&` chain (`cd repo && F=a.ts; git show rev:$F`): certainly set for the rest of
- *   that chain, and `conditional` after it, because the chain may have stopped before the
- *   assignment. A command that uses a conditional variable must be read-only with the value and
- *   with the variable unset (classifyCommand).
+ * - later in an `&&` chain (`cd repo && F=a.ts && git show rev:$F`): certainly set for the rest
+ *   of that chain only. After it the name has `lapsed`: the chain may have stopped before the
+ *   assignment, and then `$F` is whatever the shell had before, which can be a variable from the
+ *   environment (`cd /nowhere && API_KEY=x; echo "$API_KEY"` prints the real key). Its value is
+ *   unknown, so a later use is refused like any other unknown variable;
+ * - a `for` variable holds each word inside the loop body, and has lapsed after `done`, where
+ *   the shell keeps the last word.
  */
 class ShellScope extends Map<string, string> {
-  readonly conditional = new Set<string>();
+  /** Names whose value stopped being known, with what to do about it. */
+  readonly lapsed = new Map<string, string>();
   /** `for` loops currently being walked; see MAX_LOOP_DEPTH. */
   loopDepth = 0;
+
+  /** A name set where it certainly runs: its value is known from here on. */
+  bind(name: string, value: string): void {
+    this.set(name, value);
+    this.lapsed.delete(name);
+  }
+
+  /** The value of `name` is no longer known; `advice` tells the model how to keep it known. */
+  lapse(name: string, advice: string): void {
+    this.delete(name);
+    this.lapsed.set(name, advice);
+  }
 
   /** A copy for a loop body, with the loop variable certainly set. */
   withLoopVariable(name: string, value: string): ShellScope {
     const copy = new ShellScope(this);
-    for (const entry of this.conditional) copy.conditional.add(entry);
-    copy.conditional.delete(name);
-    copy.set(name, value);
+    for (const [entry, advice] of this.lapsed) copy.lapsed.set(entry, advice);
+    copy.bind(name, value);
     copy.loopDepth = this.loopDepth + 1;
     return copy;
   }
@@ -475,10 +497,13 @@ function assignmentOnly(node: Statement["command"]): Command | undefined {
     : undefined;
 }
 
+const SET_BEFORE_CHAIN = (name: string) =>
+  `$${name} was set after \`&&\`, which may not have run, so its value here is unknown: set ${name} before the chain (\`${name}=…; cd … && …\`) or on a line of its own`;
+
 /**
  * Adds an assignment-only command's variables to `scope`, left to right like the shell.
  * `afterChain` is given for an assignment that may not run (not first in its `&&` chain): the
- * names it sets are appended, to be marked conditional once the chain ends.
+ * names it newly sets are appended, to lapse once the chain ends.
  */
 function bindVariables(
   command: Command,
@@ -492,28 +517,19 @@ function bindVariables(
       return refuse(`setting ${name} is not allowed: write the value literally instead`);
     if (entry.append || entry.index !== undefined || entry.value.type !== "Word")
       return refuse(`${name} must be set to a literal value: write the value literally instead`);
-    const used = new Set<string>();
-    const value = resolveWord(entry.value, scope, { splits: false, used });
+    const value = resolveWord(entry.value, scope, { splits: false });
     if (!value.ok) return refuse(value.reason);
-    // The value would be one of two texts; only one can be checked.
-    const [conditional] = used;
-    if (conditional !== undefined)
-      return refuse(
-        `${name} is built from $${conditional}, which may be unset here: set ${conditional} on a line of its own first`,
-      );
     if (afterChain === undefined) {
-      scope.set(name, value.value);
-      scope.conditional.delete(name);
+      scope.bind(name, value.value);
       continue;
     }
     const previous = scope.get(name);
-    if (previous !== undefined && previous !== value.value)
-      return refuse(`${name} is already set: use another name, or set it on a line of its own`);
     // Certainly set with this value already: the assignment changes nothing either way.
-    if (previous !== undefined && !scope.conditional.has(name)) continue;
-    scope.set(name, value.value);
-    scope.conditional.delete(name);
-    afterChain.push(name);
+    if (previous === value.value && !afterChain.includes(name)) continue;
+    if (previous !== undefined && !afterChain.includes(name))
+      return refuse(`${name} is already set: use another name, or set it on a line of its own`);
+    scope.bind(name, value.value);
+    if (!afterChain.includes(name)) afterChain.push(name);
   }
   return READ_ONLY;
 }
@@ -538,17 +554,12 @@ function classifyTopLevelStatement(
       : classifyPipelineNode(entry, 0, scope);
     if (!verdict.readOnly) return verdict;
   }
-  for (const name of afterChain) scope.conditional.add(name);
+  for (const name of afterChain) scope.lapse(name, SET_BEFORE_CHAIN(name));
   return READ_ONLY;
 }
 
 type ResolvedWord =
-  | {
-      readonly ok: true;
-      readonly value: string;
-      /** False when the word is only unset variables, unquoted: the shell passes no argument. */
-      readonly present: boolean;
-    }
+  | { readonly ok: true; readonly value: string }
   | { readonly ok: false; readonly reason: string };
 
 const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -605,24 +616,15 @@ function wordHasUnparsedDollar(word: Word): boolean {
  * expansion (command substitution, `$1`, `${X:-y}`, unknown variables) is refused. `splits` is
  * false for assignment values, which the shell neither splits nor globs; elsewhere an unquoted
  * variable must expand to exactly one plain word.
- *
- * `used` collects the conditional variables the word reads. `unset` names the ones to expand as
- * unset instead, which is how classifyCommand checks the other outcome.
  */
 function resolveWord(
   word: Word,
   scope: ShellScope,
-  options: {
-    readonly splits: boolean;
-    readonly used?: Set<string>;
-    readonly unset?: ReadonlySet<string>;
-  },
+  options: { readonly splits: boolean },
 ): ResolvedWord {
   if (wordHasUnparsedDollar(word)) return { ok: false, reason: ZSH_DOLLAR_REASON };
-  if (!word.parts) return { ok: true, value: word.value, present: true };
+  if (!word.parts) return { ok: true, value: word.value };
   let value = "";
-  // Whether anything but an unset variable contributes: quotes make an (empty) argument too.
-  let present = false;
   const visit = (
     parts: ReadonlyArray<WordPart | DoubleQuotedChild>,
     quoted: boolean,
@@ -633,11 +635,9 @@ function resolveWord(
         case "SingleQuoted":
         case "AnsiCQuoted":
           value += part.value;
-          present = true;
           continue;
         case "DoubleQuoted":
         case "LocaleString": {
-          present = true;
           const failure = visit(part.parts, true);
           if (failure) return failure;
           continue;
@@ -668,15 +668,13 @@ function resolveWord(
             return `write \${${name}} with braces before \`${delimiter}\`: zsh reads $${name}${delimiter}… as a modifier or subscript`;
           const known = scope.get(name);
           if (known === undefined)
-            return `$${name} is not set earlier in this command: set ${name}=value before using it, or write the value literally`;
+            return (
+              scope.lapsed.get(name) ??
+              `$${name} is not set earlier in this command: set ${name}=value before using it, or write the value literally`
+            );
           if (!quoted && options.splits && (known === "" || SPLITS_OR_GLOBS.test(known)))
             return `quote "$${name}": its value is empty or has spaces or wildcards`;
-          if (scope.conditional.has(name)) {
-            options.used?.add(name);
-            if (options.unset?.has(name)) continue;
-          }
           value += known;
-          present = true;
           continue;
         }
         default:
@@ -686,7 +684,7 @@ function resolveWord(
     return undefined;
   };
   const failure = visit(word.parts, false);
-  return failure === undefined ? { ok: true, value, present } : { ok: false, reason: failure };
+  return failure === undefined ? { ok: true, value } : { ok: false, reason: failure };
 }
 
 /**
@@ -790,6 +788,9 @@ function classifyForLoop(node: For, depth: number, scope: ShellScope): ReadOnlyS
   const name = node.name.value;
   if (isSpecialVariable(name))
     return refuse(`looping over ${name} is not allowed: use another variable name`);
+  // The loop would replace that value, here and for every command after `done`.
+  if (scope.has(name))
+    return refuse(`${name} is already set: use another name for the loop variable`);
   const words = node.wordlist;
   if (words === undefined || words.length === 0) return literalList;
   if (words.length > MAX_LOOP_WORDS)
@@ -809,6 +810,13 @@ function classifyForLoop(node: For, depth: number, scope: ShellScope): ReadOnlyS
     );
     if (!verdict.readOnly) return verdict;
   }
+  // After `done` the shell keeps the last word in NAME. The body ran in copies of the scope, so
+  // the name is unknown here, and stays so: a later `$NAME` is refused rather than read as the
+  // value some earlier statement gave it.
+  scope.lapse(
+    name,
+    `$${name} was a \`for\` variable, which is only known inside its loop: set ${name}=value on a line of its own to use it after \`done\``,
+  );
   return READ_ONLY;
 }
 
@@ -880,59 +888,29 @@ function classifyCommand(command: Command, scope: ShellScope): ReadOnlyShellClas
   // is checked as the value it stands for. A substitution runs a command, any other variable could
   // expand to a flag that writes or executes, and `echo $GH_TOKEN` would put a secret in the
   // model's context.
-  const used = new Set<string>();
-  const args = resolveArguments(command, scope, { used });
-  if (typeof args === "string") return refuse(args);
-  const verdict = classifyProgram(program, args);
-  if (!verdict.readOnly || used.size === 0) return verdict;
-
-  // A conditional variable is either its value (checked above) or unset. Check every other
-  // outcome too: an unset variable drops its argument, which can change what the rest mean
-  // (`sed -n $RANGE notes.txt` would run `notes.txt` as the script).
-  const names = [...used];
-  if (names.length > MAX_CONDITIONAL_VARIABLES)
-    return refuse(
-      `too many variables set after \`&&\` in one command: set ${names[0]} and the others on lines of their own`,
-    );
-  for (let mask = 1; mask < 1 << names.length; mask += 1) {
-    const unset = new Set(names.filter((_, bit) => (mask >> bit) & 1));
-    const alternative = resolveArguments(command, scope, { unset });
-    const outcome =
-      typeof alternative === "string" ? refuse(alternative) : classifyProgram(program, alternative);
-    if (!outcome.readOnly)
-      return refuse(
-        `$${[...unset][0]} is set after \`&&\`, so it may be unset here (${outcome.reason}): set it on a line of its own`,
-      );
-  }
-  return READ_ONLY;
+  const args = resolveArguments(command, scope);
+  return typeof args === "string" ? refuse(args) : classifyProgram(program, args);
 }
-
-/** Above this, a command's set/unset outcomes are not enumerated (2^n of them). */
-const MAX_CONDITIONAL_VARIABLES = 3;
 
 /**
  * The arguments the program receives, or why they can't be known. `cmd NAME=value` is one
  * argument, like any other word.
  */
-function resolveArguments(
-  command: Command,
-  scope: ShellScope,
-  options: { readonly used?: Set<string>; readonly unset?: ReadonlySet<string> },
-): string[] | string {
+function resolveArguments(command: Command, scope: ShellScope): string[] | string {
   const args: string[] = [];
   for (const entry of command.suffix) {
     if (entry.type === "Assignment") {
       if (entry.value.type !== "Word" || entry.index !== undefined)
         return "arguments must be literal";
-      const value = resolveWord(entry.value, scope, { splits: true, ...options });
+      const value = resolveWord(entry.value, scope, { splits: true });
       if (!value.ok) return value.reason;
       args.push(`${entry.name}${entry.append ? "+" : ""}=${value.value}`);
       continue;
     }
     if (entry.type !== "Word") continue;
-    const value = resolveWord(entry, scope, { splits: true, ...options });
+    const value = resolveWord(entry, scope, { splits: true });
     if (!value.ok) return value.reason;
-    if (value.present) args.push(value.value);
+    args.push(value.value);
   }
   return args;
 }
@@ -1117,6 +1095,11 @@ function classifySed(args: ReadonlyArray<string>): ReadOnlyShellClassification {
       firstOperand ??= arg;
       continue;
     }
+    // macOS `sed` stops reading options at the first operand: `sed -n 'w out' -e p` runs
+    // `w out` as the script and takes `-e` and `p` for file names. GNU `sed` reorders them.
+    // Only the order both read the same way is accepted.
+    if (firstOperand !== undefined)
+      return refuse("`sed` options must come before the script and the files");
     if (arg === "--quiet" || arg === "--silent") {
       quiet = true;
       continue;
@@ -1228,7 +1211,11 @@ function classifyGitRefListing(
   const refused = refuse(
     `\`git ${subcommand}\` is only allowed for listing: put names and patterns after \`--list\``,
   );
-  const listMode = args.some((arg) => GIT_REF_LIST_MODE.has(arg));
+  // Before Git 2.20, `git branch -l <name>` meant `--create-reflog` and created the branch, so
+  // for `branch` only the long form admits a name. `git tag -l` has always listed.
+  const listMode = args.some((arg) =>
+    subcommand === "branch" ? arg === "--list" : GIT_REF_LIST_MODE.has(arg),
+  );
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]!;
     if (GIT_REF_LIST_MODE.has(arg) || GIT_REF_LIST_SWITCHES.has(arg)) continue;
@@ -1241,6 +1228,9 @@ function classifyGitRefListing(
       continue;
     if (GIT_REF_LIST_VALUE_FLAGS.has(arg)) {
       const value = args[index + 1];
+      // As the last argument these four mean HEAD. Anywhere else git takes the next argument
+      // as the commit, whatever it looks like.
+      if (value === undefined && GIT_REF_LIST_HEAD_DEFAULT.has(arg)) continue;
       if (value === undefined || value.startsWith("-")) return refused;
       index += 1;
       continue;

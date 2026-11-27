@@ -194,7 +194,8 @@ command was harmful.
   - reading and searching files: `cat`, `head`, `tail`, `nl`, `wc`, `ls`, `stat`, `file`, `find`,
     `fd`, `rg`, `grep`, `diff`, `cmp`, `sort`, `uniq`, `cut`, `tr`, `jq`, `shasum`, and `base64`
     without `-o`;
-  - `sed -n` with print commands only (`sed -n '10,20p;/start/,/end/p'`);
+  - `sed -n` with print commands only (`sed -n '10,20p;/start/,/end/p'`), options before the
+    script;
   - git reads: `status`, `log`, `show`, `diff`, `grep`, `blame`, `rev-parse`, `rev-list`,
     `merge-base`, `ls-files`, `ls-tree`, `cat-file`, `for-each-ref` and the like;
   - git listings: `git branch` and `git tag` with filters such as `--contains` or with
@@ -202,10 +203,14 @@ command was harmful.
   - `gh` reads (`gh pr view`, `gh pr diff`, `gh pr checks`, `gh api` with GET).
 - **Shell syntax it follows:**
   - pipes, `&&`, `||`, `;`, `if`, `{ }`, `( )` and output sent to `/dev/null`;
-  - a variable set to a literal and used later (`SHA=abc123; git show "${SHA}:README.md"`), also
-    after `cd dir &&`. Before a `:` or `[` the name needs braces, because zsh reads `$SHA:…` as a
-    modifier;
-  - `for f in a.ts b.ts; do …; done` over up to 64 words written out in full.
+  - a variable set to a literal and used later (`SHA=abc123; git show "${SHA}:README.md"`).
+    Before a `:` or `[` the name needs braces, because zsh reads `$SHA:…` as a modifier;
+  - a variable set after `&&` (`cd dir && SHA=abc123 && git show $SHA`), for the rest of that
+    `&&` chain only. After the chain it is refused, because the assignment may not have run and
+    the name could then hold anything, including a credential from your environment. Set it
+    first instead: `SHA=abc123; cd dir && git show $SHA`;
+  - `for f in a.ts b.ts; do …; done` over up to 64 words written out in full. The loop variable
+    needs a name that isn't set yet, and is not known after `done`.
 - **Refused:**
   - writing a file, including `> file` and `sed -i`;
   - `$(…)` and backticks, brace lists (`src/{a,b}.ts`), globs in a `for` list, heredocs,

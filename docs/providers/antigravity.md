@@ -113,7 +113,7 @@ On a certified version, F5 keeps every workflow turn read-only:
   literal: no substitutions, and no variables except ones the same command set to a literal
   first (`HEAD_SHA=abc123` on its own line or in an `&&` chain, then `git show "$HEAD_SHA"`),
   which are checked as the value they stand for. A variable set after `&&` may not have been set,
-  so a command that uses it must also only read without it. The full list is in
+  so it can be used only in the rest of that `&&` chain. The full list is in
   [shell commands in policy-enforced stages](../user/workflows.md#shell-commands-in-policy-enforced-stages).
   Variables a shell or an allowed program gives a meaning to, such as `PATH`, `HOME`, `IFS`,
   `PAGER` or anything starting with `GIT_` or `GH_`, can't be set. Commands that never exit, such
