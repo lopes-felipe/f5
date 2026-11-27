@@ -185,11 +185,10 @@ shows the template, cost and per-step context.
 - Cursor has no read-only sandbox yet, so F5 decides each of its permission requests in a read-only
   stage. Read, search, think and fetch tools run, and so do shell commands on the read-only
   allowlist that Antigravity also uses (see
-  [Antigravity](../providers/antigravity.md#read-only-workflow-turns)). A script may set a
-  variable to a literal (`HEAD_SHA=abc123`) and use it later in the same command. Everything else
-  is refused and the model is told no; a turn with three refused operations fails the stage, on
-  any provider. Unlike Antigravity, Cursor is not certified per version, so F5 relies on Cursor
-  labelling its tools' kinds correctly.
+  [shell commands in policy-enforced stages](#shell-commands-in-policy-enforced-stages)).
+  Everything else is refused and the model is told no; a turn with three refused operations fails
+  the stage, on any provider. Unlike Antigravity, Cursor is not certified per version, so F5
+  relies on Cursor labelling its tools' kinds correctly.
 - F5 only sees the Cursor commands that Cursor asks about, so read-only Cursor stages run with an
   F5-owned copy of your Cursor CLI config (`CURSOR_CONFIG_DIR`):
   - **Ignored in these stages:** your allowlist (`permissions.allow`, `permissions.json`), an
@@ -206,6 +205,44 @@ shows the template, cost and per-step context.
 - Fetch stays allowed in read-only stages on Cursor and Antigravity, as for Codex and Claude plan
   mode. Text planted in the code under review could get the model to put repository content into
   a URL it fetches, so don't run workflows on code you don't trust with secrets in the workspace.
+
+### Shell commands in policy-enforced stages
+
+Where no sandbox holds a read-only stage (Cursor, and Codex and Antigravity in the macOS desktop
+app), F5 reads every shell command the model asks to run and approves it only when it can tell
+the command just reads. It refuses anything it can't follow, so a refusal doesn't mean the
+command was harmful.
+
+- **Runs:**
+  - reading and searching files: `cat`, `head`, `tail`, `nl`, `wc`, `ls`, `stat`, `file`, `find`,
+    `fd`, `rg`, `grep`, `diff`, `cmp`, `sort`, `uniq`, `cut`, `tr`, `jq`, `shasum`, and `base64`
+    without `-o`;
+  - `sed -n` with print commands only (`sed -n '10,20p;/start/,/end/p'`), options before the
+    script;
+  - git reads: `status`, `log`, `show`, `diff`, `grep`, `blame`, `rev-parse`, `rev-list`,
+    `merge-base`, `ls-files`, `ls-tree`, `cat-file`, `for-each-ref` and the like;
+  - git listings: `git branch` and `git tag` with filters such as `--contains` or with
+    `--list <pattern>`, `git remote`, `git worktree list`, `git stash list`;
+  - `gh` reads (`gh pr view`, `gh pr diff`, `gh pr checks`, `gh api` with GET).
+- **Shell syntax it follows:**
+  - pipes, `&&`, `||`, `;`, `if`, `{ }`, `( )` and output sent to `/dev/null`;
+  - a variable set to a literal and used later (`SHA=abc123; git show "${SHA}:README.md"`).
+    Before a `:` or `[` the name needs braces, because zsh reads `$SHA:…` as a modifier;
+  - a variable set after `&&` (`cd dir && SHA=abc123 && git show $SHA`), for the rest of that
+    `&&` chain only. After the chain it is refused, because the assignment may not have run and
+    the name could then hold anything, including a credential from your environment. Set it
+    first instead: `SHA=abc123; cd dir && git show $SHA`;
+  - `for f in a.ts b.ts; do …; done` over up to 64 words written out in full. The loop variable
+    needs a name that isn't set yet, and is not known after `done`.
+- **Refused:**
+  - writing a file, including `> file` and `sed -i`;
+  - `$(…)` and backticks, brace lists (`src/{a,b}.ts`), globs in a `for` list, heredocs,
+    functions, `while`;
+  - `awk`, `xargs` and interpreters (`bun`, `node`, `python3`);
+  - `curl`, `git fetch`, `git ls-remote` and `git -c`;
+  - a program named with a path (`/usr/bin/grep`).
+
+Reviewers that want to run tests or scripts need a stage that isn't read-only.
 
 ### Repository config in read-only stages
 
