@@ -29,6 +29,12 @@ Each harness release bumps the version once: Release 1 is 16, and Release 2 is 1
 (session capability snapshots, reported model capabilities, catalog sources and the
 provider inventory RPC).
 
+Version 50 makes workspace switches settle themselves. `worktrees.previewTransitionRecovery`
+and `worktrees.resolveTransition` are removed, the `workspace_switch_failed` queue reason is
+no longer sent, and a transition snapshot is never left in `needs_recovery` (the phase still
+decodes, for rows an older version wrote). A switch that ends unfinished is reported through
+its caller's error and a `workspace.note` thread activity.
+
 Version 49 makes a thread's branch an observation rather than part of its identity.
 `worktrees.threadState` reports `registration: "foreign"` in place of `"otherBranch"` and drops
 `checkoutBranch`, `branchDriftOnly`, `checkoutDirty` and `followsCheckoutAtTurnEnd`;

@@ -1,5 +1,6 @@
 import { isAdmittedDeliveryQueueItem } from "@t3tools/contracts";
 import { WorkspaceTransitionSummary } from "./WorkspaceTransitionBanner";
+import { workspaceSwitchIsRunning } from "./WorkspaceTransitionBanner.logic";
 import type {
   CommandId,
   CompactRuntimeConfiguredActivityPayload,
@@ -292,8 +293,7 @@ export function NextTurnQueuePanel({
     !snapshot.paused &&
     !state.syncError &&
     snapshot.quarantinedCount === 0 &&
-    (!snapshot.workspaceTransition ||
-      ["completed", "cancelled"].includes(snapshot.workspaceTransition.phase))
+    !workspaceSwitchIsRunning(snapshot.workspaceTransition)
   ) {
     return null;
   }

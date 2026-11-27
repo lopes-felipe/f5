@@ -57,7 +57,6 @@ export const QueueReasonCode = Schema.Literals([
   "thread_deleted",
   "worktree_missing",
   "workspace_switch",
-  "workspace_switch_failed",
   "dispatch_rejected",
   "worktree_setup",
   "worktree_setup_failed",

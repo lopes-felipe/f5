@@ -13,8 +13,6 @@ type WorktreeMethod =
   | typeof WS_METHODS.worktreesDiscardMovedChanges
   | typeof WS_METHODS.worktreesSwitchWorkspace
   | typeof WS_METHODS.worktreesGetTransition
-  | typeof WS_METHODS.worktreesPreviewTransitionRecovery
-  | typeof WS_METHODS.worktreesResolveTransition
   | typeof WS_METHODS.worktreesList
   | typeof WS_METHODS.worktreesInspect
   | typeof WS_METHODS.worktreesRemove
@@ -115,22 +113,6 @@ export const worktreeRoutes = ({
         const { workspaceTransition } = yield* runtime;
         return yield* workspaceTransition
           .getTransition(withoutTag(request))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }),
-
-    [WS_METHODS.worktreesPreviewTransitionRecovery]: (request) =>
-      Effect.gen(function* () {
-        const { workspaceTransition } = yield* runtime;
-        return yield* workspaceTransition
-          .previewRecovery(withoutTag(request))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }),
-
-    [WS_METHODS.worktreesResolveTransition]: (request) =>
-      Effect.gen(function* () {
-        const { workspaceTransition } = yield* runtime;
-        return yield* workspaceTransition
-          .resolve(withoutTag(request))
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }),
 

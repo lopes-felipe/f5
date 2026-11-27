@@ -1,6 +1,5 @@
 import {
   CommandId,
-  EventId,
   type ThreadId,
   WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
 } from "@t3tools/contracts";
@@ -14,6 +13,7 @@ import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../git/worktre
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { pathContains } from "./Layers/WorktreeLifecycleCoordinator.ts";
+import { appendWorkspaceNote } from "./workspaceNotes.ts";
 import { dispatchVerifiedWorkspace, WorkspaceWriteContext } from "./workspaceTransitionContext.ts";
 
 /**
@@ -56,26 +56,12 @@ const appendBranchNote = (
   threadId: ThreadId,
   branch: string,
   previousBranch: string | null,
-) => {
-  const createdAt = new Date().toISOString();
-  return engine
-    .dispatch({
-      type: "thread.activity.append",
-      commandId: CommandId.makeUnsafe(`server:workspace-branch-note:${timeOrderedUuid()}`),
-      threadId,
-      activity: {
-        id: EventId.makeUnsafe(`workspace-branch:${timeOrderedUuid()}`),
-        kind: WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
-        tone: "info",
-        summary: previousBranch ? `Now on ${branch} (was ${previousBranch})` : `Now on ${branch}`,
-        payload: { branch, previousBranch },
-        turnId: null,
-        createdAt,
-      },
-      createdAt,
-    })
-    .pipe(Effect.ignore);
-};
+) =>
+  appendWorkspaceNote(engine, threadId, {
+    kind: WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
+    summary: previousBranch ? `Now on ${branch} (was ${previousBranch})` : `Now on ${branch}`,
+    payload: { branch, previousBranch },
+  });
 
 /**
  * Records `branch` for one thread whose folder is already known to be on it.

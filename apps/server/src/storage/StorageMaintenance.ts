@@ -3115,9 +3115,9 @@ const makeStorageMaintenance = Effect.gen(function* () {
       UNION ALL SELECT 'Rewind needs recovery.' WHERE EXISTS (
         SELECT 1 FROM rewind_operations WHERE thread_id = ${thread.threadId} AND state <> 'completed')
         OR EXISTS (SELECT 1 FROM rewind_requests WHERE thread_id = ${thread.threadId})
-      UNION ALL SELECT 'Workspace transition needs recovery.' WHERE EXISTS (
+      UNION ALL SELECT 'A workspace switch is still running.' WHERE EXISTS (
         SELECT 1 FROM workspace_transitions WHERE thread_id = ${thread.threadId}
-        AND phase IN ('reserved', 'stopping', 'applying', 'applied', 'needs_recovery'))
+        AND phase IN ('reserved', 'stopping', 'applying', 'applied'))
       UNION ALL SELECT 'Worktree preparation needs recovery.' WHERE EXISTS (
         SELECT 1 FROM worktree_preparations WHERE path = ${thread.worktreePath ?? ""}
         AND phase IN ('allocated', 'checkout_created', 'setup_running', 'setup_failed', 'setup_indeterminate'))

@@ -1,5 +1,8 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
-import { WorkspaceTransitions } from "../../persistence/Services/WorkspaceTransitions.ts";
+import {
+  transitionIsActive,
+  WorkspaceTransitions,
+} from "../../persistence/Services/WorkspaceTransitions.ts";
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
@@ -1700,11 +1703,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         const active = yield* transitions.value
           .getTransition({ threadId })
           .pipe(Effect.mapError((error) => failFor(error.message)));
-        if (
-          active &&
-          ["reserved", "stopping", "applying", "applied", "needs_recovery"].includes(active.phase)
-        )
-          return yield* failFor("Resolve the workspace transition before retrying setup.");
+        if (active && transitionIsActive(active))
+          return yield* failFor("Wait for the workspace switch to finish before retrying setup.");
       }
       const entry = yield* load(threadId);
       if (!entry) return yield* failFor("No worktree setup to retry.");
@@ -1916,7 +1916,9 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         )
         .pipe(Effect.mapError((error) => failFor(error.message)));
       if (switched.phase !== "completed")
-        return yield* failFor(switched.error ?? "Inspect the interrupted workspace transition.");
+        return yield* failFor(
+          switched.error ?? "Moving to the project folder did not finish. Try again.",
+        );
       return yield* finishLocalHandoff(threadId);
     }).pipe(Effect.mapError((error) => failFor(error.message)));
 

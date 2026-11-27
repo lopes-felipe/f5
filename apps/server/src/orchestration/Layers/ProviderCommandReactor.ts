@@ -2736,7 +2736,7 @@ const make = Effect.gen(function* () {
                   if (current?.worktreePath !== cwd || current.branch !== oldBranch) return;
                   if (
                     Option.isSome(sqlOption) &&
-                    (yield* sqlOption.value`SELECT 1 FROM workspace_transitions WHERE thread_id = ${input.threadId} AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`)
+                    (yield* sqlOption.value`SELECT 1 FROM workspace_transitions WHERE thread_id = ${input.threadId} AND phase IN ('reserved','stopping','applying','applied') LIMIT 1`)
                       .length
                   )
                     return;

@@ -1026,7 +1026,7 @@ for (const scenario of [
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
       const written = dispatched.map((commandId) =>
-        commandId.startsWith("server:workspace-branch-note:")
+        commandId.startsWith("server:workspace-note:")
           ? "note"
           : commandId.startsWith("server:workspace-branch:")
             ? "branch"
@@ -1262,15 +1262,34 @@ it.layer(
     Layer.provideMerge(WorkspaceTransitionsLive.pipe(Layer.provide(persistence))),
   ),
 )("workspace transition queue barrier", (it) => {
-  it.effect("promotion and Resume cannot clear a durable transition or admit later work", () =>
+  // Only a switch that is running holds the queue. A row an older version parked
+  // for manual recovery holds nothing: it is settled on its own.
+  for (const [phase, item] of [
+    ["applying", 90],
+    ["needs_recovery", 92],
+  ] as const) {
+    const running = phase === "applying";
+    it.effect(
+      running
+        ? "promotion and Resume cannot clear a running switch or admit later work"
+        : "a switch parked by an older version does not hold the queue",
+      () => transitionBarrier(phase, item, running),
+    );
+  }
+  const transitionBarrier = (
+    phase: "applying" | "needs_recovery",
+    item: number,
+    running: boolean,
+  ) =>
     Effect.gen(function* () {
       const dispatcher = yield* NextTurnQueueDispatcher;
       const store = yield* NextTurnQueueStore;
       const sql = yield* SqlClient.SqlClient;
-      const threadId = ThreadId.makeUnsafe("transition-barrier-queue");
+      const operationId = `transition-barrier-${phase}`;
+      const threadId = ThreadId.makeUnsafe(`${operationId}-queue`);
       dispatched.length = 0;
       yield* seedThread(threadId);
-      yield* insert(90, threadId);
+      yield* insert(item, threadId);
       const checkout = {
         path: process.cwd(),
         repository: path.join(process.cwd(), ".git"),
@@ -1278,18 +1297,18 @@ it.layer(
         headSha: "head",
       };
       const record = {
-        operationId: "transition-barrier",
+        operationId,
         threadId,
         version: 3,
         intent: "checkout_branch",
-        phase: "needs_recovery",
+        phase,
         source: checkout,
         target: { ...checkout, branch: "topic" },
         observed: null,
         result: null,
-        error: "Inspect the interrupted switch.",
+        error: running ? null : "Inspect the interrupted switch.",
         request: {
-          operationId: "transition-barrier",
+          operationId,
           threadId,
           intent: "checkout_branch",
           branch: "topic",
@@ -1303,14 +1322,22 @@ it.layer(
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      yield* sql`INSERT INTO workspace_transitions(operation_id,thread_id,request_hash,phase,version,record_json,created_at,updated_at) VALUES ('transition-barrier',${threadId},'hash','needs_recovery',3,${JSON.stringify(record)},${record.createdAt},${record.updatedAt})`;
-      yield* dispatcher.start;
+      yield* sql`INSERT INTO workspace_transitions(operation_id,thread_id,request_hash,phase,version,record_json,created_at,updated_at) VALUES (${operationId},${threadId},'hash',${phase},3,${JSON.stringify(record)},${record.createdAt},${record.updatedAt})`;
+      // Not `dispatcher.start`: it stops the shared dispatcher when this test's scope closes.
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
+      if (!running) {
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.deepEqual(dispatched, [CommandId.makeUnsafe(`dispatcher-command-${item}`)]);
+        assert.notEqual((yield* dispatcher.getSnapshot(threadId)).reasonCode, "workspace_switch");
+        assert.equal((yield* insert(item + 1, threadId).pipe(Effect.exit))._tag, "Success");
+        return;
+      }
       assert.deepEqual(dispatched, []);
       const before = yield* store.listByThread(threadId);
       yield* dispatcher.promote({
-        itemId: CommandId.makeUnsafe("dispatcher-item-90"),
+        itemId: CommandId.makeUnsafe(`dispatcher-item-${item}`),
         interruptActive: false,
         expectedRevision: before.state.revision,
       });
@@ -1318,17 +1345,17 @@ it.layer(
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
       const snapshot = yield* dispatcher.getSnapshot(threadId);
-      assert.equal(snapshot.reasonCode, "workspace_switch_failed");
-      assert.equal(snapshot.workspaceTransition?.operationId, "transition-barrier");
+      assert.equal(snapshot.reasonCode, "workspace_switch");
+      assert.equal(snapshot.blockedKind, "waiting");
+      assert.equal(snapshot.workspaceTransition?.operationId, operationId);
       assert.deepEqual(dispatched, []);
-      assert.equal((yield* insert(91, threadId).pipe(Effect.exit))._tag, "Failure");
+      assert.equal((yield* insert(item + 1, threadId).pipe(Effect.exit))._tag, "Failure");
       assert.equal(
         (yield* store.setWorktreeBlockToken({ threadId, token: "setup-retry" }).pipe(Effect.exit))
           ._tag,
         "Failure",
       );
-    }),
-  );
+    });
 });
 
 it.effect("starts every actionable page before the first safety-sweep interval", () =>

@@ -996,10 +996,6 @@ export function createWsNativeApi(): NativeApi {
       switchWorkspace: (input) =>
         transport.request(WS_METHODS.worktreesSwitchWorkspace, input, { timeoutMs: null }),
       getTransition: requestMethod(WS_METHODS.worktreesGetTransition),
-      previewTransitionRecovery: (input) =>
-        transport.request(WS_METHODS.worktreesPreviewTransitionRecovery, input),
-      resolveTransition: (input) =>
-        transport.request(WS_METHODS.worktreesResolveTransition, input, { timeoutMs: null }),
 
       inspect: requestMethod(WS_METHODS.worktreesInspect),
       remove: requestMethod(WS_METHODS.worktreesRemove),

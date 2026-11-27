@@ -10,7 +10,6 @@ import {
   WorktreesRemoveInput,
   WorktreesRecoverInput,
   WorktreesSwitchWorkspaceInput,
-  WorktreesResolveTransitionInput,
 } from "./worktrees";
 describe("worktree safety wire contracts", () => {
   it("bounds approval lists while preserving exact ignored paths", () => {
@@ -69,13 +68,6 @@ describe("worktree safety wire contracts", () => {
     );
     expect(() =>
       Schema.decodeUnknownSync(WorktreesSwitchWorkspaceInput)({ ...request, expected: undefined }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(WorktreesResolveTransitionInput)({
-        operationId: "switch",
-        version: 2,
-        action: "retry",
-      }),
     ).toThrow();
   });
 });

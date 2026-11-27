@@ -186,11 +186,9 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       return active
         ? {
             kind: "wait" as const,
-            reasonCode:
-              active.phase === "needs_recovery"
-                ? ("workspace_switch_failed" as const)
-                : ("workspace_switch" as const),
-            detail: active.error ?? "Switching workspace.",
+            // Only a switch that is running holds the queue; one that stopped settles itself.
+            reasonCode: "workspace_switch" as const,
+            detail: "Switching workspace.",
             retryAfterMs: undefined,
           }
         : null;
@@ -570,7 +568,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       if (switching) {
         reasonCode = switching.reasonCode;
         reasonDetail = switching.detail;
-        blockedKind = switching.reasonCode === "workspace_switch_failed" ? "error" : "waiting";
+        blockedKind = "waiting";
       }
       const session = ((yield* engine.getReadModel()).threads ?? []).find(
         (entry) => entry.id === threadId,

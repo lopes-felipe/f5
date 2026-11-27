@@ -1,10 +1,7 @@
 import { Schema } from "effect";
 import { FilesystemPath, ThreadId } from "./baseSchemas";
 import { WorktreeRegistration, WorktreeLinkedThreads } from "./worktreeRegistration";
-import {
-  WorkspaceTransitionSnapshot,
-  WorkspaceCheckoutIdentity,
-} from "./worktreeTransitionSchemas";
+import { WorkspaceTransitionSnapshot } from "./worktreeTransitionSchemas";
 
 // Responses stay separate from request schemas so the web startup can omit them.
 export const WorktreesInspectResult = Schema.Struct({
@@ -82,14 +79,3 @@ export const WorktreesRecoverResult = WorktreesThreadStateResult;
 export type WorktreesRecoverResult = typeof WorktreesRecoverResult.Type;
 
 export const WorktreesGetTransitionResult = Schema.NullOr(WorkspaceTransitionSnapshot);
-
-export const WorkspaceTransitionRecoveryPreview = Schema.Struct({
-  transition: WorkspaceTransitionSnapshot,
-  actual: Schema.NullOr(WorkspaceCheckoutIdentity),
-  original: Schema.NullOr(WorkspaceCheckoutIdentity),
-  projectCheckout: Schema.NullOr(WorkspaceCheckoutIdentity),
-  acceptanceToken: Schema.String,
-  canRetry: Schema.Boolean,
-  blockedReasons: Schema.Array(Schema.String),
-});
-export type WorkspaceTransitionRecoveryPreview = typeof WorkspaceTransitionRecoveryPreview.Type;

@@ -75,14 +75,14 @@ describe("NextTurnQueuePanel", () => {
         },
       });
       active = await render(<NextTurnQueuePanel threadId={threadId} />);
-      if (phase === "completed" || phase === "cancelled") {
-        await expect.element(page.getByText(/Workspace switch:/)).not.toBeInTheDocument();
-        expect(document.getElementById("next-turn-queue-panel")).toBeNull();
+      // Only a running switch is reported, by folder name; one that ended settled itself.
+      if (phase === "stopping") {
+        await expect.element(page.getByText("Switching to topic…")).toBeVisible();
+        expect(document.body.textContent).not.toContain("/managed/topic");
+        expect(document.body.textContent).not.toContain("stopping");
       } else {
-        await expect
-          .element(page.getByText(`Workspace switch: ${phase.replaceAll("_", " ")}`))
-          .toBeVisible();
-        await expect.element(page.getByText("/repo → /managed/topic")).toBeVisible();
+        await expect.element(page.getByText(/Switching to/)).not.toBeInTheDocument();
+        expect(document.getElementById("next-turn-queue-panel")).toBeNull();
       }
     },
   );

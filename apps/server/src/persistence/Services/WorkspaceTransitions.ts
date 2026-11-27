@@ -29,15 +29,16 @@ export interface WorkspaceTransitionRecord extends WorkspaceTransitionSnapshot {
   readonly setupOwnerToken: string | null;
   readonly setupOwnerOperationId?: string | undefined;
 }
-export const activeTransitionPhases = [
-  "reserved",
-  "stopping",
-  "applying",
-  "applied",
-  "needs_recovery",
-] as const;
+/** Phases a running switch passes through. Only these hold a thread. */
+export const activeTransitionPhases = ["reserved", "stopping", "applying", "applied"] as const;
 export const transitionIsActive = (record: WorkspaceTransitionSnapshot) =>
   (activeTransitionPhases as readonly string[]).includes(record.phase);
+/**
+ * A row nobody finished. `needs_recovery` is no longer written: it is read only
+ * from rows an older version left behind, which are settled like any other.
+ */
+export const transitionIsUnsettled = (record: WorkspaceTransitionSnapshot) =>
+  transitionIsActive(record) || record.phase === "needs_recovery";
 export class WorkspaceTransitionError extends Error {
   readonly _tag = "WorkspaceTransitionError";
 }
@@ -52,8 +53,14 @@ export interface WorkspaceTransitionsShape {
   readonly reserve: (
     record: WorkspaceTransitionRecord,
   ) => Effect.Effect<WorkspaceTransitionRecord, WorkspaceTransitionError>;
+  /**
+   * Runs an attempt again that ended unfinished without touching Git. Only for a
+   * caller that must reuse its operation ID; everyone else starts a new switch.
+   */
   readonly reactivate: (
     record: WorkspaceTransitionRecord,
+    /** The target as the folder is now, when the first plan may have gone stale. */
+    plan?: Partial<Pick<WorkspaceTransitionRecord, "target">>,
   ) => Effect.Effect<WorkspaceTransitionRecord, WorkspaceTransitionError>;
   readonly update: (
     record: WorkspaceTransitionRecord,
@@ -79,7 +86,14 @@ export interface WorkspaceTransitionsShape {
     ReadonlyArray<WorkspaceTransitionRecord>,
     WorkspaceTransitionError
   >;
+  /** Every row that is not completed, failed or cancelled, oldest first. */
+  readonly unsettled: Effect.Effect<
+    ReadonlyArray<WorkspaceTransitionRecord>,
+    WorkspaceTransitionError
+  >;
+  /** Completes rows whose metadata write was accepted before a restart. */
   readonly reconcile: Effect.Effect<void, WorkspaceTransitionError>;
+  /** Ends a thread's unsettled row without reading it, for records that no longer decode. */
   readonly cancel: (threadId: ThreadId) => Effect.Effect<void, WorkspaceTransitionError>;
 }
 export class WorkspaceTransitions extends ServiceMap.Service<

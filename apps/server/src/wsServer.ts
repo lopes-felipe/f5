@@ -3800,7 +3800,7 @@ export const createServer = Effect.fn(function* (
                   ),
                 );
               return yield* Effect.fail(
-                new Error(result.error ?? "Inspect and resolve the workspace transition."),
+                new Error(result.error ?? "The workspace switch did not finish. Try again."),
               );
             }
             return;
@@ -4693,7 +4693,7 @@ export const createServer = Effect.fn(function* (
               .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
             if (result.phase !== "completed")
               return yield* new RouteRequestError({
-                message: result.error ?? "Resolve the workspace transition before continuing.",
+                message: result.error ?? "The workspace switch did not finish. Try again.",
               });
           }
           const {

@@ -5,7 +5,7 @@ import {
   WorkspaceMoveData,
   WorkspaceTransitions,
   WorkspaceTransitionError,
-  transitionIsActive,
+  transitionIsUnsettled,
   type WorkspaceTransitionRecord,
 } from "../Services/WorkspaceTransitions.ts";
 
@@ -54,8 +54,18 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
         phase: string;
         version: number;
       }>`SELECT record_json AS record,phase,version FROM workspace_transitions WHERE thread_id = ${threadId}
-    AND (${activeOnly ? 1 : 0} = 0 OR phase IN ('reserved','stopping','applying','applied','needs_recovery')) ORDER BY CASE WHEN phase IN ('reserved','stopping','applying','applied','needs_recovery') THEN 0 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1`.pipe(
-        Effect.flatMap(decode),
+    AND (${activeOnly ? 1 : 0} = 0 OR phase IN ('reserved','stopping','applying','applied')) ORDER BY CASE WHEN phase IN ('reserved','stopping','applying','applied') THEN 0 ELSE 1 END, created_at DESC, rowid DESC LIMIT 1`.pipe(
+        Effect.flatMap((rows) =>
+          decode(rows).pipe(
+            // A row that ended and no longer decodes holds nothing: it reads as
+            // no row, so the thread can still be switched.
+            Effect.catch((cause) =>
+              ["completed", "failed", "cancelled"].includes(rows[0]?.phase ?? "")
+                ? Effect.succeed(null)
+                : Effect.fail(cause),
+            ),
+          ),
+        ),
         Effect.mapError(error),
       );
   const update: import("../Services/WorkspaceTransitions.ts").WorkspaceTransitionsShape["update"] =
@@ -123,12 +133,8 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
           .length
       )
         return yield* fail("Wait for the dispatching queue item to settle.");
-      // Restoring the recorded branch of a drifted checkout is a recovery too.
-      const restoringRecordedBranch =
-        record.intent === "checkout_branch" && record.target.branch === expected.branch;
       const recoveringPausedQueue =
-        (["recreate", "recreate_from_base", "use_project_checkout"].includes(record.intent) ||
-          restoringRecordedBranch) &&
+        ["recreate", "recreate_from_base", "use_project_checkout"].includes(record.intent) &&
         setup[0]?.paused === 1 &&
         setup[0]?.reason === "worktree_missing";
       if (
@@ -154,8 +160,14 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
             }
             if (yield* forThread(record.threadId, true))
               return yield* fail(
-                "A workspace transition already owns this conversation. Resolve it first.",
+                "Another workspace switch is still running for this thread. Wait for it to finish.",
               );
+            // A row an older version left in needs_recovery holds nothing, but it
+            // still occupies the thread's slot in the unique index.
+            const now = new Date().toISOString();
+            yield* sql`UPDATE workspace_transitions SET phase='cancelled', version=version+1, updated_at=${now},
+              record_json=json_set(record_json,'$.phase','cancelled','$.version',version+1,'$.updatedAt',${now})
+              WHERE thread_id=${record.threadId} AND phase='needs_recovery'`;
             yield* validateReservation(record);
             yield* sql`INSERT INTO workspace_transitions(operation_id,request_hash,thread_id,version,phase,record_json,created_at,updated_at)
       VALUES (${record.operationId},${record.requestHash},${record.threadId},0,'reserved',${JSON.stringify(record)},${record.createdAt},${record.updatedAt})`;
@@ -163,50 +175,61 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
           }),
         )
         .pipe(Effect.mapError(error));
-  const reactivate = (record: WorkspaceTransitionRecord) =>
-    sql
-      .withTransaction(
-        Effect.gen(function* () {
-          const current = yield* get(record.operationId);
-          if (
-            !current ||
-            current.version !== record.version ||
-            !["failed", "needs_recovery"].includes(current.phase) ||
-            current.mutationAttempted
-          )
-            return yield* fail("The transition changed or its Git outcome is ambiguous.");
-          yield* validateReservation(current, true);
-          return yield* update(current, { phase: "reserved", error: null });
-        }),
-      )
-      .pipe(Effect.mapError(error));
+  const reactivate: import("../Services/WorkspaceTransitions.ts").WorkspaceTransitionsShape["reactivate"] =
+    (record, plan = {}) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const current = yield* get(record.operationId);
+            if (
+              !current ||
+              current.version !== record.version ||
+              !["failed", "cancelled"].includes(current.phase) ||
+              current.mutationAttempted
+            )
+              return yield* fail("The workspace switch changed or already touched Git.");
+            yield* validateReservation(current, true);
+            return yield* update(current, { ...plan, phase: "reserved", error: null });
+          }),
+        )
+        .pipe(Effect.mapError(error));
+  const unsettledRows = sql<{
+    record: string;
+    phase: string;
+    version: number;
+  }>`SELECT record_json AS record,phase,version FROM workspace_transitions WHERE phase IN ('reserved','stopping','applying','applied','needs_recovery') ORDER BY created_at, rowid`;
+  // A row that no longer decodes is skipped here; startup ends it by its key.
+  const unsettled = unsettledRows.pipe(
+    Effect.flatMap((rows) =>
+      Effect.forEach(rows, (row) => decode([row]).pipe(Effect.orElseSucceed(() => null))),
+    ),
+    Effect.map((records) => records.filter((record) => record !== null)),
+    Effect.mapError(error),
+  );
   const reconcile = sql
     .withTransaction(
       Effect.gen(function* () {
-        const rows = yield* sql<{
+        // A row that no longer decodes can never be settled, and its phase alone
+        // would go on refusing the thread's sends. It is ended by its key; the
+        // payload is left as it is for diagnosis, and Git is not touched.
+        const now = new Date().toISOString();
+        for (const row of yield* sql<{
+          operationId: string;
           record: string;
           phase: string;
           version: number;
-        }>`SELECT record_json AS record,phase,version FROM workspace_transitions WHERE phase IN ('reserved','stopping','applying','applied','needs_recovery')`;
-        for (const row of rows) {
-          const record = yield* decode([row]);
-          if (!record) continue;
+        }>`SELECT operation_id AS operationId,record_json AS record,phase,version FROM workspace_transitions WHERE phase IN ('reserved','stopping','applying','applied','needs_recovery')`) {
+          if ((yield* decode([row]).pipe(Effect.orElseSucceed(() => null))) !== null) continue;
+          yield* sql`UPDATE workspace_transitions SET phase='cancelled',version=version+1,updated_at=${now} WHERE operation_id=${row.operationId} AND version=${row.version}`;
+        }
+        for (const record of yield* unsettled) {
           const proof =
             yield* sql`SELECT 1 FROM orchestration_command_receipts r JOIN projection_threads t ON t.thread_id = r.aggregate_id
         WHERE r.command_id = ${record.commandId} AND r.status = 'accepted' AND t.thread_id = ${record.threadId}
         AND t.branch IS ${record.result?.branch ?? record.observed?.branch ?? record.target.branch}
         AND t.worktree_path IS ${record.result ? record.result.worktreePath : record.target.path}`;
-          yield* update(
-            record,
-            proof.length
-              ? { phase: "completed", error: null }
-              : {
-                  phase: "needs_recovery",
-                  error:
-                    record.error ??
-                    "Workspace switching was interrupted. Inspect the checkout before continuing.",
-                },
-          );
+          // Everything else is settled by the transition service, which can read Git.
+          if (proof.length) yield* update(record, { phase: "completed", error: null });
         }
       }),
     )
@@ -214,7 +237,7 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
   const cancel: import("../Services/WorkspaceTransitions.ts").WorkspaceTransitionsShape["cancel"] =
     (threadId) =>
       Effect.gen(function* () {
-        const record = yield* forThread(threadId, true).pipe(
+        const record = yield* forThread(threadId).pipe(
           Effect.catch(() =>
             Effect.gen(function* () {
               // Cancellation only releases execution ownership; unreadable records never authorize Git.
@@ -226,10 +249,10 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
             }),
           ),
         );
-        if (record && transitionIsActive(record))
+        if (record && transitionIsUnsettled(record))
           yield* update(record, {
             phase: "cancelled",
-            error: "Conversation archived or deleted; checkout retained.",
+            error: "The thread was archived or deleted; its worktree was kept.",
           });
       });
   return WorkspaceTransitions.of({
@@ -238,6 +261,7 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
     reserve,
     reactivate,
     update,
+    unsettled,
     unfinishedMoves: sql<{
       record: string;
       phase: string;

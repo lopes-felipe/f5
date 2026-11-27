@@ -637,7 +637,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           if (active && active.operationId !== envelope.workspaceWrite?.operationId)
             return yield* new OrchestrationCommandInvariantError({
               commandType: command.type,
-              detail: "A workspace transition must be resolved before continuing.",
+              detail: "A workspace switch is still running. Wait for it to finish.",
             });
           if (!changingWorkspace || command.type !== "thread.meta.update") return;
           const thread = readModel.threads.find((entry) => entry.id === command.threadId);
