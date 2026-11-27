@@ -8,8 +8,7 @@ import { ensureNativeApi } from "../../../nativeApi";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
-import { MCP_HUB_PROVIDER_LABELS } from "./McpHubStatusPanel";
-import { readErrorMessage } from "./mcpSettingsHelpers";
+import { MCP_HUB_PROVIDER_LABELS, readErrorMessage } from "./mcpSettingsHelpers";
 
 function describeExpiry(server: McpHubAuthServerStatus): string | null {
   if (!server.signedIn) return null;
@@ -187,40 +186,83 @@ function SignInRow({
   );
 }
 
-/**
- * Sign-in for remote servers the hub connects to. Tokens are shared by every
- * project and agent in the profile, so this works from either scope with no
- * conversation running. F5 opens the browser only when the user clicks.
- */
-export function McpHubSignInPanel({ projectId }: { readonly projectId: ProjectId | null }) {
+/** One server's F5 sign-in row without the settings heading, for the chat's MCP chip. */
+export function McpHubSignInRow({
+  serverName,
+  projectId,
+}: {
+  readonly serverName: string;
+  readonly projectId: ProjectId | null;
+}) {
   const authStatus = useQuery(mcpHubAuthQueryOptions({ projectId }));
-  const servers = authStatus.data?.servers ?? [];
-  if (!authStatus.error && servers.length === 0) return null;
+  const server = authStatus.data?.servers.find((entry) => entry.name === serverName);
+  if (!server) return null;
+  return (
+    <ul className="text-xs">
+      <SignInRow
+        key={`${projectId ?? "common"}:${server.name}`}
+        server={server}
+        projectId={projectId}
+        statusUpdatedAt={authStatus.dataUpdatedAt}
+      />
+    </ul>
+  );
+}
+
+/**
+ * F5's own sign-in for one remote server, used by the agents the hub serves.
+ * Tokens are shared by every project and agent in the profile, so this works from
+ * either scope with no conversation running. F5 opens the browser only on a click.
+ */
+export function McpHubSignIn({
+  serverName,
+  projectId,
+  nativeProvidersOnHub = false,
+}: {
+  readonly serverName: string;
+  readonly projectId: ProjectId | null;
+  /** Codex and Claude reach configured servers through F5 too (no native passthrough). */
+  readonly nativeProvidersOnHub?: boolean;
+}) {
+  const authStatus = useQuery(mcpHubAuthQueryOptions({ projectId }));
+  const server = authStatus.data?.servers.find((entry) => entry.name === serverName);
+  const agents = nativeProvidersOnHub
+    ? ["Codex", "Claude", ...MCP_HUB_PROVIDER_LABELS]
+    : MCP_HUB_PROVIDER_LABELS;
   return (
     <section
-      aria-label="Sign-in for other agents"
-      className="space-y-2 rounded-lg border border-border p-3 text-xs"
+      aria-label={nativeProvidersOnHub ? "F5 sign-in" : "Sign-in for other agents"}
+      className="space-y-2 text-xs"
     >
-      <p className="font-medium text-foreground">Sign-in for other agents</p>
-      <p className="text-muted-foreground">
-        F5 signs in to remote servers for {MCP_HUB_PROVIDER_LABELS.join(", ")}. A sign-in is shared
-        by every project that uses the same server.
+      <p className="font-medium text-foreground">
+        {nativeProvidersOnHub ? "F5 sign-in" : "Other agents"}
       </p>
+      <p className="text-muted-foreground">
+        F5 signs in for {agents.join(", ")}. A sign-in is shared by every project that uses the same
+        server.
+      </p>
+      {nativeProvidersOnHub ? (
+        <p className="text-muted-foreground">
+          Codex and Claude reach this server through F5 now. Sign-ins they saved earlier are not
+          carried over, so a server that needed one asks once more here.
+        </p>
+      ) : null}
       {authStatus.error ? (
         <p className="text-destructive">
           {readErrorMessage(authStatus.error, "Failed to load sign-in state.")}
         </p>
-      ) : null}
-      <ul className="space-y-2">
-        {servers.map((server) => (
+      ) : server ? (
+        <ul>
           <SignInRow
             key={`${projectId ?? "common"}:${server.name}`}
             server={server}
             projectId={projectId}
             statusUpdatedAt={authStatus.dataUpdatedAt}
           />
-        ))}
-      </ul>
+        </ul>
+      ) : authStatus.data ? (
+        <p className="text-muted-foreground">Sign-in applies to enabled HTTP and SSE servers.</p>
+      ) : null}
     </section>
   );
 }

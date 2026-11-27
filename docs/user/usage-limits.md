@@ -135,20 +135,20 @@ identity and discard unrelated CLI activity.
 
 **Other providers**
 
-| Provider    | Supported credentials                                                                                                                                                                                                                                                                                                                                             |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Cursor      | Explicit token, `CURSOR_API_KEY` (default Cursor endpoint only), or file-based login. Keychain-only credentials are unavailable                                                                                                                                                                                                                                   |
-| Grok        | Standard subscription login                                                                                                                                                                                                                                                                                                                                       |
-| OpenCode Go | Local API credentials. Externally managed servers are not probed                                                                                                                                                                                                                                                                                                  |
-| Antigravity | A CLIProxyAPI hub: set `F5_CLIPROXY_HUB_URL`, `F5_CLIPROXY_ACCOUNT_ID` and a sensitive `F5_CLIPROXY_API_KEY` (optionally `F5_ANTIGRAVITY_PROJECT`) in the instance environment. Alternatively, `F5_CLIPROXY_USAGE_URL` returning `{windows: [{id, label, usedPercent, resetsAt}]}`. The management key goes only to the configured hub, and redirects are refused |
+| Provider    | Supported credentials                                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Cursor      | Explicit token, `CURSOR_API_KEY` (default Cursor endpoint only), or file-based login. Keychain-only credentials are unavailable |
+| Grok        | Standard subscription login or a selected xAI account on a CLIProxyAPI hub                                                      |
+| OpenCode Go | Local API credentials. Externally managed servers are not probed                                                                |
 
-`F5_CLIPROXY_HUB_URL` is the hub's base URL. A path prefix is allowed, for example
-`https://hub.example/cliproxy`. The panel URL
-`https://hub.example/cliproxy/management.html` is also accepted. Do not include the API path
-`/v0/management`: F5 appends it to the base URL when requesting accounts and quotas.
+For a Grok hub account, set `F5_CLIPROXY_HUB_URL`, `F5_CLIPROXY_ACCOUNT_ID` and a sensitive
+`F5_CLIPROXY_API_KEY` in the instance environment. The hub URL can include a path prefix or point
+to its panel, such as `https://hub.example/cliproxy/management.html`. F5 appends
+`/v0/management` when it requests account usage. The management key goes only to the configured
+hub, and redirects are refused.
 
-An Antigravity instance that signs in with a Gemini API key has no subscription quota. Its card
-shows "Billed per token" and F5 doesn't read quotas for it.
+Antigravity subscription quotas are unavailable in F5, including through CLIProxyAPI. An
+instance that signs in with a Gemini API key still shows "Billed per token".
 
 </details>
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { APP_BUNDLE_ID } from "@t3tools/shared/appIdentity";
 import {
   DESKTOP_MAC_EXTEND_INFO,
   DOCK_TILE_EXECUTABLE,
@@ -555,7 +556,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     });
   }
   const buildConfig: Record<string, unknown> = {
-    appId: "io.github.lopesfelipe.f5",
+    appId: APP_BUNDLE_ID,
     electronFuses: {
       runAsNode: true, // Required by the sandboxed backend until it has a dedicated executable.
       // Encrypts cookie values with the OS key (DPAPI, macOS Keychain). Existing plain cookies stay
@@ -943,7 +944,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         renderWebAuthnSigningPlist(
           base,
           readMacProvisioningProfile(resolvedProfile),
-          "io.github.lopesfelipe.f5",
+          APP_BUNDLE_ID,
         ),
       catch: () =>
         new BuildScriptError({

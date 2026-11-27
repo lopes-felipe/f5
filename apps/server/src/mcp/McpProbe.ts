@@ -21,6 +21,7 @@ import {
 import { mcpBearerRedactionValues, mcpRemoteHeaders } from "@t3tools/shared/mcpTranslation";
 import { isMcpCredentialKey, createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
 import { Data, Effect } from "effect";
+import { resolvedMcpSecretsIn } from "./mcpResolvedSecrets.ts";
 
 /** The SDK's stdio transport does not own a process group. Probes must also reap descendants. */
 export class ProbeStdioTransport implements Transport {
@@ -164,6 +165,8 @@ export function probeMcpServer(
   const server = interpolation.servers[input.serverName] ?? input.server;
   const sanitizer = createMcpDiagnosticsSanitizer({ [input.serverName]: server }, [
     ...mcpBearerRedactionValues(server, execution.environment),
+    // Stored secrets resolved into arguments or the URL, which a server may echo back.
+    ...resolvedMcpSecretsIn(JSON.stringify([server.type === "stdio" ? server.args : server.url])),
     ...Object.entries(execution.environment).flatMap(([name, value]) =>
       value && isMcpCredentialKey(name) ? [value] : [],
     ),

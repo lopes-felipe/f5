@@ -132,15 +132,28 @@ env = { TEST = "first\\nsecond" }
     ).toHaveLength(300);
     const placeholder = "${f5-secret:00000000-0000-4000-8000-000000000000}";
     expect(mcpSecretId(placeholder)).toBeDefined();
+    expect(mcpSecretId(`prefix${placeholder}`)).toBeUndefined();
+    // References may sit inside env and header values, arguments and URLs.
     expect(() =>
       validateMcpSecretPlaceholders({
-        local: { type: "stdio", command: "node", env: { TOKEN: `prefix${placeholder}` } },
+        local: {
+          type: "stdio",
+          command: "node",
+          env: { TOKEN: `prefix${placeholder}` },
+          args: [`--token=${placeholder}`],
+        },
+        remote: { type: "http", url: `https://mcp.example/?key=${placeholder}` },
       }),
-    ).toThrow("entire value");
+    ).not.toThrow();
     expect(() =>
       validateMcpSecretPlaceholders({
-        local: { type: "stdio", command: "node", args: [placeholder] },
+        local: { type: "stdio", command: "node", args: ["${f5-secret:not-an-id}"] },
       }),
-    ).toThrow("only in env");
+    ).toThrow("valid secret id");
+    expect(() =>
+      validateMcpSecretPlaceholders({
+        local: { type: "stdio", command: placeholder },
+      }),
+    ).toThrow("only in env and header values, arguments and URLs");
   });
 });

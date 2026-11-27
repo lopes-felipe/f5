@@ -40,15 +40,15 @@ import { assertUpdateCaller } from "./updateIpc";
 import {
   APP_ICON_ARGUMENT,
   APP_ICON_CHANGED_CHANNEL,
-  DOCK_TILE_CHANGED_SUFFIX,
-  DOCK_TILE_CHOICE_KEY,
   createAppIconController,
+  createDockChoicePublisher,
   readAppIconState,
   readDockStartedAt,
   registerAppIconIpc,
   writeAppIconState,
   type AppIconController,
 } from "./appIcon";
+import { APP_BUNDLE_ID } from "@t3tools/shared/appIdentity";
 import { revealSenderWindow } from "./revealWindow";
 import { createUpdateController } from "./updateController";
 import { hasCachedUpdate } from "./updateCache";
@@ -256,6 +256,7 @@ import {
   claimRecentInstall,
 } from "./updateMachine";
 import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
+import { f5GitHubFeedOptions } from "./updateGitHubProvider";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
 import { formatErrorMessage, loadPreviewURL } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
@@ -279,6 +280,41 @@ import {
   type AppActivationEntry,
 } from "./appActivationQueue";
 import { startDesktopAppControl, type DesktopAppRequest } from "@t3tools/shared/desktopAppControl";
+import {
+  PICK_FOLDER_CHANNEL,
+  CONFIRM_CHANNEL,
+  SET_THEME_CHANNEL,
+  CONTEXT_MENU_CHANNEL,
+  READ_CLIPBOARD_TEXT_CHANNEL,
+  COPY_IMAGE_CHANNEL,
+  DOWNLOAD_IMAGE_CHANNEL,
+  OPEN_EXTERNAL_CHANNEL,
+  OPEN_THREAD_WINDOW_CHANNEL,
+  MAX_DESKTOP_WINDOWS,
+  OPEN_THREAD_WINDOW_MIN_INTERVAL_MS,
+  MENU_ACTION_CHANNEL,
+  TRACKPAD_SCROLL_CHANNEL,
+  UPDATE_STATE_CHANNEL,
+  UPDATE_GET_STATE_CHANNEL,
+  UPDATE_DOWNLOAD_CHANNEL,
+  UPDATE_INSTALL_CHANNEL,
+  UPDATE_CHECK_CHANNEL,
+  UPDATE_SET_CHANNEL_CHANNEL,
+  UPDATE_CLAIM_RECENT_INSTALL_CHANNEL,
+  PREVIEW_RECORDING_FRAME_CHANNEL,
+  PREVIEW_STATE_CHANNEL,
+  PREVIEW_TAB_SCOPE_SEPARATOR,
+  PREVIEW_WEBVIEW_PREFERENCES,
+  PREVIEW_DEFAULT_ZOOM_FACTOR,
+  PREVIEW_CAPTURE_MAX_EDGE_PX,
+  PREVIEW_CAPTURE_MAX_PIXELS,
+  PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES,
+  PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS,
+  PREVIEW_AUTOMATION_WAIT_INTERVAL_MS,
+  PREVIEW_AUTOMATION_PRINTABLE_KEY_PATTERN,
+  PREVIEW_AUTOMATION_SUPPORTED_PUNCTUATION_KEYS,
+  PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS,
+} from "./main/desktopConstants";
 
 const shellEnvironmentStartedAt = performance.now();
 let shellEnvironmentPrepared = false;
@@ -289,30 +325,7 @@ const shellEnvironmentReady = syncShellEnvironment().then((prepared) => {
 });
 /** Main windows awaiting their first composer-ready marker, by renderer id. */
 const windowCreatedAtByWebContentsId = new Map<number, number>();
-
-const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
-const CONFIRM_CHANNEL = "desktop:confirm";
-const SET_THEME_CHANNEL = "desktop:set-theme";
-const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
-const READ_CLIPBOARD_TEXT_CHANNEL = "desktop:read-clipboard-text";
-const COPY_IMAGE_CHANNEL = "desktop:copy-image";
-const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
-const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
-const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
-const MAX_DESKTOP_WINDOWS = 12;
-const OPEN_THREAD_WINDOW_MIN_INTERVAL_MS = 500;
 const lastOpenThreadWindowAtByRenderer = new Map<number, number>();
-const MENU_ACTION_CHANNEL = "desktop:menu-action";
-const TRACKPAD_SCROLL_CHANNEL = "desktop:trackpad-scroll";
-const UPDATE_STATE_CHANNEL = "desktop:update-state";
-const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
-const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
-const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
-const UPDATE_CHECK_CHANNEL = "desktop:update-check";
-const UPDATE_SET_CHANNEL_CHANNEL = "desktop:update-set-channel";
-const UPDATE_CLAIM_RECENT_INSTALL_CHANNEL = "desktop:update-claim-recent-install";
-const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
-const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const lastPreviewStateEmissionByTabId = new Map<
   string,
   {
@@ -321,14 +334,13 @@ const lastPreviewStateEmissionByTabId = new Map<
     readonly faviconDataUrl: string | null;
   }
 >();
-const PREVIEW_TAB_SCOPE_SEPARATOR = ":";
 const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
 const STATE_DIR = STATE_DIR_CONFIG.stateDir;
 const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
 const APP_DISPLAY_NAME = isDevelopment ? "F5 (Dev)" : "F5";
-const APP_USER_MODEL_ID = "io.github.lopesfelipe.f5";
+const APP_USER_MODEL_ID = APP_BUNDLE_ID;
 const USER_DATA_DIR_NAME = isDevelopment ? "f5-dev" : "f5";
 const LEGACY_USER_DATA_DIR_NAMES = isDevelopment
   ? ["T3 Code (Dev)", "t3code-dev"]
@@ -341,46 +353,6 @@ const LOG_FILE_MAX_FILES = 10;
 const APP_RUN_ID = Crypto.randomBytes(6).toString("hex");
 const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
-
-const PREVIEW_WEBVIEW_PREFERENCES = "contextIsolation=true,sandbox=true,nodeIntegration=false";
-const PREVIEW_DEFAULT_ZOOM_FACTOR = 1;
-const PREVIEW_CAPTURE_MAX_EDGE_PX = 1600;
-const PREVIEW_CAPTURE_MAX_PIXELS = 2_000_000;
-const PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES = 64_000;
-const PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS = 15_000;
-const PREVIEW_AUTOMATION_WAIT_INTERVAL_MS = 100;
-const PREVIEW_AUTOMATION_PRINTABLE_KEY_PATTERN = /^[A-Za-z0-9]$/;
-const PREVIEW_AUTOMATION_SUPPORTED_PUNCTUATION_KEYS: ReadonlySet<string> = new Set([
-  "`",
-  "-",
-  "=",
-  "[",
-  "]",
-  "\\",
-  ";",
-  "'",
-  ",",
-  ".",
-  "/",
-]);
-const PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS: ReadonlySet<string> = new Set([
-  "Backspace",
-  "Tab",
-  "Enter",
-  "Escape",
-  "ArrowUp",
-  "ArrowDown",
-  "ArrowLeft",
-  "ArrowRight",
-  "Delete",
-  "Home",
-  "End",
-  "PageUp",
-  "PageDown",
-  "Space",
-  "Insert",
-  ...Array.from({ length: 24 }, (_, index) => `F${index + 1}`),
-]);
 
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
@@ -2890,15 +2862,9 @@ function appIcon(): AppIconController {
     writeState: (state) => writeAppIconState(statePath, state),
     iconPath: (id, file) => resolveResourcePath(`app-icons/${id}/${file}`),
     setDockIcon: (path) => app.dock?.setIcon(path),
-    publishDockChoice: (id) => {
-      systemPreferences.setUserDefault(DOCK_TILE_CHOICE_KEY, "string", id);
-      // The packaged app's bundle id is APP_USER_MODEL_ID (`appId` in the build config).
-      systemPreferences.postNotification(
-        `${APP_USER_MODEL_ID}${DOCK_TILE_CHANGED_SUFFIX}`,
-        {},
-        true,
-      );
-    },
+    // An empty image clears the override, so the Dock draws the bundle's icon again.
+    restoreDockIcon: () => app.dock?.setIcon(nativeImage.createEmpty()),
+    publishDockChoice: createDockChoicePublisher(systemPreferences, APP_BUNDLE_ID),
     setWindowIcons: (path) => {
       for (const window of BrowserWindow.getAllWindows())
         if (!window.isDestroyed()) window.setIcon(path);
@@ -2915,6 +2881,23 @@ function appIcon(): AppIconController {
   return appIconController;
 }
 
+/** When the in-app updater began installing this version; see configureAutoUpdater. */
+let updateInstallStartedAt: number | null = null;
+
+/**
+ * When this version was installed. The in-app updater's marker is written just before it
+ * installs. Otherwise the built-in icon file's status change time stands in: copying or
+ * extracting the app creates it anew, and LaunchServices only touches the bundle itself.
+ */
+function bundleInstalledAt(): number | null {
+  if (updateInstallStartedAt !== null) return updateInstallStartedAt;
+  try {
+    return FS.statSync(Path.join(process.resourcesPath, "icon.icns")).ctimeMs;
+  } catch {
+    return null;
+  }
+}
+
 /** After an update changed the built-in icon, a Dock that was already running keeps the old one. */
 function detectStaleDockIcon(existingInstallation: boolean): void {
   if (process.platform !== "darwin" || !app.isPackaged) return;
@@ -2929,10 +2912,11 @@ function detectStaleDockIcon(existingInstallation: boolean): void {
   void appIcon()
     .detectStaleDock({
       bundleIconHash,
+      installedAt: bundleInstalledAt(),
       updatedFrom: updateState.recentlyInstalled?.fromVersion ?? null,
       existingInstallation,
       now: Date.now(),
-      readDockStartedAt: () => readDockStartedAt(runFile, Date.now()),
+      readDockStartedAt: () => readDockStartedAt(runFile, Date.now(), process.getuid?.() ?? 0),
     })
     .catch((error) => console.warn("[desktop] Could not check the Dock icon", error));
 }
@@ -3149,10 +3133,31 @@ function updatePreferencesPath(): string {
   return Path.join(app.getPath("userData"), "update-preferences.json");
 }
 
+/**
+ * Swap the stock GitHub provider for one that skips feed entries whose update files are
+ * not published (a draft's bare tag), so one stray tag can't break every beta check.
+ */
+function installF5GitHubFeed(): void {
+  try {
+    const options = f5GitHubFeedOptions(
+      FS.readFileSync(Path.join(process.resourcesPath, "app-update.yml"), "utf8"),
+    );
+    if (options) autoUpdater.setFeedURL(options);
+  } catch (error) {
+    console.warn("[desktop-updater] Keeping the stock update feed provider:", error);
+  }
+}
+
 async function configureAutoUpdater(): Promise<void> {
   const preferencesPath = updatePreferencesPath();
   const channel = initializeUpdatePreferences(preferencesPath, app.getVersion());
+  try {
+    updateInstallStartedAt = FS.statSync(updateInstallMarkerPath()).mtimeMs;
+  } catch {
+    updateInstallStartedAt = null;
+  }
   const recentlyInstalled = consumeUpdateInstallMarker(updateInstallMarkerPath(), app.getVersion());
+  if (!recentlyInstalled) updateInstallStartedAt = null;
   const disabledReason = getAutoUpdateDisabledReason({
     isDevelopment,
     isPackaged: app.isPackaged,
@@ -3166,6 +3171,7 @@ async function configureAutoUpdater(): Promise<void> {
       (process.execPath.startsWith("/Volumes/") || process.execPath.includes("/AppTranslocation/")),
   });
   const enabled = disabledReason === null;
+  if (enabled) installF5GitHubFeed();
   setUpdateState({
     ...createInitialDesktopUpdateState(app.getVersion(), desktopRuntimeInfo),
     enabled,
@@ -4382,7 +4388,7 @@ function registerIpcHandlers(): void {
     if (claimed) setUpdateState(state);
     return claimed;
   });
-  registerAppIconIpc(ipcMain, appIcon(), assertUpdateSender);
+  registerAppIconIpc(ipcMain, appIcon(), (event) => assertUpdateCaller(event, runtimeForRenderer));
   ipcMain.removeHandler(UPDATE_DOWNLOAD_CHANNEL);
   ipcMain.handle(UPDATE_DOWNLOAD_CHANNEL, async (event) => {
     assertUpdateSender(event);
@@ -4751,9 +4757,10 @@ function createWindow(
   window.on("focus", () => {
     lastOpenedProfileId = runtime.profile.id;
   });
-  window.webContents.once("destroyed", () =>
-    appRendererWebContentsIds.delete(rendererWebContentsId),
-  );
+  window.webContents.once("destroyed", () => {
+    appRendererWebContentsIds.delete(rendererWebContentsId);
+    appIconController?.releaseCaller(rendererWebContentsId);
+  });
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const partition = typeof params.partition === "string" ? params.partition : "";
     if (!browserStores.get(runtime.profile.id)?.profiles.ownsPartition(partition)) {
@@ -5160,6 +5167,7 @@ app.on("will-quit", (event) => {
   beginQuitting();
   // will-quit is emitted only after all renderer unload checks have succeeded.
   void cleanupBeforeExit().finally(() => {
+    appIconController?.publishDockChoiceAtQuit();
     shutdownComplete = true;
     writeDesktopLogHeader("shutdown complete");
     restoreStdIoCapture?.();

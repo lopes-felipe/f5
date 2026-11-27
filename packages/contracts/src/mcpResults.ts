@@ -67,6 +67,8 @@ export type McpLiveSessionReloadFailure = typeof McpLiveSessionReloadFailure.Typ
 
 export const McpSessionReloadOutcome = Schema.Struct({
   threadId: ThreadId,
+  /** The conversation's project; set by Apply, which can span projects in common scope. */
+  projectId: Schema.optional(ProjectId),
   instanceId: ProviderInstanceId,
   generation: NonNegativeInt,
   requestedVersion: Schema.String,
@@ -218,6 +220,95 @@ export const McpSignOutHubServerResult = Schema.Struct({
   signedOut: Schema.Boolean,
 });
 export type McpSignOutHubServerResult = typeof McpSignOutHubServerResult.Type;
+
+/**
+ * `pinned`: matches the accepted definition. `new`: first seen after the server's
+ * first listing. `changed`: the name, description or input schema differs from the
+ * accepted one, so calls ask until the change is accepted.
+ */
+export const McpToolPinState = Schema.Literals(["pinned", "new", "changed"]);
+export type McpToolPinState = typeof McpToolPinState.Type;
+
+export const McpToolPin = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  /** Which definition of the server (URL or command) the pin belongs to; opaque. */
+  identity: TrimmedNonEmptyString,
+  /** The server's URL without query, or its command, for telling identities apart. */
+  identityLabel: Schema.String,
+  toolName: TrimmedNonEmptyString,
+  state: McpToolPinState,
+  firstSeenAt: IsoDateTime,
+  acceptedAt: Schema.optional(IsoDateTime),
+  /** Pretty-printed JSON of the accepted description and input schema. */
+  accepted: Schema.String,
+  /** The definition the server reports now, when it differs from `accepted`. */
+  observed: Schema.optional(Schema.String),
+});
+export type McpToolPin = typeof McpToolPin.Type;
+
+export const McpListToolPinsResult = Schema.Struct({
+  tools: Schema.Array(McpToolPin),
+});
+export type McpListToolPinsResult = typeof McpListToolPinsResult.Type;
+
+export const McpAcceptToolChangesResult = Schema.Struct({
+  accepted: NonNegativeInt,
+  /** Reviewed tools that changed again before the click; review them again. */
+  stale: Schema.optional(NonNegativeInt),
+});
+export type McpAcceptToolChangesResult = typeof McpAcceptToolChangesResult.Type;
+
+export const McpToolCallOutcome = Schema.Literals([
+  "ok",
+  "error",
+  "declined",
+  "blocked",
+  "cancelled",
+  "turned-off",
+]);
+export type McpToolCallOutcome = typeof McpToolCallOutcome.Type;
+
+/** How a call was let through: the tool's Allow policy, the user's answer, or an earlier answer. */
+export const McpToolCallApproval = Schema.Literals(["policy", "asked", "session"]);
+export type McpToolCallApproval = typeof McpToolCallApproval.Type;
+
+/** One tool call through F5's hub. Arguments and results are never stored. */
+export const McpToolCallRecord = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+  threadId: ThreadId,
+  provider: ProviderKind,
+  serverName: TrimmedNonEmptyString,
+  toolName: TrimmedNonEmptyString,
+  outcome: McpToolCallOutcome,
+  durationMs: NonNegativeInt,
+  approval: McpToolCallApproval,
+  errorSummary: Schema.optional(Schema.String),
+});
+export type McpToolCallRecord = typeof McpToolCallRecord.Type;
+
+export const McpActivitySummary = Schema.Struct({
+  /** Calls in the last 24 hours. */
+  calls: NonNegativeInt,
+  errors: NonNegativeInt,
+  p50Ms: Schema.optional(NonNegativeInt),
+  p95Ms: Schema.optional(NonNegativeInt),
+});
+export type McpActivitySummary = typeof McpActivitySummary.Type;
+
+export const McpListActivityResult = Schema.Struct({
+  calls: Schema.Array(McpToolCallRecord),
+  last24h: McpActivitySummary,
+  /** Redacted stderr of the server's live stdio connections, when one server was asked for. */
+  stderrTail: Schema.optional(Schema.String),
+});
+export type McpListActivityResult = typeof McpListActivityResult.Type;
+
+export const McpThreadServersResult = Schema.Struct({
+  /** Hub servers turned off for this conversation. */
+  disabledServers: Schema.Array(TrimmedNonEmptyString),
+});
+export type McpThreadServersResult = typeof McpThreadServersResult.Type;
 
 export const McpApplyToLiveSessionsResult = Schema.Struct({
   scope: McpConfigScope,

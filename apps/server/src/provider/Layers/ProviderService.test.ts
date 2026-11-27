@@ -8,6 +8,10 @@ import { ProviderControlTarget } from "../controlTarget.ts";
 import { DeliveryAttemptContext, TurnAcceptanceSignal } from "../deliveryAttemptContext.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker.ts";
+import {
+  McpHubGovernanceService,
+  type McpHubGovernanceShape,
+} from "../../mcp/hub/McpHubGovernanceLive.ts";
 import { readPersistedSessionGeneration } from "../sessionCapabilities.ts";
 import { reloadCodexMcpConfigAfterLogin } from "../../mcp/reloadCodexMcpConfigAfterLogin.ts";
 import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
@@ -5674,3 +5678,82 @@ it.live(
     ).pipe(Effect.provide(layer));
   },
 );
+
+it.effect("shows the MCP hub's approvals and answers them without the provider", () => {
+  const codex = makeFakeCodexAdapter();
+  const answers: Array<[string, string, string]> = [];
+  return Effect.gen(function* () {
+    const events = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    const governance = {
+      approvalEvents: Stream.fromPubSub(events),
+      isHubRequest: (requestId: string) => requestId.startsWith("mcp-hub-"),
+      respondToApproval: (threadId: string, requestId: string, decision: string) => {
+        answers.push([threadId, requestId, decision]);
+        return requestId === "mcp-hub-open";
+      },
+    } as unknown as McpHubGovernanceShape;
+    const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+      Layer.provide(SqlitePersistenceMemory),
+    );
+    const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+    const layer = Layer.mergeAll(
+      makeProviderServiceLive().pipe(
+        Layer.provide(providerServiceConfigLayer),
+        Layer.provide(
+          Layer.succeed(ProviderAdapterRegistry, makeAdapterRegistryMock({ codex: codex.adapter })),
+        ),
+        Layer.provide(directoryLayer),
+        Layer.provide(makeProjectMcpConfigServiceTestLayer()),
+        Layer.provide(Layer.succeed(McpHubGovernanceService, governance)),
+      ),
+      NodeServices.layer,
+    );
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("hub-approval");
+      const seen = yield* provider.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      for (let turn = 0; turn < 5; turn++) yield* Effect.yieldNow;
+      yield* PubSub.publish(events, {
+        type: "request.opened",
+        eventId: EventId.makeUnsafe("hub-event"),
+        provider: "codex",
+        threadId,
+        createdAt: new Date().toISOString(),
+        requestId: "mcp-hub-open",
+        payload: { requestType: "mcp_elicitation_approval", appName: "github" },
+      } as unknown as ProviderRuntimeEvent);
+      const [opened] = [...(yield* Fiber.join(seen))];
+      assert.equal(opened?.type, "request.opened");
+
+      // No provider session exists: the hub answers on its own.
+      yield* provider.respondToRequest({
+        threadId,
+        requestId: asRequestId("mcp-hub-open"),
+        decision: "accept",
+      });
+      assert.deepEqual(answers, [[threadId, "mcp-hub-open", "accept"]]);
+      assert.equal(codex.respondToRequest.mock.calls.length, 0);
+      const always = yield* provider
+        .respondToRequest({
+          threadId,
+          requestId: asRequestId("mcp-hub-open"),
+          decision: "acceptAlways",
+        })
+        .pipe(Effect.flip);
+      assert.include(String(always.message), "set it to Allow in MCP settings");
+      const stale = yield* provider
+        .respondToRequest({
+          threadId,
+          requestId: asRequestId("mcp-hub-gone"),
+          decision: "decline",
+        })
+        .pipe(Effect.flip);
+      assert.include(String(stale.message), "no longer waiting");
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+});

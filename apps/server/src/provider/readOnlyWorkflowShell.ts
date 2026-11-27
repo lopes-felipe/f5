@@ -163,6 +163,11 @@ export function isShellProgram(program: string): boolean {
   return SHELL_PROGRAM.test(program);
 }
 
+/** A program the classifier accepts whatever its arguments are. */
+export function isPlainReadProgram(program: string): boolean {
+  return PLAIN_READ_PROGRAMS.has(program);
+}
+
 /**
  * The script inside `/bin/zsh -lc '<script>'`, the form Codex reports a shell command in, or the
  * command unchanged when it isn't one. Only a lone shell call with `-c`, `-lc` or `-l -c` and one

@@ -20,7 +20,13 @@ const { notarizeAndStaple, verifyDockTilePlugIn } = require("./notarize-mac.cjs"
     env: Record<string, string | undefined>,
     deps: { run: Run; sleep: (ms: number) => Promise<void> },
   ): Promise<void>;
-  verifyDockTilePlugIn(app: string, deps: { run: Run; exists: (path: string) => boolean }): void;
+  verifyDockTilePlugIn(
+    app: string,
+    deps: {
+      run: (command: string, args: string[]) => { status: number | null; output: string };
+      exists: (path: string) => boolean;
+    },
+  ): void;
 };
 
 const env = { APPLE_API_KEY: "/tmp/key.p8", APPLE_API_KEY_ID: "KEY", APPLE_API_ISSUER: "ISSUER" };
@@ -42,35 +48,79 @@ function harness(responses: Record<string, RunResult[]>) {
 
 describe("verifyDockTilePlugIn", () => {
   // Joined like the hook joins them, so the test also runs on a Windows runner.
-  const plugIn = join("/out/mac/F5.app", "Contents/PlugIns/F5DockTile.docktileplugin");
+  const app = join("/out/mac", "F5.app");
+  const plugIn = join(app, "Contents/PlugIns/F5DockTile.docktileplugin");
+  // Shapes of real `codesign -dvvv` output (it prints to stderr; the hook reads both).
+  const released = (team: string) =>
+    [
+      "Format=bundle with Mach-O universal (x86_64 arm64)",
+      "CodeDirectory v=20500 size=355 flags=0x10000(runtime) hashes=4+3 location=embedded",
+      `Authority=Developer ID Application: Example (${team})`,
+      "Timestamp=26 Nov 2026 at 14:55:39",
+      `TeamIdentifier=${team}`,
+    ].join("\n");
+  const adHoc = [
+    "Format=bundle with Mach-O universal (x86_64 arm64)",
+    "CodeDirectory v=20400 size=355 flags=0x20002(adhoc,linker-signed) hashes=4+3 location=embedded",
+    "Signature=adhoc",
+    "TeamIdentifier=not set",
+  ].join("\n");
 
-  it("verifies the plug-in bundle's signature", () => {
-    const { calls, deps } = harness({});
+  function codesign(outputs: { verify?: number; plugIn?: string; app?: string }) {
+    const calls: string[][] = [];
+    const run = (_command: string, args: string[]) => {
+      calls.push(args);
+      if (args[0] === "--verify") return { status: outputs.verify ?? 0, output: "" };
+      return { status: 0, output: args[1] === app ? (outputs.app ?? "") : (outputs.plugIn ?? "") };
+    };
+    return { calls, run };
+  }
+
+  it("accepts a plug-in signed by the app's team with a timestamp and hardened runtime", () => {
+    const { calls, run } = codesign({ plugIn: released("TEAM1"), app: released("TEAM1") });
     const seen: string[] = [];
-    verifyDockTilePlugIn("/out/mac/F5.app", {
-      run: deps.run,
+    verifyDockTilePlugIn(app, {
+      run,
       exists: (path) => {
         seen.push(path);
         return true;
       },
     });
     expect(seen).toEqual([join(plugIn, "Contents/MacOS/F5DockTile")]);
-    expect(calls).toEqual([{ command: "codesign", args: ["--verify", "--strict", plugIn] }]);
+    expect(calls).toEqual([
+      ["--verify", "--strict", plugIn],
+      ["-dvvv", plugIn],
+      ["-dvvv", app],
+    ]);
+  });
+
+  it("rejects the ad hoc signature clang leaves, which passes --verify", () => {
+    const { run } = codesign({ plugIn: adHoc, app: released("TEAM1") });
+    expect(() => verifyDockTilePlugIn(app, { run, exists: () => true })).toThrow(
+      /not signed for release \(it has no team identifier; it has no secure timestamp; it is not signed with hardened runtime\)/,
+    );
+  });
+
+  it("rejects a plug-in signed by another team", () => {
+    const { run } = codesign({ plugIn: released("OTHER"), app: released("TEAM1") });
+    expect(() => verifyDockTilePlugIn(app, { run, exists: () => true })).toThrow(
+      "its team OTHER is not the app's TEAM1",
+    );
   });
 
   it("fails when the plug-in was not packaged, without calling codesign", () => {
-    const { calls, deps } = harness({});
-    expect(() =>
-      verifyDockTilePlugIn("/out/mac/F5.app", { run: deps.run, exists: () => false }),
-    ).toThrow(`Packaged Dock tile plug-in missing: ${plugIn}`);
+    const { calls, run } = codesign({});
+    expect(() => verifyDockTilePlugIn(app, { run, exists: () => false })).toThrow(
+      `Packaged Dock tile plug-in missing: ${plugIn}`,
+    );
     expect(calls).toEqual([]);
   });
 
-  it("fails when the plug-in is unsigned", () => {
-    const { deps } = harness({ codesign: [{ status: 1, stdout: "" }] });
-    expect(() =>
-      verifyDockTilePlugIn("/out/mac/F5.app", { run: deps.run, exists: () => true }),
-    ).toThrow("Dock tile plug-in signing verification failed");
+  it("fails when the plug-in's signature is broken", () => {
+    const { run } = codesign({ verify: 1, plugIn: released("TEAM1"), app: released("TEAM1") });
+    expect(() => verifyDockTilePlugIn(app, { run, exists: () => true })).toThrow(
+      "Dock tile plug-in signing verification failed",
+    );
   });
 });
 

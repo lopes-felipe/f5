@@ -45,9 +45,8 @@ to that provider:
 
 - **Claude**: the Claude Code entry in the macOS Keychain, sent to `api.anthropic.com`
 - **Cursor**: Cursor's Keychain token, sent to `api2.cursor.sh` and `cursor.com`
-- **Codex, Grok, Antigravity**: their `auth.json` files, sent to the provider's usage endpoint
-  (`cli-chat-proxy.grok.com`; Google's OAuth token, userinfo and Cloud Code quota endpoints for
-  Antigravity)
+- **Codex and Grok**: credentials from their `auth.json` files, used for provider usage requests
+  (`cli-chat-proxy.grok.com` for Grok)
 - **OpenCode Zen**: the configured key, sent to `opencode.ai`
 
 F5 does not copy these credentials into its own files, logs or backups. **Include local provider

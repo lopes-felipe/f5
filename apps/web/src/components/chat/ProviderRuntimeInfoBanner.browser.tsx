@@ -16,7 +16,32 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import { ProviderRuntimeInfoBanner } from "./ProviderRuntimeInfoBanner";
 
-const { getEffectiveConfig, getLoginStatus, startLogin, openExternal } = vi.hoisted(() => ({
+const {
+  getEffectiveConfig,
+  getLoginStatus,
+  startLogin,
+  openExternal,
+  getHubAuthStatus,
+  startHubSignIn,
+  getThreadServers,
+  setThreadServerEnabled,
+} = vi.hoisted(() => ({
+  getThreadServers: vi.fn(async () => ({ disabledServers: [] as string[] })),
+  setThreadServerEnabled: vi.fn(async (input: { serverName: string; enabled: boolean }) => ({
+    disabledServers: input.enabled ? [] : [input.serverName],
+  })),
+  getHubAuthStatus: vi.fn(async () => ({
+    servers: [{ name: "search", signedIn: false, refreshable: false }],
+  })),
+  startHubSignIn: vi.fn(async () => ({
+    status: "pending" as const,
+    attempt: {
+      attemptId: "attempt-1",
+      authorizationUrl: "https://auth.example.test/hub-search",
+      redirectUrl: "http://127.0.0.1:4000/callback",
+      startedAt: "2026-11-25T10:00:00.000Z",
+    },
+  })),
   getEffectiveConfig: vi.fn(),
   getLoginStatus: vi.fn(
     async (input: { provider: string; projectId: string; serverName: string }) => ({
@@ -31,7 +56,16 @@ const { getEffectiveConfig, getLoginStatus, startLogin, openExternal } = vi.hois
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({
-    mcp: { getEffectiveConfig, getLoginStatus, startLogin },
+    mcp: {
+      getEffectiveConfig,
+      getLoginStatus,
+      startLogin,
+      getHubAuthStatus,
+      startHubSignIn,
+      getThreadServers,
+      setThreadServerEnabled,
+      onStatusUpdated: () => () => {},
+    },
     shell: { openExternal },
   }),
 }));
@@ -210,3 +244,181 @@ it.each(["codex", "claudeAgent"] as ProviderKind[])(
     }
   },
 );
+
+it("offers F5 sign-in and links each server's settings panel for agents served by the hub", async () => {
+  getEffectiveConfig.mockResolvedValue({
+    projectId: "project-1",
+    effectiveVersion: "v1",
+    servers: {
+      docs: { type: "http", url: "https://docs.example.test/mcp" },
+      search: { type: "http", url: "https://search.example.test/mcp" },
+    },
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const root = createRootRoute({ component: () => <Outlet /> });
+  const index = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => (
+      <ProviderRuntimeInfoBanner
+        provider="cursor"
+        projectId={ProjectId.make("project-1")}
+        entries={[{ label: "MCP", value: "1/2 connected" }]}
+        mcpServers={[
+          { name: "docs", status: "ready", toolCount: 3 },
+          { name: "search", status: "needs-auth" },
+          { name: "f5_thread", status: "ready" },
+        ]}
+      />
+    ),
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([index]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await router.load();
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "MCP: 1/2 connected, 1 needs sign-in" }).click();
+    await expect.element(page.getByText("docs · ready · 3 tools", { exact: true })).toBeVisible();
+    const details = page.getByRole("link", { name: "search in MCP settings" });
+    await expect.element(details).toHaveAttribute("href", expect.stringContaining("server=search"));
+    await expect
+      .element(details)
+      .toHaveAttribute("href", expect.stringContaining("project=project-1"));
+    // A built-in server has no saved entry, so it has no settings link.
+    expect(page.getByRole("link", { name: "f5_thread in MCP settings" }).elements()).toEqual([]);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await vi.waitFor(() =>
+      expect(startHubSignIn).toHaveBeenCalledWith({
+        serverName: "search",
+        projectId: "project-1",
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(openExternal).toHaveBeenCalledWith("https://auth.example.test/hub-search"),
+    );
+    expect(startLogin).not.toHaveBeenCalled();
+  } finally {
+    openExternal.mockClear();
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("uses F5 sign-in for servers the hub serves a Codex conversation, and Codex's own for the rest", async () => {
+  getEffectiveConfig.mockResolvedValue({
+    projectId: "project-1",
+    effectiveVersion: "v1",
+    servers: {},
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const root = createRootRoute({ component: () => <Outlet /> });
+  const index = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => (
+      <ProviderRuntimeInfoBanner
+        provider="codex"
+        projectId={ProjectId.make("project-1")}
+        entries={[{ label: "MCP", value: "0/2 connected" }]}
+        mcpServers={[
+          { name: "search", status: "needs-auth" },
+          { name: "codex-own", status: "needs-auth" },
+        ]}
+        mcpHubServerNames={new Set(["search"])}
+      />
+    ),
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([index]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await router.load();
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "MCP: 0/2 connected, 2 need sign-in" }).click();
+    await expect
+      .element(
+        page.getByText(
+          "Codex reaches this server through F5 now; its earlier sign-in is not carried over.",
+        ),
+      )
+      .toBeVisible();
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await vi.waitFor(() =>
+      expect(startHubSignIn).toHaveBeenCalledWith({
+        serverName: "search",
+        projectId: "project-1",
+      }),
+    );
+    // Codex's own server keeps Codex's sign-in.
+    await expect.element(page.getByRole("button", { name: /codex-own/ }).first()).toBeVisible();
+    expect(startLogin).not.toHaveBeenCalled();
+  } finally {
+    openExternal.mockClear();
+    startHubSignIn.mockClear();
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("turns a hub server off for this conversation only", async () => {
+  getEffectiveConfig.mockResolvedValue({
+    projectId: "project-1",
+    effectiveVersion: "v1",
+    servers: {},
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const root = createRootRoute({ component: () => <Outlet /> });
+  const index = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => (
+      <ProviderRuntimeInfoBanner
+        provider="grok"
+        projectId={ProjectId.make("project-1")}
+        threadId={ThreadId.make("thread-1")}
+        entries={[{ label: "MCP", value: "1/1 connected" }]}
+        mcpServers={[{ name: "search", status: "ready" }]}
+        mcpHubServerNames={new Set(["search"])}
+      />
+    ),
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([index]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await router.load();
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "MCP: 1/1 connected" }).click();
+    const toggle = page.getByRole("switch", { name: "Use search in this conversation" });
+    await expect.element(toggle).toBeChecked();
+    await toggle.click();
+    await vi.waitFor(() =>
+      expect(setThreadServerEnabled).toHaveBeenCalledWith({
+        threadId: "thread-1",
+        serverName: "search",
+        enabled: false,
+      }),
+    );
+    await expect.element(toggle).not.toBeChecked();
+    await expect.element(page.getByText("Off in this conversation")).toBeVisible();
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});

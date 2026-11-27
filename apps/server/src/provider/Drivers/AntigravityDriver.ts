@@ -545,14 +545,12 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         },
       );
       const accountUsage = yield* makeProviderLimits({
-        antigravityProfileDirectory: profileDirectory,
         provider: "antigravity",
         instanceId,
         displayName: displayName || "Antigravity",
         enabled,
         environment: processEnv,
         ...(auth.authMethod === "gemini-api-key" ? { antigravityBilledPerToken: true } : {}),
-        antigravityNativeReaders: nativeReadersCertified,
       });
       const textGeneration = yield* makeGrokTextGeneration(
         { enabled, binaryPath: "", customModels: config.customModels },

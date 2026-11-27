@@ -10,7 +10,7 @@ import { makeMcpAccountExecutionResolver } from "./accountExecution.ts";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
 import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type ProviderKind } from "@t3tools/contracts";
 import { ServerConfig } from "../config";
 import { instanceLock, ProfileBusyError } from "../profiles/InstanceLock";
 import * as NodePath from "node:path";
@@ -28,7 +28,9 @@ import {
   type McpServerStatusesResult,
   type McpStartLoginRequest as McpStartLoginWireRequest,
   type McpStatusUpdatedReason,
+  type McpProjectServersConfig,
   type McpServerDefinition,
+  type ProjectId,
   type ProviderStartOptions,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -67,6 +69,8 @@ import { CodexMcpSyncService } from "../codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "../codex/CodexOAuthManager.ts";
 import { readCodexServerStatusPages } from "../codex/codexMcpServerStatus.ts";
 import { ProjectMcpConfigService } from "./ProjectMcpConfigService.ts";
+import { McpHub } from "./hub/McpHub.ts";
+import { codexAdminMcpConfig, makeNativeProvidersOnHub } from "./hub/nativeHubOptions.ts";
 import { combineStatusMessage } from "./combineStatusMessage.ts";
 import { reloadCodexMcpConfigAfterLogin } from "./reloadCodexMcpConfigAfterLogin.ts";
 import { McpRuntimeDiagnostics } from "./McpRuntimeDiagnostics.ts";
@@ -79,6 +83,8 @@ import { toCodexProviderStartOptions } from "../provider/codexProviderOptions.ts
 import { buildCodexCliEnvOverrides, runCodexCliCommand } from "../provider/providerCli.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import {
+  filterEnabledMcpServers,
+  isMcpServerServedTo,
   mcpBearerRedactionValues,
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
@@ -157,6 +163,24 @@ function readIdleLoginStatus(
     ...(input.serverName ? { serverName: input.serverName } : {}),
     status: "idle",
   };
+}
+
+/**
+ * The saved name of the server the hub serves to `provider` under `name` (Claude may
+ * report a normalized spelling), or undefined when the hub does not serve it: unknown,
+ * disabled, or turned off for that provider (a same-named provider server then stays
+ * the provider's own).
+ */
+function hubServedName(
+  servers: McpProjectServersConfig,
+  provider: ProviderKind,
+  name: string,
+): string | undefined {
+  const key = mcpServerNameKey(name);
+  return Object.entries(filterEnabledMcpServers(servers, provider)).find(
+    ([candidate, definition]) =>
+      definition.enabled !== false && mcpServerNameKey(candidate) === key,
+  )?.[0];
 }
 
 function supportsCodexOauthLogin(server: McpServerDefinition): boolean {
@@ -279,6 +303,8 @@ const makeMcpRuntimeService = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const hub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
+  const nativeProvidersOnHub = yield* makeNativeProvidersOnHub;
   const runLoginTask = yield* FiberSet.makeRuntime<never>();
   const loginStatuses = new Map<string, McpLoginStatusResult>();
   const loginStatusTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -392,10 +418,25 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       ),
     );
 
-  const setLoginStatus = (input: McpGetLoginStatusRequest, status: McpLoginStatusResult) => {
+  const setLoginStatus = (
+    input: McpGetLoginStatusRequest,
+    status: McpLoginStatusResult,
+    options: { readonly publish?: boolean } = {},
+  ) => {
     const key = loginStatusKey(input);
     clearLoginStatusTimer(key);
+    const previous = loginStatuses.get(key);
     loginStatuses.set(key, status);
+    // Settings no longer poll sign-in, so a failed attempt is announced like a completed
+    // one (completions publish where they finish, with the applied config version).
+    if (options.publish !== false && status.status === "failed" && previous?.status === "pending")
+      Effect.runFork(
+        publishLoginCompletion({
+          provider: input.provider,
+          projectId: input.projectId,
+          ...(input.instanceId ? { instanceId: input.instanceId } : {}),
+        }),
+      );
     if (status.status !== "pending") {
       loginStatusTimers.set(
         key,
@@ -495,6 +536,40 @@ const makeMcpRuntimeService = Effect.gen(function* () {
     new McpRuntimeServiceError({
       message: cause instanceof Error ? cause.message : "MCP observation failed.",
     });
+  /**
+   * Codex's admin app-server, for status, reconnect and sign-in outside a conversation.
+   * With the hub serving Codex it carries none of F5's servers, so it starts none of
+   * them and one pooled client outlives saves.
+   */
+  const codexAdminClient = (
+    instanceId: ProviderInstanceId,
+    projectId: ProjectId,
+    effective: { readonly effectiveVersion: string; readonly servers: McpProjectServersConfig },
+    onHub: boolean,
+  ) =>
+    Effect.gen(function* () {
+      const callback = onHub
+        ? {}
+        : yield* readCodexMcpOAuthCallbackConfigOrError(effective.servers);
+      return yield* codexControlClientRegistry
+        .getAdminClient({
+          projectId,
+          instanceId,
+          ...codexAdminMcpConfig(
+            {
+              effectiveVersion: effective.effectiveVersion,
+              servers: onHub
+                ? {}
+                : // Pooled admin clients resolve `${env:…}` like `readCodexServers`.
+                  (translateMcpForCodex(effective.servers, { environment: process.env }) ?? {}),
+              ...(callback.port ? { oauthCallbackPort: callback.port } : {}),
+              ...(callback.url ? { oauthCallbackUrl: callback.url } : {}),
+            },
+            onHub,
+          ),
+        })
+        .pipe(Effect.mapError(runtimeError));
+    });
   const readRedactionContext = (input: McpGetServerStatusesRequest) =>
     Effect.gen(function* () {
       const effective = yield* projectMcpConfigService
@@ -546,19 +621,13 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         support = providerStatus.support;
         supportMessage = providerStatus.supportMessage;
         if (support === "supported") {
-          const callback = yield* readCodexMcpOAuthCallbackConfigOrError(effective.servers);
-          const client = yield* codexControlClientRegistry
-            .getAdminClient({
-              projectId: input.projectId,
-              instanceId: identity.instanceId,
-              mcpEffectiveConfigVersion: effective.effectiveVersion,
-              mcpServers:
-                // Pooled admin clients resolve `${env:…}` like `readCodexServers`.
-                translateMcpForCodex(effective.servers, { environment: process.env }) ?? {},
-              ...(callback.port ? { mcpOAuthCallbackPort: callback.port } : {}),
-              ...(callback.url ? { mcpOAuthCallbackUrl: callback.url } : {}),
-            })
-            .pipe(Effect.mapError(runtimeError));
+          const onHub = yield* nativeProvidersOnHub;
+          const client = yield* codexAdminClient(
+            identity.instanceId,
+            input.projectId,
+            effective,
+            onHub,
+          );
           const pages = yield* Effect.tryPromise({
             try: () =>
               mcpProviderReads.read(
@@ -577,11 +646,10 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           observation = {
             servers: observeCodexMcpServers(
               pages.entries,
-              new Set(
-                Object.keys(effective.servers).filter(
-                  (name) => effective.servers[name]?.enabled !== false,
-                ),
-              ),
+              // On the hub this client lists only Codex's own servers.
+              onHub
+                ? new Set<string>()
+                : new Set(Object.keys(filterEnabledMcpServers(effective.servers, "codex"))),
             ),
             complete: pages.complete,
             capabilities: { tools: true, inputSchemas: true, resources: true },
@@ -707,6 +775,18 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       const effective = yield* projectMcpConfigService
         .readEffectiveRuntimeConfig(input.projectId)
         .pipe(Effect.mapError(runtimeError));
+      const onHub = yield* nativeProvidersOnHub;
+      const servedName = hubServedName(effective.servers, input.provider, input.serverName);
+      if (onHub && hub && servedName) {
+        // The provider's connection is to F5's endpoint; the server's own is the hub's.
+        const reconnected = yield* Effect.promise(() => hub.reconnect(servedName, input.projectId));
+        return {
+          settingsConnectionReloaded: false,
+          sessionsMatched: reconnected,
+          sessionsReconnected: reconnected,
+          failures: [],
+        };
+      }
       if (input.provider === "claudeAgent") {
         if (!providerService.reconnectMcpServerForProject)
           return yield* runtimeError(new Error("This provider does not support reconnect."));
@@ -716,19 +796,12 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         return result;
       }
 
-      const callback = yield* readCodexMcpOAuthCallbackConfigOrError(effective.servers);
-      const client = yield* codexControlClientRegistry
-        .getAdminClient({
-          projectId: input.projectId,
-          instanceId: identity.instanceId,
-          mcpEffectiveConfigVersion: effective.effectiveVersion,
-          mcpServers:
-            // Pooled admin clients resolve `${env:…}` like `readCodexServers`.
-            translateMcpForCodex(effective.servers, { environment: process.env }) ?? {},
-          ...(callback.port ? { mcpOAuthCallbackPort: callback.port } : {}),
-          ...(callback.url ? { mcpOAuthCallbackUrl: callback.url } : {}),
-        })
-        .pipe(Effect.mapError(runtimeError));
+      const client = yield* codexAdminClient(
+        identity.instanceId,
+        input.projectId,
+        effective,
+        onHub,
+      );
       const reloaded = yield* Effect.tryPromise({
         try: () => client.reloadMcpServer(),
         catch: runtimeError,
@@ -978,7 +1051,8 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       // A start rejected before reaching the provider restores the previous outcome.
       const release = Effect.sync(() => {
         if (loginStatuses.get(key) !== placeholder) return;
-        if (existing) setLoginStatus(input, existing);
+        // Restoring an earlier outcome is not a new sign-in result, so nothing is published.
+        if (existing) setLoginStatus(input, existing, { publish: false });
         else {
           clearLoginStatusTimer(key);
           loginStatuses.delete(key);
@@ -990,10 +1064,17 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           Effect.mapError(runtimeError),
           Effect.tapError(() => release),
         );
-      if (effective.servers[input.serverName]?.enabled === false) {
+      const effectiveServer = effective.servers[input.serverName];
+      if (effectiveServer?.enabled === false) {
         yield* release;
         return yield* new McpRuntimeServiceError({
           message: `MCP server '${input.serverName}' is disabled in the shared effective config.`,
+        });
+      }
+      if (effectiveServer && !isMcpServerServedTo(effectiveServer, "claudeAgent")) {
+        yield* release;
+        return yield* new McpRuntimeServiceError({
+          message: `MCP server '${input.serverName}' is turned off for Claude in MCP settings.`,
         });
       }
       const started = yield* providerService
@@ -1132,6 +1213,15 @@ const makeMcpRuntimeService = Effect.gen(function* () {
 
   const startLogin: McpRuntimeServiceShape["startLogin"] = (input) =>
     Effect.gen(function* () {
+      if (input.serverName && (yield* nativeProvidersOnHub)) {
+        const configured = yield* projectMcpConfigService
+          .readEffectiveRuntimeConfig(input.projectId)
+          .pipe(Effect.mapError(runtimeError));
+        if (hubServedName(configured.servers, input.provider, input.serverName))
+          return yield* new McpRuntimeServiceError({
+            message: `Codex and Claude reach '${input.serverName}' through F5 now. Sign in from the server's Sign-in tab in MCP settings; earlier Codex or Claude sign-ins are not carried over.`,
+          });
+      }
       if (input.provider === "claudeAgent" && input.serverName) {
         return yield* startClaudeServerLogin({ ...input, serverName: input.serverName });
       }
@@ -1167,6 +1257,11 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       if (server.enabled === false) {
         return yield* new McpRuntimeServiceError({
           message: `MCP server '${input.serverName}' is disabled in the shared effective config.`,
+        });
+      }
+      if (!isMcpServerServedTo(server, "codex")) {
+        return yield* new McpRuntimeServiceError({
+          message: `MCP server '${input.serverName}' is turned off for Codex in MCP settings.`,
         });
       }
 

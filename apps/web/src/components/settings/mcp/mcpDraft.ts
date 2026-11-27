@@ -1,5 +1,6 @@
 import { readMcpKeyValueRows } from "./mcpEditorValues";
 import {
+  isKnownProviderKind,
   McpServerWriteDefinition,
   type McpProjectServersConfig,
   type McpProjectConfigResult,
@@ -37,7 +38,19 @@ export type ServerDraft = {
   readonly oauthCallbackPort: string;
   readonly oauthCallbackUrl: string;
   readonly oauthResource: string;
+  readonly description: string;
 };
+
+/**
+ * Fields the form does not edit. They are kept from the saved server on every save,
+ * including a transport change, so editing never drops them.
+ */
+const PRESERVED_FIELDS = [
+  "disabledProviders",
+  "connectionScope",
+  "toolPolicy",
+  "defaultToolPolicy",
+] as const;
 
 export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
   return {
@@ -62,6 +75,7 @@ export function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
     oauthCallbackPort: "",
     oauthCallbackUrl: "",
     oauthResource: "",
+    description: "",
   };
 }
 
@@ -215,10 +229,50 @@ export function draftFromServer(
       server.oauthCallbackPort !== undefined ? String(server.oauthCallbackPort) : "",
     oauthCallbackUrl: server.oauthCallbackUrl ?? "",
     oauthResource: server.oauthResource ?? "",
+    description: server.description ?? "",
   };
 }
 
-export function decodeDraftServer(draft: ServerDraft): {
+/**
+ * Moves a draft onto a newer saved version of its server. Fields the user has not
+ * changed take the new saved values; edited fields keep the user's text. A switch
+ * flipped elsewhere (enabled, a tool, a provider) is then not reverted by saving the form.
+ *
+ * `baseline` is what "not changed" is measured against: the draft that was submitted,
+ * when a save of this form completes. Without it, the saved entry the draft was opened
+ * on. Measuring against the submitted draft keeps typing made while the save ran, even
+ * typing that returns a field to its old value.
+ */
+export function rebaseDraft(
+  draft: ServerDraft,
+  name: string,
+  server: McpProjectServersConfig[string],
+  baseline?: ServerDraft,
+): ServerDraft {
+  if (!draft.original) return draft;
+  const before = baseline ?? draftFromServer(draft.original.name, draft.original.server);
+  const after = draftFromServer(name, server);
+  const next: Record<string, unknown> = { ...draft, original: after.original };
+  // The argument text is read in its format, so the two move together or not at all.
+  const argsUnchanged = draft.args === before.args && draft.argsFormat === before.argsFormat;
+  for (const key of Object.keys(after) as Array<keyof ServerDraft>) {
+    if (key === "original") continue;
+    const unchanged =
+      key === "args" || key === "argsFormat" ? argsUnchanged : draft[key] === before[key];
+    if (unchanged) next[key] = after[key];
+  }
+  return next as ServerDraft;
+}
+
+/**
+ * `current` is the saved entry the draft replaces, when it still exists: fields the
+ * form does not edit come from it, so a change saved elsewhere since the draft was
+ * opened is not reverted.
+ */
+export function decodeDraftServer(
+  draft: ServerDraft,
+  current?: McpProjectServersConfig[string],
+): {
   readonly name: string;
   readonly server: McpProjectServersConfig[string];
 } {
@@ -262,6 +316,9 @@ export function decodeDraftServer(draft: ServerDraft): {
     ...(disabledTools ? { disabledTools } : {}),
     ...(scopes ? { scopes } : {}),
     ...(oauthResource ? { oauthResource } : {}),
+    ...(trimToUndefined(draft.description)
+      ? { description: trimToUndefined(draft.description) }
+      : {}),
   };
 
   const candidate =
@@ -306,6 +363,15 @@ export function decodeDraftServer(draft: ServerDraft): {
         else writable[key] = value;
       }
     }
+  }
+  const base = current ?? draft.original?.server;
+  for (const field of PRESERVED_FIELDS) {
+    const value =
+      field === "disabledProviders"
+        ? // Provider names this version does not know cannot be written back.
+          base?.disabledProviders?.filter(isKnownProviderKind)
+        : base?.[field];
+    if (value !== undefined && (!Array.isArray(value) || value.length > 0)) writable[field] = value;
   }
   return { name, server: Schema.decodeUnknownSync(McpServerWriteDefinition)(writable) };
 }

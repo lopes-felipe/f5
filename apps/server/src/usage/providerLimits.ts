@@ -1,9 +1,9 @@
 import { AccountUsageReadError } from "./accountUsageErrors.ts";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { Effect } from "effect";
+import type { Scope } from "effect/Scope";
 import type {
   ProviderKind,
   ProviderUsageWindow,
@@ -11,91 +11,15 @@ import type {
   AccountUsageSection,
 } from "@t3tools/contracts";
 import { makeAccountUsageCapability, emptyAccountSection } from "./Layers/AccountUsageService.ts";
-import { accountUsageIdentity } from "./accountUsage.ts";
+import { accountUsageIdentity, type AccountUsageCapability } from "./accountUsage.ts";
 import { asRecord, asNonNegativeNumber, asTrimmedString, resetDate } from "./accountUsageJson.ts";
-import { mergeProviderUsageWindows } from "./providerUsageWindows.ts";
-import { makeAntigravityQuotaReader } from "./antigravityQuota.ts";
 
-// The capability has an eight-second deadline; leave one second to publish collected quotas.
-const ANTIGRAVITY_READ_BUDGET_MS = 7_000;
-const ANTIGRAVITY_DISCOVERY_TIMEOUT_MS = 6_000;
-const ANTIGRAVITY_QUOTA_TIMEOUT_MS = 3_000;
 const DEFAULT_CURSOR_API_ENDPOINT = "https://api2.cursor.sh";
 export const GROK_USAGE_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
-// Gemini requires this upstream client version: https://github.com/pingdotgg/t3code/commit/79f1fadfc6020b820d541ca4691d2feebb15dd1b
-const ANTIGRAVITY_USER_AGENT = `antigravity/hub/2.24.0 (aidev_client; os_type=${process.platform}; arch=${process.arch}; cl=963137146)`;
-
-function antigravitySummaryWindows(
-  body: Record<string, unknown>,
-  requestedAt: number,
-): ReadonlyArray<ProviderUsageWindow> {
-  const groups = Array.isArray(body.groups) ? body.groups.map(asRecord) : [];
-  const buckets = groups.some((group) => Array.isArray(group?.buckets) && group.buckets.length)
-    ? groups.flatMap((group) =>
-        (Array.isArray(group?.buckets) ? group.buckets : []).map((bucket) => ({
-          bucket: asRecord(bucket),
-          groupName: asTrimmedString(group?.displayName),
-        })),
-      )
-    : (Array.isArray(body.buckets) ? body.buckets : []).map((bucket) => ({
-        bucket: asRecord(bucket),
-        groupName: null,
-      }));
-  return mergeProviderUsageWindows([
-    buckets.flatMap(({ bucket, groupName }) => {
-      const id = asTrimmedString(bucket?.bucketId);
-      const remaining = bucket?.remainingFraction;
-      if (
-        !id ||
-        typeof remaining !== "number" ||
-        !Number.isFinite(remaining) ||
-        bucket?.disabled === true
-      )
-        return [];
-      const family = id.startsWith("gemini-argon-")
-        ? (groupName ?? "Gemini Argon")
-        : id.startsWith("gemini-")
-          ? "Gemini"
-          : id.startsWith("3p-")
-            ? "Claude & GPT (shared)"
-            : (groupName ?? id);
-      const durationMs =
-        bucket?.window === "weekly"
-          ? 7 * 24 * 60 * 60_000
-          : bucket?.window === "5h"
-            ? 5 * 60 * 60_000
-            : null;
-      const reset = resetDate(bucket?.resetTime);
-      // Untouched buckets can report a reset that merely rolls forward with the request.
-      const untouched =
-        remaining === 1 &&
-        bucket?.description === undefined &&
-        durationMs !== null &&
-        reset !== null &&
-        Math.abs(Date.parse(reset) - requestedAt - durationMs) <= 60_000;
-      const label =
-        bucket?.window === "weekly"
-          ? "Weekly"
-          : bucket?.window === "5h"
-            ? "5-hour"
-            : (asTrimmedString(bucket?.displayName) ?? "Quota");
-      return [
-        {
-          id,
-          label: `${family} · ${label}`,
-          usedPercent: Math.max(0, Math.min(100, (1 - remaining) * 100)),
-          resetsAt: untouched ? null : reset,
-          ...(durationMs !== null ? { durationMinutes: durationMs / 60_000 } : {}),
-        },
-      ];
-    }),
-  ]);
-}
 
 export function normalizeProviderLimits(
   provider: ProviderKind,
   value: unknown,
-  requestedAt = Date.now(),
 ): ReadonlyArray<ProviderUsageWindow> {
   const body = asRecord(value);
   if (!body) return [];
@@ -159,42 +83,7 @@ export function normalizeProviderLimits(
           ];
     });
   }
-  if (provider === "antigravity" && (Array.isArray(body.groups) || Array.isArray(body.buckets))) {
-    return antigravitySummaryWindows(body, requestedAt);
-  }
-  if (provider === "antigravity" && asRecord(body.models)) {
-    return Object.entries(asRecord(body.models)!).flatMap(([id, value]) => {
-      const model = asRecord(value);
-      const quota = asRecord(model?.quotaInfo);
-      const remaining = asNonNegativeNumber(quota?.remainingFraction);
-      return remaining === null
-        ? []
-        : [
-            {
-              id,
-              label: asTrimmedString(model?.displayName) ?? id,
-              usedPercent: Math.max(0, Math.min(100, (1 - remaining) * 100)),
-              resetsAt: resetDate(quota?.resetTime),
-            },
-          ];
-    });
-  }
-  // Explicit CLIProxyAPI hub responses: do not discover hubs or read another account's credentials.
-  return (Array.isArray(body.windows) ? body.windows : []).flatMap((value) => {
-    const window = asRecord(value);
-    const id = asTrimmedString(window?.id);
-    const percent = asNonNegativeNumber(window?.usedPercent);
-    return id && percent !== null
-      ? [
-          {
-            id,
-            label: asTrimmedString(window?.label) ?? id,
-            usedPercent: Math.min(100, percent),
-            resetsAt: resetDate(window?.resetsAt),
-          },
-        ]
-      : [];
-  });
+  return [];
 }
 async function jsonFile(file: string) {
   try {
@@ -280,18 +169,14 @@ async function fetchJsonWithTimeout(
   }
 }
 
-/** A configured hub selects an exact auth-file ID; email and display name never route accounts. */
-async function openCliProxyHub(
-  provider: "antigravity" | "xai",
-  env: NodeJS.ProcessEnv,
-  signal: AbortSignal,
-  deadline: number,
-) {
+/** A configured hub selects an exact xAI auth-file ID. */
+async function readGrokHubUsage(env: NodeJS.ProcessEnv, signal: AbortSignal) {
+  const deadline = performance.now() + 7000;
   const remainingMs = () => Math.max(0, deadline - performance.now());
   const endpoint = env.F5_CLIPROXY_HUB_URL;
   const key = env.F5_CLIPROXY_API_KEY;
   const accountId = env.F5_CLIPROXY_ACCOUNT_ID;
-  if (!endpoint || !key || !accountId) return null;
+  if (!endpoint || !key || !accountId) throw new AccountUsageReadError("authentication-required");
   const hub = new URL(endpoint);
   if (
     hub.protocol !== "https:" &&
@@ -305,122 +190,42 @@ async function openCliProxyHub(
       new URL("v0/management/auth-files", hub).toString(),
       key,
       signal,
-      Math.min(ANTIGRAVITY_DISCOVERY_TIMEOUT_MS, remainingMs()),
+      Math.min(6000, remainingMs()),
     ),
   );
   const account = (Array.isArray(files?.files) ? files.files : [])
     .map(asRecord)
-    .find((file) => file?.id === accountId && file.provider === provider && file.disabled !== true);
+    .find((file) => file?.id === accountId && file.provider === "xai" && file.disabled !== true);
   const authIndex = asTrimmedString(account?.auth_index);
-  if (!authIndex) return null;
-  return {
-    project: asTrimmedString(account?.project_id),
-    async call(url: string, data: unknown, headers: Record<string, string>, timeoutMs: number) {
-      const response = asRecord(
-        await fetchJsonWithTimeout(
-          new URL("v0/management/api-call", hub).toString(),
-          key,
-          signal,
-          Math.min(timeoutMs, remainingMs()),
-          {
-            auth_index: authIndex,
-            method: data === undefined ? "GET" : "POST",
-            url,
-            header: {
-              Authorization: "Bearer $TOKEN$",
-              "Content-Type": "application/json",
-              ...headers,
-            },
-            ...(data === undefined ? {} : { data: JSON.stringify(data) }),
-          },
-        ),
-      );
-      if (
-        typeof response?.status_code !== "number" ||
-        response.status_code < 200 ||
-        response.status_code >= 300 ||
-        typeof response.body !== "string"
-      )
-        throw new AccountUsageReadError("temporary-failure");
-      return JSON.parse(response.body) as unknown;
-    },
-  };
-}
-async function readAntigravityHub(
-  env: NodeJS.ProcessEnv,
-  signal: AbortSignal,
-): Promise<{
-  readonly windows: ReadonlyArray<ProviderUsageWindow>;
-  readonly partial: boolean;
-  readonly accountFingerprint?: string;
-}> {
-  const deadline = performance.now() + ANTIGRAVITY_READ_BUDGET_MS;
-  const remainingMs = () => Math.max(0, deadline - performance.now());
-  const account = await openCliProxyHub("antigravity", env, signal, deadline);
-  if (!account) return { windows: [], partial: false };
-  const userInfoRead = account
-    .call(
-      "https://www.googleapis.com/oauth2/v2/userinfo",
-      undefined,
-      { "User-Agent": ANTIGRAVITY_USER_AGENT },
-      Math.min(1000, remainingMs()),
-    )
-    .catch(() => null);
-  const fetchWindows = async (host: string, operation: string, timeoutMs: number) => {
-    try {
-      const requestedAt = Date.now();
-      const project = env.F5_ANTIGRAVITY_PROJECT || account.project;
-      const response = await account.call(
-        `https://${host}/v1internal:${operation}`,
-        project ? { project } : {},
-        { "User-Agent": ANTIGRAVITY_USER_AGENT },
-        timeoutMs,
-      );
-      return {
-        windows: normalizeProviderLimits("antigravity", response, requestedAt),
-        failed: false,
-      };
-    } catch {
-      signal.throwIfAborted();
-      return { windows: [], failed: true };
-    }
-  };
-  const responses = await Promise.all(
-    ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"].map(async (host) => {
-      // Each host owns its fallback; another host's shared buckets cannot suppress Gemini.
-      const summary = await fetchWindows(
-        host,
-        "retrieveUserQuotaSummary",
-        Math.min(ANTIGRAVITY_QUOTA_TIMEOUT_MS, remainingMs() / 2),
-      );
-      if (summary.windows.length) return summary;
-      const models = await fetchWindows(
-        host,
-        "fetchAvailableModels",
-        Math.min(ANTIGRAVITY_QUOTA_TIMEOUT_MS, remainingMs()),
-      );
-      return { windows: models.windows, failed: summary.failed || models.failed };
-    }),
+  if (!authIndex) throw new AccountUsageReadError("authentication-required");
+  const response = asRecord(
+    await fetchJsonWithTimeout(
+      new URL("v0/management/api-call", hub).toString(),
+      key,
+      signal,
+      Math.min(6000, remainingMs()),
+      {
+        auth_index: authIndex,
+        method: "GET",
+        url: GROK_USAGE_URL,
+        header: {
+          Authorization: "Bearer $TOKEN$",
+          "Content-Type": "application/json",
+          "x-xai-token-auth": "xai-grok-cli",
+          "x-grok-client-version": "1.0.77",
+          "User-Agent": "grok-cli/1.0.77",
+        },
+      },
+    ),
   );
-  signal.throwIfAborted();
-  const windows = mergeProviderUsageWindows(responses.map((response) => response.windows));
-  if (!windows.length && responses.some((response) => response.failed))
+  if (
+    typeof response?.status_code !== "number" ||
+    response.status_code < 200 ||
+    response.status_code >= 300 ||
+    typeof response.body !== "string"
+  )
     throw new AccountUsageReadError("temporary-failure");
-  const userInfo = await userInfoRead;
-  const googleId = asTrimmedString(asRecord(userInfo)?.id);
-  return {
-    windows,
-    ...(googleId
-      ? {
-          accountFingerprint: createHash("sha256")
-            .update("google-account\0" + googleId)
-            .digest("hex"),
-        }
-      : {}),
-    partial:
-      windows.length > 0 &&
-      responses.some((response) => response.failed || !response.windows.length),
-  };
+  return JSON.parse(response.body) as unknown;
 }
 
 export function makeProviderLimits(input: {
@@ -431,52 +236,53 @@ export function makeProviderLimits(input: {
   environment: NodeJS.ProcessEnv;
   serverUrl?: string;
   apiEndpoint?: string;
-  antigravityProfileDirectory?: string;
-  /** Gemini API key instances have no subscription quota: usage is billed per token. */
+  /** Gemini API key instances display their billing mode in Usage. */
   antigravityBilledPerToken?: boolean;
-  /** False when the runtime version is not certified for the private token format. */
-  antigravityNativeReaders?: () => Promise<boolean>;
-}) {
-  const readNativeAntigravity =
-    input.antigravityProfileDirectory && !input.antigravityBilledPerToken
-      ? makeAntigravityQuotaReader({
-          profileDirectory: input.antigravityProfileDirectory,
-          normalize: (response, requestedAt) =>
-            normalizeProviderLimits("antigravity", response, requestedAt),
-        })
-      : undefined;
+}): Effect.Effect<AccountUsageCapability, never, Scope> {
+  const initial = {
+    key: `${input.provider}:${input.instanceId}`,
+    provider: input.provider,
+    providerInstanceId: input.instanceId,
+    displayName: input.displayName,
+    enabled: input.enabled,
+    refreshState: "idle" as const,
+    sections: [emptyAccountSection("provider-limits")],
+  };
+  const identity = providerLimitsIdentity(input);
+  if (input.provider === "antigravity") {
+    // Publish no subscription snapshot, even when history holds one from an older F5 release.
+    return Effect.sync(() => {
+      const fetchedAt = new Date().toISOString();
+      const section: AccountUsageSection = input.antigravityBilledPerToken
+        ? {
+            ...emptyAccountSection("provider-limits"),
+            kind: "provider-limits",
+            outcome: "available",
+            lastAttemptAt: fetchedAt,
+            snapshot: {
+              fetchedAt,
+              data: { windows: [], plan: "Billed per token" },
+            },
+          }
+        : {
+            ...emptyAccountSection("provider-limits"),
+            outcome: "unsupported",
+            errorCode: "unsupported",
+          };
+      return {
+        identity,
+        getSnapshot: Effect.succeed({ ...initial, sections: [section] }),
+        refresh: () => Effect.void,
+      };
+    });
+  }
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;
-      if (input.provider === "antigravity" && input.antigravityBilledPerToken) {
-        const fetchedAt = new Date().toISOString();
-        return [
-          {
-            kind: "provider-limits",
-            outcome: "available",
-            errorCode: null,
-            lastAttemptAt: fetchedAt,
-            snapshot: { fetchedAt, data: { windows: [], plan: "Billed per token" } },
-          },
-        ];
-      }
       const home = env.HOME || env.USERPROFILE || os.homedir();
       let value: unknown;
-      let partial = false;
-      let accountFingerprint: string | undefined;
       if (input.provider === "grok" && env.F5_CLIPROXY_HUB_URL) {
-        const account = await openCliProxyHub("xai", env, signal, performance.now() + 7000);
-        if (!account) throw new AccountUsageReadError("authentication-required");
-        value = await account.call(
-          GROK_USAGE_URL,
-          undefined,
-          {
-            "x-xai-token-auth": "xai-grok-cli",
-            "x-grok-client-version": "1.0.77",
-            "User-Agent": "grok-cli/1.0.77",
-          },
-          6000,
-        );
+        value = await readGrokHubUsage(env, signal);
       } else if (input.provider === "cursor") {
         const endpoint = (
           input.apiEndpoint?.trim() ||
@@ -652,84 +458,20 @@ export function makeProviderLimits(input: {
             },
           ];
         value = await fetchJson("https://opencode.ai/zen/go/v1/usage", token, signal);
-      } else if (readNativeAntigravity && !env.F5_CLIPROXY_HUB_URL && !env.F5_CLIPROXY_USAGE_URL) {
-        const certified = (await input.antigravityNativeReaders?.()) ?? true;
-        if (!certified)
-          return [
-            {
-              ...emptyAccountSection("provider-limits"),
-              outcome: "unavailable",
-              errorCode: "unsupported",
-              lastAttemptAt: new Date().toISOString(),
-            },
-          ];
-        const result = await readNativeAntigravity(
-          signal,
-          performance.now() + ANTIGRAVITY_READ_BUDGET_MS,
-        );
-        if (result.kind === "signed-out")
-          return [
-            {
-              ...emptyAccountSection("provider-limits"),
-              outcome: "unavailable",
-              // Clears both the live and the persisted snapshot.
-              errorCode: "authentication-required",
-              lastAttemptAt: new Date().toISOString(),
-            },
-          ];
-        if (result.kind === "expired")
-          return [
-            {
-              kind: "provider-limits",
-              outcome: "unavailable",
-              // Names the account, so only that account's snapshot is retained or hydrated.
-              accountFingerprint: result.accountFingerprint,
-              errorCode: "credentials-expired",
-              lastAttemptAt: new Date().toISOString(),
-              snapshot: null,
-            },
-          ];
-        value = { windows: result.windows };
-        partial = result.partial;
-        accountFingerprint = result.accountFingerprint;
-      } else if (env.F5_CLIPROXY_HUB_URL) {
-        const result = await readAntigravityHub(env, signal);
-        value = { windows: result.windows };
-        partial = result.partial;
-        if (result.windows.length && !result.accountFingerprint)
-          throw new AccountUsageReadError("temporary-failure");
-        accountFingerprint = result.accountFingerprint;
       } else {
-        const endpoint = env.F5_CLIPROXY_USAGE_URL;
-        const token = env.F5_CLIPROXY_API_KEY;
-        if (!endpoint || !token)
-          return [
-            {
-              ...emptyAccountSection("provider-limits"),
-              outcome: "unavailable",
-              errorCode: "unsupported",
-              lastAttemptAt: new Date().toISOString(),
-            },
-          ];
-        const url = new URL(endpoint);
-        if (
-          url.protocol !== "https:" &&
-          !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
-        )
-          throw new Error("Invalid usage hub URL.");
-        value = await fetchJson(url.toString(), token, signal);
+        throw new AccountUsageReadError("unsupported");
       }
       const windows = normalizeProviderLimits(input.provider, value);
       const fetchedAt = new Date().toISOString();
       return [
         {
           kind: "provider-limits",
-          outcome: partial ? "unavailable" : windows.length ? "available" : "unsupported",
-          errorCode: partial ? "temporary-failure" : windows.length ? null : "unsupported",
+          outcome: windows.length ? "available" : "unsupported",
+          errorCode: windows.length ? null : "unsupported",
           lastAttemptAt: fetchedAt,
           snapshot: {
             fetchedAt,
-            data: { windows, ...(accountFingerprint ? { accountFingerprint } : {}) },
+            data: { windows },
           },
         },
       ];
@@ -739,43 +481,7 @@ export function makeProviderLimits(input: {
         ? error
         : new AccountUsageReadError("temporary-failure"),
   });
-  return makeAccountUsageCapability(
-    {
-      key: `${input.provider}:${input.instanceId}`,
-      provider: input.provider,
-      providerInstanceId: input.instanceId,
-      displayName: input.displayName,
-      enabled: input.enabled,
-      refreshState: "idle",
-      sections: [emptyAccountSection("provider-limits")],
-    },
-    read,
-    {
-      identity: providerLimitsIdentity(input),
-      retryFailedReads:
-        input.provider === "antigravity" && Boolean(input.environment.F5_CLIPROXY_HUB_URL),
-    },
-  ).pipe(
-    Effect.map((capability) => ({
-      ...capability,
-      identityForSnapshot: (snapshot: import("@t3tools/contracts").UsageAccount) => {
-        // Bound to the account shown: its snapshot's account, else the account an expired
-        // attempt named. An attempt that identified no account hydrates nothing.
-        const fingerprint = snapshot.sections.flatMap((section) =>
-          section.kind !== "provider-limits"
-            ? []
-            : section.snapshot?.data.accountFingerprint
-              ? [section.snapshot.data.accountFingerprint]
-              : section.accountFingerprint
-                ? [section.accountFingerprint]
-                : [],
-        )[0];
-        return fingerprint
-          ? accountUsageIdentity("antigravity", [fingerprint])
-          : capability.identity;
-      },
-    })),
-  );
+  return makeAccountUsageCapability(initial, read, { identity });
 }
 
 /** Environment variables that `read` uses to select an account or endpoint. */
@@ -818,21 +524,21 @@ export function providerLimitsIdentity(input: {
   readonly environment: NodeJS.ProcessEnv;
   readonly serverUrl?: string;
   readonly apiEndpoint?: string;
-  readonly antigravityProfileDirectory?: string;
 }): string {
   const env = input.environment;
   return accountUsageIdentity(input.provider, [
     env.HOME || env.USERPROFILE || os.homedir(),
     input.serverUrl,
     input.apiEndpoint,
-    input.antigravityProfileDirectory,
+    // Preserve hashes recorded before the Antigravity profile input was retired.
+    null,
     `OPENCODE_AUTH_CONTENT=${opencodeGoCredential(env.OPENCODE_AUTH_CONTENT) ?? ""}`,
     ...IDENTITY_ENV_KEYS.map((key) => `${key}=${env[key] ?? ""}`),
     ...Object.keys(env)
       .filter(
         (key) =>
-          (key.startsWith("F5_CLIPROXY_") && key !== "F5_CLIPROXY_API_KEY") ||
-          key === "F5_ANTIGRAVITY_PROJECT" ||
+          key === "F5_CLIPROXY_HUB_URL" ||
+          key === "F5_CLIPROXY_ACCOUNT_ID" ||
           (key.startsWith("GROK_") && key !== "GROK_AUTH" && key !== "GROK_HOME"),
       )
       .sort()
