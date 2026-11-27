@@ -187,6 +187,15 @@ describe("classifyReadOnlyShellCommand", () => {
       // Braces, or a closing quote, end the name before `:` in zsh too.
       'COMMIT=957a21b; git show "${COMMIT}:apps/desktop/src/appIcon.ts" | nl -ba | sed -n 1,40p',
       'COMMIT=957a21b; git show "$COMMIT":apps/desktop/src/appIcon.ts',
+      // An escaped `:` or `[` is text in zsh, not a modifier or a subscript.
+      "REV=HEAD; git show $REV\\:README.md",
+      "X=a; echo $X\\[1]",
+      // A `$` that ends a pattern, or stands before punctuation, is text in zsh too.
+      'rg -n "^import$" src',
+      'rg -n "foo$|bar$" src',
+      "rg -n foo$ src",
+      "echo \\$=X",
+      "echo '$=X' '$~X'",
     ])("allows %j", (command) => {
       expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
     });
@@ -222,6 +231,23 @@ describe("classifyReadOnlyShellCommand", () => {
       ['Y=abc--output=pwned; git diff "$Y[4,-1]"', "write ${Y} with braces before `[`"],
       ['COMMIT=957a21b; git show "$COMMIT:apps/x.ts"', "write ${COMMIT} with braces"],
       ["X=a; Y=$X:h; echo $Y", "write ${X} with braces"],
+      // A line continuation doesn't separate the name from its modifier.
+      ["X=a/b; echo $X\\\n:h", "write ${X} with braces before `:`"],
+      // zsh parameter flags, which a bash parser reads as text: `$=X` splits X's value, `$~X`
+      // globs it and `$^X` distributes it, so git would get `--output=pwned`.
+      ["X=--output=pwned; git diff $=X", "zsh expands forms such as `$=NAME`"],
+      ['X=--output=pwned; git diff "$=X"', "zsh expands forms such as `$=NAME`"],
+      ['X=--output=pwned; git diff "$~X"', "zsh expands forms such as `$=NAME`"],
+      ["X=--output=pwned; git diff $^X", "zsh expands forms such as `$=NAME`"],
+      ["X=--output=pwned; git diff $==X", "zsh expands forms such as `$=NAME`"],
+      ["X=--output=pwned; git diff $\\\n=X", "zsh expands forms such as `$=NAME`"],
+      ["X=a; Y=$=X; echo $Y", "zsh expands forms such as `$=NAME`"],
+      // The same forms read an inherited variable, whatever its name.
+      ["echo $~GH_TOKEN", "zsh expands forms such as `$=NAME`"],
+      ['echo "$=GH_TOKEN"', "zsh expands forms such as `$=NAME`"],
+      ["cat $+X", "zsh expands forms such as `$=NAME`"],
+      ["git diff > $=X", "redirection targets must be literal"],
+      ["$=X status", "the command name must be literal"],
       // The value is what gets classified.
       ["F=--output=/tmp/x; git diff $F", "`git diff` flags that write or execute"],
       ["P=push; git $P", "`git push` is not on the read-only allowlist"],
@@ -362,6 +388,13 @@ describe("classifyReadOnlyShellCommand", () => {
       "git branch -r --points-at=abc --sort=-committerdate --format='%(refname)'",
       "git branch -a --list '*991*' 'pr/*'",
       "git branch --show-current -v",
+      // A filter with nothing after it means HEAD.
+      "git branch --merged",
+      "git branch -a --no-merged",
+      "git branch -l --contains",
+      "git tag -l --merged",
+      "git tag --no-contains",
+      "git branch -l",
       "git tag",
       "git tag --contains abc",
       "git tag -l 'v1.*' -n3 --sort=-creatordate",
@@ -384,6 +417,10 @@ describe("classifyReadOnlyShellCommand", () => {
       ["sed -n 's/a/b/pw out' f", "`sed` may only print lines"],
       ["sed -n '/a/{p;w out\n}' f", "`sed` may only print lines"],
       ["sed -n -e 1p -e 'w out' f", "`sed` may only print lines"],
+      // macOS `sed` stops at the first operand: `w out.txt` is the script, `-e` and `p` are files.
+      ["sed -n 'w out.txt' -e p in.txt", "`sed` options must come before the script"],
+      ["sed 1p -n file.ts", "`sed` options must come before the script"],
+      ["sed -n 1p file.ts -E", "`sed` options must come before the script"],
       ["sed -n --expression='1e id' f", "`sed` may only print lines"],
       ["sed -e 1p f", "`sed` is only allowed as"],
       ["sed -n -f script.sed f", "`sed -f` is not allowed"],
@@ -403,7 +440,12 @@ describe("classifyReadOnlyShellCommand", () => {
       ["git branch -d old", "`git branch` is only allowed for listing"],
       ["git branch -av -D old", "`git branch` is only allowed for listing"],
       ["git branch --list -m old new", "`git branch` is only allowed for listing"],
-      ["git branch --contains", "`git branch` is only allowed for listing"],
+      // Not last, the filter takes the next argument as its commit.
+      ["git branch --contains -a", "`git branch` is only allowed for listing"],
+      ["git branch --sort", "`git branch` is only allowed for listing"],
+      // Before Git 2.20 `git branch -l <name>` created the branch (`-l` was `--create-reflog`).
+      ["git branch -l topic", "`git branch` is only allowed for listing"],
+      ["git branch -al 'pr/*'", "`git branch` is only allowed for listing"],
       ["git branch --cont abc", "`git branch` is only allowed for listing"],
       // `cmd NAME=value` is an argument like any other.
       ["git branch topic=1", "`git branch` is only allowed for listing"],
@@ -432,34 +474,39 @@ describe("classifyReadOnlyShellCommand", () => {
 
   describe("variables set after `&&`", () => {
     it.each([
-      // The most common shape Claude reviewers write.
-      "cd repo && F=src/a.ts; git show abc:$F | head -40",
-      'cd repo && P=origin/pr-1; git grep -n start "${P}" -- src | head -3; git show "${P}:x.ts"',
       // Certainly set for the rest of its own chain.
       "cd repo && SHA=abc && git show $SHA",
-      "cd repo && A=1 && B=2; echo $A $B",
+      "cd repo && A=1 && B=2 && echo $A $B",
+      "cd repo && SHA=abc && SHA=def && git show $SHA",
+      // Set before the chain, the value is known whether or not the chain runs.
+      "F=src/a.ts; cd repo && git show abc:$F | head -40",
+      'P=origin/pr-1; cd repo && git grep -n start "${P}" -- src | head -3; git show "${P}:x.ts"',
       // Set again unconditionally, or to the value it certainly has.
       "cd repo && SHA=abc; SHA=def; git show $SHA",
       "SHA=abc; cd repo && SHA=abc; git show $SHA",
-      // Unset, the argument is dropped and the command still only reads.
-      "cd repo && N=20; head -n $N file.ts",
     ])("allows %j", (command) => {
       expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
     });
 
     it.each([
-      // Unset, `$R` vanishes and `notes.txt` becomes the sed script.
-      ["cd repo && R=1,5p; sed -n $R notes.txt", "$R is set after `&&`, so it may be unset here"],
-      ['cd repo && R=1,5; sed -n "${R}p" notes.txt', "$R is set after `&&`"],
-      // Unset, `-C` takes `log` as its directory and `--version` follows.
-      ["cd a && D=repo; git -C $D log", "$D is set after `&&`"],
-      ["cd a && L=--list; git branch $L topic", "$L is set after `&&`"],
-      ["cd a && SHA=abc; cd b && SHA=def; git show $SHA", "SHA is already set"],
+      // After the chain the value is unknown: if `cd` failed, the assignment never ran and the
+      // shell expands whatever the name held before.
+      ["cd repo && F=src/a.ts; git show abc:$F | head -40", "$F was set after `&&`"],
+      ['cd repo && P=origin/pr-1; git show "${P}:x.ts"', "$P was set after `&&`"],
+      ["cd repo && N=20; head -n $N file.ts", "$N was set after `&&`"],
+      ["cd repo && A=1 && B=2; echo $A $B", "$A was set after `&&`"],
+      ["cd repo && R=1,5p; sed -n $R notes.txt", "set R before the chain"],
+      ["cd a && D=repo; git -C $D log", "$D was set after `&&`"],
+      ["cd a && L=--list; git branch $L topic", "$L was set after `&&`"],
+      ["cd a && SHA=abc; cd b && SHA=def; git show $SHA", "$SHA was set after `&&`"],
+      ["cd a && A=x; B=$A/y; cat $B", "$A was set after `&&`"],
+      // What it held before can be a variable from the environment, such as a credential.
+      ['cd /nonexistent && ANTHROPIC_API_KEY=x; echo "$ANTHROPIC_API_KEY"', "its value here is"],
+      ['cd /nonexistent && OPENAI_API_KEY=x; echo "$OPENAI_API_KEY"', "its value here is unknown"],
+      ["cd /nonexistent && AWS_SECRET_ACCESS_KEY=x; cat $AWS_SECRET_ACCESS_KEY", "is unknown"],
       ["SHA=abc; cd b && SHA=def; git show $SHA", "SHA is already set"],
-      ["cd a && A=x; B=$A/y; cat $B", "B is built from $A, which may be unset here"],
-      ["cd a && A=1 && B=2 && C=3 && D=4; echo $A $B $C $D", "too many variables set after `&&`"],
-      // The value is still what gets classified.
-      ["cd a && F=--output=/tmp/x; git diff $F", "`git diff` flags that write or execute"],
+      // Within the chain the value is still what gets classified.
+      ["cd a && F=--output=/tmp/x && git diff $F", "`git diff` flags that write or execute"],
     ])("refuses %j", (command, reason) => {
       const verdict = classifyReadOnlyShellCommand(command);
       expect(verdict.readOnly).toBe(false);
@@ -475,6 +522,9 @@ describe("classifyReadOnlyShellCommand", () => {
       "REV=abc; for f in a.ts b.ts; do git show ${REV}:$f | grep -n start; done | head",
       'for d in apps packages; do for e in ts tsx; do rg --files -g "*.$e" $d | wc -l; done; done',
       "for f in a b; do if test -f $f; then cat $f; fi; done 2>/dev/null",
+      // The name is free again after `done`: for another loop, or set to a value.
+      "for f in a b; do cat $f; done; for f in c d; do cat $f; done",
+      "for f in a b; do cat $f; done; f=c; cat $f",
     ])("allows %s", (command) => {
       expect(classifyReadOnlyShellCommand(command)).toEqual({ readOnly: true });
     });
@@ -493,7 +543,22 @@ describe("classifyReadOnlyShellCommand", () => {
       ["for f in a 'b c'; do cat $f; done", 'quote "$f"'],
       ["for f in a b; do X=$f; cat $X; done", "variables must be set at the top level"],
       ["for PATH in a b; do ls; done", "looping over PATH is not allowed"],
-      ["for f in a b; do cat $f; done; cat $f", "$f is not set earlier in this command"],
+      ["for f in a b; do cat $f; done; cat $f", "$f was a `for` variable"],
+      // The shell keeps the last word in the variable after `done`, so a value set before the
+      // loop is not the one a later command gets.
+      [
+        "F=a.ts; for F in --output=/tmp/pwn; do echo x; done; git log -1 $F",
+        "F is already set: use another name for the loop variable",
+      ],
+      ["B=-v; for B in topic; do echo x; done; git branch $B", "B is already set"],
+      ["cd x && F=a.ts && for F in --output=/tmp/pwn; do echo x; done", "F is already set"],
+      ["for F in --output=/tmp/pwn; do echo x; done; git log -1 $F", "$F was a `for` variable"],
+      ["for f in a b; do for f in c d; do cat $f; done; done", "f is already set"],
+      // Nor does a later assignment that may not run bring it back.
+      [
+        "for F in --output=/tmp/pwn; do echo x; done; cd /nonexistent && F=a; git log -1 $F",
+        "$F was set after `&&`",
+      ],
       [
         "for a in 1 2; do for b in 1 2; do for c in 1 2; do echo $a$b$c; done; done; done",
         "`for` loops are nested too deeply",
