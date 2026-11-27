@@ -49,7 +49,14 @@ export function readOnlyRefusalFollowUpText(refusals: ReadonlyArray<ReadOnlyRefu
     refusals.length === 1
       ? "F5 refused this operation, so nothing ran. This stage is read-only:"
       : `F5 refused ${refusals.length} operations, so none of them ran. This stage is read-only:`,
-    ...listed.map((refusal) => `- ${clip(readOnlyRefusalText(refusal))}`),
+    // Each part is cut on its own: a long command must not push the reason out of the text.
+    ...listed.map(
+      (refusal) =>
+        `- ${readOnlyRefusalText({
+          operation: refusal.operation === undefined ? undefined : clip(refusal.operation),
+          reason: clip(refusal.reason),
+        })}`,
+    ),
     "Do not retry them or ask again. The reason in parentheses says what to change: use a command that only reads (see the Read-Only Shell Rules sent with this stage's request), or go on without that result. Then finish the stage and give your reply.",
   ].join("\n");
 }
