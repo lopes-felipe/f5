@@ -252,10 +252,11 @@ Gemini 4 Neon.
   F5's compaction.
 - Attachments are limited to 50 MiB per turn.
 - With an API key, **Usage → Limits** shows "Billed per token" instead of subscription quota.
+- F5 no longer reads Antigravity subscription quotas from Google's internal APIs or CLIProxyAPI.
 - The provider card shows the runtime version and whether it is bundled with F5 or an installed
   update, when models were last discovered, and the kind of the last discovery failure (never its
   message).
-- Subscription quota, turn-failure details and native child work read Antigravity's private files.
+- Turn-failure details and native child work read Antigravity's private files.
   F5 reads them on Antigravity 1.5.13 or newer. On an older or unrecognised version the card shows
   "Native readers: Off" and threads run on standard ACP only. On a release F5 hasn't checked,
   each reader acts only on data it recognises (a known API or quota error, a sub-agent launch
@@ -290,4 +291,4 @@ Gemini 4 Neon.
 
 - [Provider prerequisites](../provider-prerequisites.md)
 - [Runtime modes](../runtime-modes.md)
-- [Usage and limits](../user/usage-limits.md) (Antigravity quotas)
+- [Usage and limits](../user/usage-limits.md)
