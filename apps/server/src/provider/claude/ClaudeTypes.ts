@@ -4,6 +4,7 @@ import {
 } from "../claudeBypassAvailability.ts";
 import { type ClaudeSubagentLaunch } from "../claudeSubagentSelection.ts";
 import type { ThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
+import type { McpHubAttachment, McpHubShape } from "../../mcp/hub/McpHub.ts";
 import { type AssistantTextBlockState } from "../claudeAssistantText.ts";
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
@@ -302,6 +303,10 @@ export interface ClaudeSessionContext {
   /** App session identity; a new MCP observation epoch invalidates approvals. */
   mcpAppIdentity?: { readonly epoch: number; readonly id: string };
   readonly internalMcpServers: NonNullable<ClaudeQueryOptions["mcpServers"]>;
+  /** This session's F5 MCP hub endpoints; absent in passthrough mode or with no servers. */
+  mcpHubAttachment?: McpHubAttachment;
+  /** Set once the start-time warning about servers the hub left out was sent. */
+  mcpHubOmissionsReported?: boolean;
   readonly turns: Array<{
     id: TurnId;
     items: Array<unknown>;
@@ -471,6 +476,10 @@ export interface ClaudeAdapterLiveOptions {
   readonly chromeRuntime?: ChromeSessionRuntime;
   /** Executable-reported model capabilities for this instance (SDK initialization). */
   readonly reportedModelCapabilities?: ClaudeReportedModelCapabilitiesLookup;
+  /** Serves F5's configured MCP servers to sessions as loopback endpoints. */
+  readonly mcpHub?: McpHubShape;
+  /** Read at each session start; true hands Claude the servers themselves (one release). */
+  readonly mcpNativePassthrough?: Effect.Effect<boolean>;
 }
 
 export interface ClaudeSessionProbeInput {

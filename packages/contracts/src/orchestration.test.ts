@@ -1071,3 +1071,30 @@ it("rejects client commands that try to reconcile native provider history", () =
     }),
   );
 });
+
+it("keeps internal orchestration submodule schemas private to the facade", async () => {
+  const exported = new Set(Object.keys(await import("./orchestration")));
+  const leakedInternals = [
+    "ThreadCreateCommand",
+    "ThreadSessionSetCommand",
+    "ThreadMessageAssistantDeltaCommand",
+    "InternalOrchestrationCommand",
+    "EventBaseFields",
+    "CommandExecutionRecordFields",
+    "PlanningWorkflowCreateFields",
+    "orchestrationRpcSchemas",
+    "DiffOptions",
+    "ModelSelectionWire",
+    "ChatAttachmentId",
+    "CHAT_ATTACHMENT_ID_MAX_CHARS",
+    "ProviderTurnInputText",
+  ].filter((name) => exported.has(name));
+  assert.deepEqual(leakedInternals, []);
+  assert.equal(exported.has("OrchestrationCommand"), true);
+  assert.equal(exported.has("ClientOrchestrationCommand"), true);
+  assert.equal(exported.has("OrchestrationEvent"), true);
+  assert.equal(exported.has("OrchestrationReadModel"), true);
+  assert.equal(exported.has("ORCHESTRATION_WS_METHODS"), true);
+  assert.equal(exported.has("OrchestrationProposedPlan"), true);
+  assert.equal(exported.has("ProviderStartOptions"), true);
+});

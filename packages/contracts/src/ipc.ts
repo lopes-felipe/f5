@@ -280,6 +280,15 @@ import type {
   McpStartHubSignInResult,
   McpCompleteHubSignInResult,
   McpSignOutHubServerResult,
+  McpListToolPinsRequest,
+  McpListToolPinsResult,
+  McpAcceptToolChangesRequest,
+  McpAcceptToolChangesResult,
+  McpListActivityRequest,
+  McpListActivityResult,
+  McpGetThreadServersRequest,
+  McpSetThreadServerEnabledRequest,
+  McpThreadServersResult,
   McpGetProviderStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
@@ -1362,6 +1371,16 @@ export interface NativeApi {
     startHubSignIn: (input: McpStartHubSignInRequest) => Promise<McpStartHubSignInResult>;
     completeHubSignIn: (input: McpCompleteHubSignInRequest) => Promise<McpCompleteHubSignInResult>;
     signOutHubServer: (input: McpSignOutHubServerRequest) => Promise<McpSignOutHubServerResult>;
+    listToolPins: (input: McpListToolPinsRequest) => Promise<McpListToolPinsResult>;
+    acceptToolChanges: (input: McpAcceptToolChangesRequest) => Promise<McpAcceptToolChangesResult>;
+    listActivity: (
+      input: McpListActivityRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListActivityResult>;
+    getThreadServers: (input: McpGetThreadServersRequest) => Promise<McpThreadServersResult>;
+    setThreadServerEnabled: (
+      input: McpSetThreadServerEnabledRequest,
+    ) => Promise<McpThreadServersResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {

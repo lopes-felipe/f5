@@ -12,6 +12,7 @@ import {
 import {
   artifactEntries,
   assertPublishableVersion,
+  assertUnreservedVersion,
   automationMode,
   missingUploads,
   selectPublication,
@@ -272,6 +273,18 @@ describe("candidate identity and immutable uploads", () => {
       expect(() => missingUploads(files, [{ ...uploaded[0]!, ...change }])).toThrow();
     expect(() => missingUploads(files, [...uploaded, ...uploaded])).toThrow();
     expect(() => assertPublishableVersion(fixtureCandidate(), ["0.1.2-beta.10"])).toThrow();
+  });
+  it("refuses to prepare a version reserved by a tag or a tagless draft", () => {
+    const draft = { tag_name: "v1.3.0", draft: true };
+    expect(() => assertUnreservedVersion("1.3.0", { tagExists: true, releases: [] })).toThrow(
+      "reserved immutable tag",
+    );
+    expect(() => assertUnreservedVersion("1.3.0", { tagExists: false, releases: [draft] })).toThrow(
+      "draft release reserves v1.3.0",
+    );
+    expect(() =>
+      assertUnreservedVersion("1.3.1", { tagExists: false, releases: [draft] }),
+    ).not.toThrow();
   });
   it("defaults to shadow and rejects malformed intents and retrying persistent failures", () => {
     expect(automationMode(undefined)).toBe("shadow");

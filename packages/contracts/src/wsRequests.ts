@@ -176,6 +176,11 @@ import {
   McpStartHubSignInRequest,
   McpCompleteHubSignInRequest,
   McpSignOutHubServerRequest,
+  McpListToolPinsRequest,
+  McpAcceptToolChangesRequest,
+  McpListActivityRequest,
+  McpGetThreadServersRequest,
+  McpSetThreadServerEnabledRequest,
   McpReconnectServerRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
@@ -795,6 +800,11 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.mcpStartHubSignIn, McpStartHubSignInRequest),
   tagRequestBody(WS_METHODS.mcpCompleteHubSignIn, McpCompleteHubSignInRequest),
   tagRequestBody(WS_METHODS.mcpSignOutHubServer, McpSignOutHubServerRequest),
+  tagRequestBody(WS_METHODS.mcpListToolPins, McpListToolPinsRequest),
+  tagRequestBody(WS_METHODS.mcpAcceptToolChanges, McpAcceptToolChangesRequest),
+  tagRequestBody(WS_METHODS.mcpListActivity, McpListActivityRequest),
+  tagRequestBody(WS_METHODS.mcpGetThreadServers, McpGetThreadServersRequest),
+  tagRequestBody(WS_METHODS.mcpSetThreadServerEnabled, McpSetThreadServerEnabledRequest),
 
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),

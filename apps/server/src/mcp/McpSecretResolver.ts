@@ -1,16 +1,23 @@
 import type { McpConfigIssue, McpProjectServersConfig } from "@t3tools/contracts";
 import {
-  mcpSecretId,
+  mcpSecretFieldValues,
+  mcpSecretIds,
   mcpSecretReferences,
+  replaceMcpSecretReferences,
   validateMcpSecretPlaceholders,
 } from "@t3tools/shared/mcpSecrets";
 import { Data, Effect } from "effect";
 import type { ServerSecretStoreShape } from "../auth/Services/ServerSecretStore.ts";
+import { rememberResolvedMcpField, rememberResolvedMcpSecret } from "./mcpResolvedSecrets.ts";
 
 class McpSecretValidationError extends Data.TaggedError("McpSecretValidationError")<{
   message: string;
 }> {}
 
+/**
+ * Replaces `${f5-secret:…}` references in env and header values, arguments and URLs
+ * with the stored values. A server with a missing secret is skipped with an issue.
+ */
 export function resolveMcpSecrets(
   servers: McpProjectServersConfig,
   store: ServerSecretStoreShape | undefined,
@@ -21,30 +28,49 @@ export function resolveMcpSecrets(
     const valuesById = new Map<string, string | null>();
     for (const [name, server] of Object.entries(servers)) {
       let missing = false;
-      const next = { ...server };
       try {
         validateMcpSecretPlaceholders({ [name]: server });
       } catch {
         missing = true;
       }
-      for (const field of ["env", "headers"] as const) {
-        if (!server[field]) continue;
-        const values = { ...server[field] };
-        for (const [key, value] of Object.entries(values)) {
-          const id = mcpSecretId(value);
-          if (!id) continue;
-          if (!valuesById.has(id)) {
-            const bytes = store
-              ? yield* store.get(`mcp-secret-${id}`).pipe(Effect.catch(() => Effect.succeed(null)))
-              : null;
-            valuesById.set(id, bytes ? new TextDecoder().decode(bytes) : null);
-          }
-          const secretValue = valuesById.get(id);
-          if (secretValue === null || secretValue === undefined) missing = true;
-          else values[key] = secretValue;
+      for (const { value } of mcpSecretFieldValues(server))
+        for (const id of mcpSecretIds(value)) {
+          if (valuesById.has(id)) continue;
+          const bytes = store
+            ? yield* store.get(`mcp-secret-${id}`).pipe(Effect.catch(() => Effect.succeed(null)))
+            : null;
+          const secret = bytes ? new TextDecoder().decode(bytes) : null;
+          if (secret !== null) rememberResolvedMcpSecret(secret);
+          valuesById.set(id, secret);
         }
-        next[field] = values;
-      }
+      const lookup = (id: string) => {
+        const secret = valuesById.get(id);
+        if (secret === null || secret === undefined) {
+          missing = true;
+          return undefined;
+        }
+        return secret;
+      };
+      const replace = (value: string, encode = false) => {
+        const next = replaceMcpSecretReferences(value, (id) => {
+          const secret = lookup(id);
+          // A secret in a URL is encoded, so `/ ? # @` in it cannot change the URL's parts.
+          return secret === undefined || !encode ? secret : encodeURIComponent(secret);
+        });
+        if (next !== value) rememberResolvedMcpField(next);
+        return next;
+      };
+      const replaceRecord = (values: Record<string, string> | undefined) =>
+        values
+          ? Object.fromEntries(Object.entries(values).map(([key, value]) => [key, replace(value)]))
+          : undefined;
+      const next = {
+        ...server,
+        ...(server.env ? { env: replaceRecord(server.env) } : {}),
+        ...(server.headers ? { headers: replaceRecord(server.headers) } : {}),
+        ...(server.args ? { args: server.args.map((arg) => replace(arg)) } : {}),
+        ...(server.url ? { url: replace(server.url, true) } : {}),
+      } as McpProjectServersConfig[string];
       if (missing)
         issues.push({
           kind: "validation",
@@ -72,16 +98,21 @@ export function validateStoredMcpSecrets(
         }),
     });
     for (const [name, server] of Object.entries(servers)) {
-      for (const field of ["env", "headers"] as const) {
-        for (const [key, value] of Object.entries(server[field] ?? {})) {
-          const id = mcpSecretId(value);
-          // An unchanged reference may be unavailable after a restore. Keep repair and unrelated edits possible.
-          if (!id || base[name]?.[field]?.[key] === value) continue;
+      // An unchanged reference may be unavailable after a restore. Keep repair and unrelated edits possible.
+      const previous = new Map(
+        (base[name] ? mcpSecretFieldValues(base[name]) : []).map(({ field, value }) => [
+          field,
+          value,
+        ]),
+      );
+      for (const { field, value } of mcpSecretFieldValues(server)) {
+        if (previous.get(field) === value) continue;
+        for (const id of mcpSecretIds(value)) {
           const bytes = store ? yield* store.get(`mcp-secret-${id}`) : null;
           if (!bytes)
             return yield* Effect.fail(
               new McpSecretValidationError({
-                message: `${name}.${field}.${key}: stored secret is missing. Replace it before saving.`,
+                message: `${name}.${field}: stored secret is missing. Replace it before saving.`,
               }),
             );
         }

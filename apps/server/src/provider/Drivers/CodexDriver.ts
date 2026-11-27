@@ -29,6 +29,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { makeCodexTextGeneration } from "../../git/Layers/CodexTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
 import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer.ts";
+import { nativeMcpHubAdapterOptions } from "../../mcp/hub/nativeHubOptions.ts";
 import {
   checkCodexProviderPreflight,
   type ProviderPreflightStatus,
@@ -298,6 +299,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         defaultProviderOptions,
         processEnvironment,
         instanceId,
+        ...(yield* nativeMcpHubAdapterOptions),
       });
       const consumeResetCredit = (idempotencyKey: string) =>
         Effect.gen(function* () {
