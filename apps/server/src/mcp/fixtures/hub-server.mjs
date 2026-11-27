@@ -26,6 +26,13 @@ let tools = [
     description: "Adds a tool and announces it",
     inputSchema: { type: "object" },
   },
+  { name: "ask", description: "Asks the user a question", inputSchema: { type: "object" } },
+  { name: "ask_url", description: "Sends the user to a page", inputSchema: { type: "object" } },
+  {
+    name: "wait",
+    description: "Answers after a delay",
+    inputSchema: { type: "object", properties: { ms: { type: "number" } } },
+  },
 ];
 process.stderr.write(`hub fixture started token=${process.env.HUB_FIXTURE_TOKEN ?? "none"}\n`);
 
@@ -48,6 +55,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     return { content: [{ type: "text", text: "done" }] };
+  }
+  if (name === "ask") {
+    const answer = await server.elicitInput({
+      message: "Pick a color",
+      requestedSchema: { type: "object", properties: { color: { type: "string" } } },
+    });
+    return {
+      content: [{ type: "text", text: `${answer.action}:${answer.content?.color ?? ""}` }],
+    };
+  }
+  if (name === "ask_url") {
+    const answer = await server.elicitInput({
+      mode: "url",
+      message: "Finish on the page",
+      url: "https://example.test/finish",
+      elicitationId: "fixture-elicitation",
+    });
+    if (answer.action === "accept")
+      await server.createElicitationCompletionNotifier("fixture-elicitation")();
+    return { content: [{ type: "text", text: `url:${answer.action}` }] };
+  }
+  if (name === "wait") {
+    await new Promise((resolve) => setTimeout(resolve, Number(args?.ms ?? 100)));
+    return { content: [{ type: "text", text: "waited" }] };
   }
   if (name === "add_tool") {
     tools = [...tools, { name: "added", inputSchema: { type: "object" } }];

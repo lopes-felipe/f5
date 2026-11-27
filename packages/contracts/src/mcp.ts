@@ -109,6 +109,51 @@ export const McpReconnectHubServerRequest = Schema.Struct({
 });
 export type McpReconnectHubServerRequest = typeof McpReconnectHubServerRequest.Type;
 
+export const McpListToolPinsRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+});
+export type McpListToolPinsRequest = typeof McpListToolPinsRequest.Type;
+
+/** Accepts the current definition of changed or new tools, or of every tool when none are named. */
+export const McpAcceptToolChangesRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  identity: TrimmedNonEmptyString,
+  /**
+   * The tools the user reviewed and the definition each showed. A tool whose current
+   * definition differs (it changed again) is not accepted and counts as stale.
+   */
+  reviewed: Schema.Array(
+    Schema.Struct({ toolName: TrimmedNonEmptyString, definition: Schema.String }),
+  ),
+});
+export type McpAcceptToolChangesRequest = typeof McpAcceptToolChangesRequest.Type;
+
+export const MCP_ACTIVITY_PAGE_LIMIT = 200;
+
+export const McpListActivityRequest = Schema.Struct({
+  serverName: Schema.optional(TrimmedNonEmptyString),
+  threadId: Schema.optional(ThreadId),
+  /** Limits calls, the summary and the stderr tail to this project. */
+  projectId: Schema.optional(ProjectId),
+  limit: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MCP_ACTIVITY_PAGE_LIMIT })),
+  ),
+});
+export type McpListActivityRequest = typeof McpListActivityRequest.Type;
+
+export const McpGetThreadServersRequest = Schema.Struct({
+  threadId: ThreadId,
+});
+export type McpGetThreadServersRequest = typeof McpGetThreadServersRequest.Type;
+
+/** Turns a hub server off (or back on) for one conversation; no provider restart. */
+export const McpSetThreadServerEnabledRequest = Schema.Struct({
+  threadId: ThreadId,
+  serverName: TrimmedNonEmptyString,
+  enabled: Schema.Boolean,
+});
+export type McpSetThreadServerEnabledRequest = typeof McpSetThreadServerEnabledRequest.Type;
+
 /** Without a project, common servers are listed and signed in. */
 export const McpGetHubAuthStatusRequest = Schema.Struct({
   projectId: Schema.optional(ProjectId),

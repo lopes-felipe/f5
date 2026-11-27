@@ -2,8 +2,14 @@ import { Link } from "@tanstack/react-router";
 import { createMcpDiagnosticsSanitizer } from "@t3tools/shared/mcpDiagnostics";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { Popover, PopoverTrigger, PopoverPopup } from "../ui/popover";
-import { useQuery } from "@tanstack/react-query";
-import { mcpEffectiveConfigQueryOptions } from "../../lib/mcpReactQuery";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  mcpEffectiveConfigQueryOptions,
+  mcpQueryKeys,
+  mcpThreadServersQueryOptions,
+} from "../../lib/mcpReactQuery";
+import { ensureNativeApi } from "../../nativeApi";
+import { Switch } from "../ui/switch";
 import {
   type ProjectId,
   type CompactMcpStatusActivityPayload,
@@ -41,6 +47,7 @@ export const ProviderRuntimeInfoChip = memo(function ProviderRuntimeInfoChip({
   provider,
   entries,
   mcpServers,
+  mcpHubServerNames,
   projectId,
   threadId,
   className,
@@ -48,6 +55,8 @@ export const ProviderRuntimeInfoChip = memo(function ProviderRuntimeInfoChip({
   provider: ProviderKind | null;
   entries: ReadonlyArray<ProviderRuntimeInfoEntry>;
   mcpServers?: ReadonlyArray<CompactMcpStatusActivityPayload> | undefined;
+  /** Server name keys whose entries come from F5's hub (see `mergeChatMcpServers`). */
+  mcpHubServerNames?: ReadonlySet<string> | undefined;
   projectId?: ProjectId | undefined;
   threadId?: ThreadId | undefined;
   className?: string | undefined;
@@ -89,6 +98,7 @@ export const ProviderRuntimeInfoChip = memo(function ProviderRuntimeInfoChip({
                   <McpRuntimeChip
                     summary={entry.value}
                     servers={mcpServers}
+                    hubServerNames={mcpHubServerNames}
                     projectId={projectId}
                     provider={provider}
                     threadId={threadId}
@@ -111,12 +121,15 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
   provider,
   entries,
   mcpServers,
+  mcpHubServerNames,
   projectId,
   threadId,
 }: {
   provider: ProviderKind | null;
   entries: ReadonlyArray<ProviderRuntimeInfoEntry>;
   mcpServers?: ReadonlyArray<CompactMcpStatusActivityPayload> | undefined;
+  /** Server name keys whose entries come from F5's hub (see `mergeChatMcpServers`). */
+  mcpHubServerNames?: ReadonlySet<string> | undefined;
   projectId?: ProjectId | undefined;
   threadId?: ThreadId | undefined;
 }) {
@@ -138,6 +151,7 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
             key={entry.label}
             summary={entry.value}
             servers={mcpServers}
+            hubServerNames={mcpHubServerNames}
             projectId={projectId}
             provider={provider}
             threadId={threadId}
@@ -155,15 +169,59 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
   );
 });
 
+/**
+ * Turns a server F5 serves off (or back on) for this conversation only. The agent
+ * stops seeing its tools at once; no restart.
+ */
+function McpThreadServerSwitch(props: {
+  readonly threadId: ThreadId;
+  readonly serverName: string;
+  readonly enabled: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div className="space-y-0.5">
+      <label className="flex items-center gap-2">
+        <Switch
+          aria-label={`Use ${props.serverName} in this conversation`}
+          checked={props.enabled}
+          disabled={saving}
+          onCheckedChange={(checked) => {
+            setSaving(true);
+            setError(null);
+            void ensureNativeApi()
+              .mcp.setThreadServerEnabled({
+                threadId: props.threadId,
+                serverName: props.serverName,
+                enabled: !!checked,
+              })
+              .then((result) =>
+                queryClient.setQueryData(mcpQueryKeys.threadServers(props.threadId), result),
+              )
+              .catch(() => setError("Could not change this server for the conversation."))
+              .finally(() => setSaving(false));
+          }}
+        />
+        <span>{props.enabled ? "On in this conversation" : "Off in this conversation"}</span>
+      </label>
+      {error ? <p className="text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
 function McpRuntimeChip({
   summary,
   servers,
+  hubServerNames,
   projectId,
   provider,
   threadId,
 }: {
   readonly summary: string;
   readonly servers: ReadonlyArray<CompactMcpStatusActivityPayload>;
+  readonly hubServerNames: ReadonlySet<string> | undefined;
   readonly projectId: ProjectId | undefined;
   readonly provider: ProviderKind;
   readonly threadId: ThreadId | undefined;
@@ -178,6 +236,12 @@ function McpRuntimeChip({
     config.isSuccess && !config.isFetching
       ? createMcpDiagnosticsSanitizer(config.data.servers)
       : null;
+  const threadServers = useQuery(
+    mcpThreadServersQueryOptions({ threadId: threadId ?? null, enabled: open }),
+  );
+  const disabledHere = new Set(
+    (threadServers.data?.disabledServers ?? []).map((name) => mcpServerNameKey(name)),
+  );
   // Only servers saved in F5 have a settings panel to open.
   const savedNames = new Set(Object.keys(config.data?.servers ?? {}).map(mcpServerNameKey));
   const needsSignIn = servers.filter((server) => server.status === "needs-auth").length;
@@ -232,6 +296,13 @@ function McpRuntimeChip({
                     </Link>
                   ) : null}
                 </p>
+                {threadId && server.name && hubServerNames?.has(mcpServerNameKey(server.name)) ? (
+                  <McpThreadServerSwitch
+                    threadId={threadId}
+                    serverName={server.name}
+                    enabled={!disabledHere.has(mcpServerNameKey(server.name))}
+                  />
+                ) : null}
                 {server.error ? (
                   <p className="whitespace-pre-wrap break-words">
                     {sanitizer
@@ -240,7 +311,9 @@ function McpRuntimeChip({
                   </p>
                 ) : null}
                 {server.status === "needs-auth" && server.name ? (
-                  provider === "claudeAgent" || provider === "codex" ? (
+                  (provider === "claudeAgent" || provider === "codex") &&
+                  !hubServerNames?.has(mcpServerNameKey(server.name)) ? (
+                    // Codex's and Claude's own servers sign in through the agent.
                     <McpSignInControls
                       provider={provider}
                       instanceId={server.providerInstanceId}
@@ -250,8 +323,16 @@ function McpRuntimeChip({
                       threadId={provider === "claudeAgent" ? threadId : undefined}
                     />
                   ) : (
-                    // Other agents use F5's own sign-in, shared by every project.
-                    <McpHubSignInRow serverName={server.name} projectId={projectId ?? null} />
+                    // Servers F5 serves use F5's own sign-in, shared by every project.
+                    <>
+                      {provider === "claudeAgent" || provider === "codex" ? (
+                        <p className="text-muted-foreground">
+                          {runtimeProviderLabel(provider)} reaches this server through F5 now; its
+                          earlier sign-in is not carried over.
+                        </p>
+                      ) : null}
+                      <McpHubSignInRow serverName={server.name} projectId={projectId ?? null} />
+                    </>
                   )
                 ) : null}
               </div>

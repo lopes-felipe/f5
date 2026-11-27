@@ -138,14 +138,16 @@ async function publishProfileFile(file: string, contents: string | Buffer): Prom
   }
 }
 
+export function antigravityProfilesDirectory(stateDir: string): string {
+  return path.join(stateDir, "providers", "antigravity", "accounts");
+}
+
+export function antigravityProfileKey(instanceId: string): string {
+  return createHash("sha256").update(instanceId).digest("hex");
+}
+
 export function antigravityProfileDirectory(stateDir: string, instanceId: string): string {
-  return path.join(
-    stateDir,
-    "providers",
-    "antigravity",
-    "accounts",
-    createHash("sha256").update(instanceId).digest("hex"),
-  );
+  return path.join(antigravityProfilesDirectory(stateDir), antigravityProfileKey(instanceId));
 }
 
 export async function linkAntigravityUserSkills(home: string, userHome: string): Promise<void> {

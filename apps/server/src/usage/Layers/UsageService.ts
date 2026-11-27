@@ -6,10 +6,15 @@ import {
   type IsoDateTime,
   type ProviderKind,
   type ServerProvider,
+  type ServerSettings,
   type UsageRange,
   USAGE_THREAD_TURNS_LIMIT,
 } from "@t3tools/contracts";
-import { Clock, Effect, Layer, Schema } from "effect";
+import { Clock, Effect, Layer, Option, Schema } from "effect";
+import { ServerConfig } from "../../config.ts";
+import { antigravityProfileKey } from "../../provider/acp/AntigravityAcpSupport.ts";
+import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderInstanceRegistryHydration.ts";
+import { makeRetiredAntigravityUsageHistory } from "../externalProviderHistory.ts";
 
 import * as Semaphore from "effect/Semaphore";
 import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
@@ -106,7 +111,12 @@ function shadowAccounts(unavailable: ReadonlyArray<ServerProvider>): Array<Usage
         : entry.driver === "claudeAgent"
           ? [emptyAccountSection("claude-usage")]
           : [emptyAccountSection("provider-limits")]
-      ).map((section) => ({ ...section, errorCode: "temporary-failure" as const })),
+      ).map((section) =>
+        entry.driver === "antigravity"
+          ? // An unavailable instance also must not hydrate retired subscription limits.
+            { ...section, outcome: "unsupported" as const, errorCode: "unsupported" as const }
+          : { ...section, errorCode: "temporary-failure" as const },
+      ),
     }));
 }
 
@@ -116,6 +126,19 @@ const make = Effect.gen(function* () {
   const historyRepository = yield* UsageAccountHistoryRepository;
   const recorder = yield* makeAccountHistoryRecorder;
   const settingsService = yield* ServerSettingsService;
+  const serverConfig = Option.getOrUndefined(yield* Effect.serviceOption(ServerConfig));
+  const configuredAntigravityProfiles = (settings: ServerSettings) =>
+    new Set(
+      Object.entries(deriveProviderInstanceConfigMap(settings))
+        .filter(([, config]) => config.driver === "antigravity")
+        .map(([id]) => antigravityProfileKey(id)),
+    );
+  const retiredAntigravityHistory = serverConfig
+    ? yield* makeRetiredAntigravityUsageHistory(
+        serverConfig.stateDir,
+        settingsService.getSettings.pipe(Effect.map(configuredAntigravityProfiles)),
+      )
+    : undefined;
   const redeem = yield* makeResetCreditCoordinator;
   const registry = yield* ProviderInstanceRegistry;
   const permits = yield* Semaphore.make(2);
@@ -268,6 +291,15 @@ const make = Effect.gen(function* () {
           return [];
         return [history];
       });
+      const includeRetiredAntigravity =
+        retiredAntigravityHistory &&
+        settings.usageLocalProviderHistory &&
+        (!request.provider || request.provider === "antigravity") &&
+        !request.hiddenProviders?.includes("antigravity");
+      if (includeRetiredAntigravity) capabilities.push(retiredAntigravityHistory);
+      const configuredProfiles = includeRetiredAntigravity
+        ? configuredAntigravityProfiles(settings)
+        : undefined;
       const retention = yield* (
         settingsService.getUsageHistoryRetention ??
         Effect.succeed(settings.usageHistoryRetentionDays)
@@ -296,6 +328,11 @@ const make = Effect.gen(function* () {
       const externalKeys = new Set<string>();
       const externalHistory = cachedHistory.filter((record) => {
         if (!("provider" in record) || isExternalRecorded(record)) return false;
+        if (
+          record.retiredAntigravityProfile &&
+          configuredProfiles?.has(record.retiredAntigravityProfile)
+        )
+          return false;
         if (record.dedupeKey === null) return true;
         if (externalKeys.has(record.dedupeKey)) return false;
         externalKeys.add(record.dedupeKey);

@@ -13,6 +13,7 @@ import type { makeMcpAccountExecutionResolver } from "../../mcp/accountExecution
 import { detectMcpImports } from "../../mcp/McpImportDetection.ts";
 import type { McpHub } from "../../mcp/hub/McpHub.ts";
 import type { McpHubAuth } from "../../mcp/hub/McpHubAuth.ts";
+import type { McpHubGovernanceService } from "../../mcp/hub/McpHubGovernanceLive.ts";
 import { probeMcpServer } from "../../mcp/McpProbe.ts";
 import type { McpRuntimeService } from "../../mcp/McpRuntimeService.ts";
 import { resolveMcpSecrets } from "../../mcp/McpSecretResolver.ts";
@@ -45,6 +46,11 @@ type McpMethod =
   | typeof WS_METHODS.mcpStartHubSignIn
   | typeof WS_METHODS.mcpCompleteHubSignIn
   | typeof WS_METHODS.mcpSignOutHubServer
+  | typeof WS_METHODS.mcpListToolPins
+  | typeof WS_METHODS.mcpAcceptToolChanges
+  | typeof WS_METHODS.mcpListActivity
+  | typeof WS_METHODS.mcpGetThreadServers
+  | typeof WS_METHODS.mcpSetThreadServerEnabled
   | typeof WS_METHODS.mcpApplyToLiveSessions
   | typeof MCP_APPS_WS_METHODS.toolInfo
   | typeof MCP_APPS_WS_METHODS.callTool
@@ -56,6 +62,7 @@ export interface McpRouteDependencies {
   readonly mcpRuntimeService: typeof McpRuntimeService.Service;
   readonly mcpHub: typeof McpHub.Service | undefined;
   readonly mcpHubAuth: typeof McpHubAuth.Service | undefined;
+  readonly mcpHubGovernance: typeof McpHubGovernanceService.Service | undefined;
   readonly codexMcpEventBus: typeof CodexMcpEventBus.Service;
   readonly providerService: typeof ProviderService.Service;
   readonly profileSecrets: ServerSecretStoreShape;
@@ -92,6 +99,7 @@ export const mcpRoutes = ({
   mcpRuntimeService,
   mcpHub,
   mcpHubAuth,
+  mcpHubGovernance,
   codexMcpEventBus,
   providerService,
   profileSecrets,
@@ -330,6 +338,42 @@ export const mcpRoutes = ({
           .signOut(withoutTag(request))
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })))
       : Effect.succeed({ signedOut: false }),
+
+  [WS_METHODS.mcpListToolPins]: (request) =>
+    Effect.succeed({
+      tools: mcpHubGovernance ? [...mcpHubGovernance.listToolPins(request.serverName)] : [],
+    }),
+
+  [WS_METHODS.mcpAcceptToolChanges]: (request) =>
+    mcpHubGovernance
+      ? mcpHubGovernance.acceptToolChanges(withoutTag(request))
+      : Effect.succeed({ accepted: 0, stale: 0 }),
+
+  [WS_METHODS.mcpListActivity]: (request) =>
+    Effect.gen(function* () {
+      const body = withoutTag(request);
+      const activity = mcpHubGovernance
+        ? yield* mcpHubGovernance.listActivity(body)
+        : { calls: [], last24h: { calls: 0, errors: 0 } };
+      const stderrTail = body.serverName
+        ? mcpHub?.readStderrTail(body.serverName, body.projectId)
+        : undefined;
+      return { ...activity, ...(stderrTail ? { stderrTail } : {}) };
+    }),
+
+  [WS_METHODS.mcpGetThreadServers]: (request) =>
+    Effect.succeed(
+      mcpHubGovernance ? mcpHubGovernance.threadServers(request.threadId) : { disabledServers: [] },
+    ),
+
+  [WS_METHODS.mcpSetThreadServerEnabled]: (request) =>
+    mcpHubGovernance
+      ? mcpHubGovernance.setThreadServerEnabled(withoutTag(request))
+      : Effect.fail(
+          new RouteRequestError({
+            message: "Turning MCP servers off per conversation is unavailable here.",
+          }),
+        ),
 
   [WS_METHODS.mcpApplyToLiveSessions]: (request) =>
     Effect.gen(function* () {
