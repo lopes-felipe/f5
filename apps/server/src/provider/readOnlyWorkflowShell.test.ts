@@ -601,6 +601,10 @@ describe("readOnlyShellDirectoryUses", () => {
     ["SUB=sub; cd $SUB && git status", [cd("sub"), git()]],
     ["( cd a && git log ); git status", [cd("a"), git(), git()]],
     ["if cd a; then git log; fi", [cd("a"), git()]],
+    // A loop reaches one folder per word, and a variable set inside a chain is followed too.
+    ["for d in ../other sub; do git -C $d log -1; done", [git("../other"), git("sub")]],
+    ["for d in a b; do cd $d && git status; done", [cd("a"), git(), cd("b"), git()]],
+    ["cd ../a && R=../b && git -C $R grep -n x", [cd("../a"), git("../b")]],
     // Options, no folder (the home folder), and forms with no single target.
     ["cd -P /repo && git log", [cd("/repo"), git()]],
     ["cd -- /repo && git log", [cd("/repo"), git()]],
