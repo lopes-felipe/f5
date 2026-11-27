@@ -29,11 +29,15 @@ interface GroupTally {
 
 /** Folds the variable or program a reason names, so one cause is one line. */
 function reasonKey(reason: string): string {
-  return reason
-    .replace(/\$\{?\w+\}?/g, "$VAR")
-    .replace(/^(setting|looping over) \w+ /, "$1 VAR ")
-    .replace(/^\w+ (is built from|is already set|must be set to)/, "VAR $1")
-    .replace(/\(.*\)/, "(…)");
+  return (
+    reason
+      .replace(/\$\{?\w+\}?/g, "$VAR")
+      .replace(/^(setting|looping over) \w+ /, "$1 VAR ")
+      .replace(/^\w+ (is built from|is already set|must be set to)/, "VAR $1")
+      // The advice names the variable again without a `$`: "set F before the chain", "set F=value".
+      .replace(/\bset \w+(?= before the chain|=value)/g, "set VAR")
+      .replace(/\(.*\)/, "(…)")
+  );
 }
 
 function numberFlag(args: ReadonlyArray<string>, name: string, fallback: number): number {
