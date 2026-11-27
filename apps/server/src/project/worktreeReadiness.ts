@@ -37,6 +37,8 @@ export const readWorktreeState = (
         projectRoot: input.projectCwd,
         path: input.worktreePath,
         branch: input.branch,
+        // As below: the root checkout is this group's whatever HEAD is on.
+        anyHead: true,
       });
       if (group)
         return {
@@ -46,7 +48,8 @@ export const readWorktreeState = (
           registration: group.ready ? "matching" : group.recoverable ? "stale" : "foreign",
           branchExists: group.recoverable,
           defaultBranch: null,
-          headBranch: group.ready ? input.branch : null,
+          // Readiness no longer says which branch a group's root is on.
+          headBranch: null,
         } as const;
     }
     const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(target));

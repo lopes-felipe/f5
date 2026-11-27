@@ -1802,9 +1802,14 @@ const makeGitCore = Effect.gen(function* () {
           )) !== group.root.identity
         )
           return { ready: false, recoverable: false };
+        // The folder is the thread's identity: a root the agent left on another
+        // branch or a detached HEAD is still this group's checkout.
+        const anyHead = input.anyHead === true;
         const root = (yield* listWorktrees(group.projectRoot)).find(
           (entry) =>
-            !entry.isMain && entry.canonicalPath === target && entry.branch === group.branch,
+            !entry.isMain &&
+            entry.canonicalPath === target &&
+            (anyHead || entry.branch === group.branch),
         );
         if (workspaceExists) {
           const checkout = yield* inspectCheckoutIdentity(target);
@@ -1812,7 +1817,7 @@ const makeGitCore = Effect.gen(function* () {
             !root ||
             checkout.canonicalRoot !== target ||
             checkout.commonDir !== group.root.identity ||
-            checkout.branch !== group.branch
+            (!anyHead && checkout.branch !== group.branch)
           )
             return { ready: false, recoverable: false };
         } else {
@@ -2178,11 +2183,14 @@ const makeGitCore = Effect.gen(function* () {
             group.projectRoot !== (yield* canonicalPath(input.cwd))
           )
             return yield* groupError(target, "The worktree group owner does not match.");
+          // Whether the folders are there, not which branch they are on: an
+          // intact group on another branch needs nothing recreated.
           const state = yield* inspectWorktreeGroup({
             path: target,
             projectRoot: input.cwd,
             branch: input.branch,
             threadId: group.threadId,
+            anyHead: true,
           });
           if (state?.ready) return { recreated: false };
           if (!state?.recoverable)
