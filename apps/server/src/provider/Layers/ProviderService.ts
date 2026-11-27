@@ -87,6 +87,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ProviderSessionAction,
+  type ReadOnlyEnforcement,
   type ServerProvider,
   type ProviderTurnStartResult,
   type McpReloadResult,
@@ -699,6 +700,45 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       yield* Stream.runForEach(mcpHubGovernance.approvalEvents, publishRuntimeEvent).pipe(
         Effect.forkScoped,
       );
+
+    /**
+     * What each thread's "Read-only stage: …" line last said, so a recovered stage repeats the
+     * line only when its mode changed. Kept in memory: after a restart the comparison falls back
+     * to the requested mode, which is what the line says unless the adapter ended up stricter.
+     */
+    const publishedReadOnlyEnforcement = new Map<ThreadId, ReadOnlyEnforcement>();
+
+    /** The thread's "Read-only stage: …" line, through `session.configured`. */
+    const publishReadOnlyEnforcement = (
+      session: ProviderSession,
+      providerInstanceId: ProviderInstanceId,
+      enforcement: ReadOnlyEnforcement,
+    ) =>
+      Effect.sync(() => publishedReadOnlyEnforcement.set(session.threadId, enforcement)).pipe(
+        Effect.andThen(publishReadOnlyEnforcementEvent(session, providerInstanceId, enforcement)),
+      );
+    const publishReadOnlyEnforcementEvent = (
+      session: ProviderSession,
+      providerInstanceId: ProviderInstanceId,
+      enforcement: ReadOnlyEnforcement,
+    ) =>
+      publishRuntimeEvent({
+        type: "session.configured",
+        eventId: EventId.makeUnsafe(timeOrderedUuid()),
+        provider: session.provider,
+        providerInstanceId,
+        threadId: session.threadId,
+        createdAt: new Date().toISOString(),
+        payload: {
+          config: {
+            [READ_ONLY_ENFORCEMENT_CONFIG_KEY]: enforcement,
+            [READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY]: readOnlyEnforcementSummary(
+              enforcement,
+              PROVIDER_DISPLAY_NAMES[session.provider],
+            ),
+          },
+        },
+      });
 
     const upsertSessionBinding = (
       session: ProviderSession,
@@ -1586,6 +1626,20 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             generation: resumedGeneration,
           }),
         };
+        // A recovered stage keeps the line it has when it still runs that way. When the mode
+        // differs from what the line last said, the line is written again: the adapter can end
+        // up stricter than requested (Codex requirements), and can stop being stricter when the
+        // requirements change, which would leave "sandboxed" over a stage that no longer is.
+        const requestedEnforcement = recoveredInstructionContext?.readOnlyEnforcement;
+        // An adapter that reports nothing runs the stage as requested.
+        const recoveredEnforcement = resumed.readOnlyEnforcement ?? requestedEnforcement;
+        if (
+          requestedEnforcement !== undefined &&
+          recoveredEnforcement !== undefined &&
+          recoveredEnforcement !==
+            (publishedReadOnlyEnforcement.get(input.binding.threadId) ?? requestedEnforcement)
+        )
+          yield* publishReadOnlyEnforcement(resumed, bindingInstanceId, recoveredEnforcement);
         yield* Effect.logInfo("provider service resumed provider session from persisted binding", {
           operation: input.operation,
           threadId: input.binding.threadId,
@@ -2014,25 +2068,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             inputCwd: input.cwd ?? null,
             sessionCwd: sessionWithInstance.cwd ?? null,
           });
-          if (readOnlyEnforcement !== undefined) {
-            yield* publishRuntimeEvent({
-              type: "session.configured",
-              eventId: EventId.makeUnsafe(timeOrderedUuid()),
-              provider: sessionWithInstance.provider,
-              providerInstanceId: requestedInstanceId,
-              threadId,
-              createdAt: new Date().toISOString(),
-              payload: {
-                config: {
-                  [READ_ONLY_ENFORCEMENT_CONFIG_KEY]: readOnlyEnforcement,
-                  [READ_ONLY_ENFORCEMENT_SUMMARY_CONFIG_KEY]: readOnlyEnforcementSummary(
-                    readOnlyEnforcement,
-                    PROVIDER_DISPLAY_NAMES[resolvedProvider],
-                  ),
-                },
-              },
-            });
-          }
+          // One line, after the start succeeded, with what the stage actually runs under (an
+          // adapter can end up stricter than requested). The binding keeps the requested value,
+          // so a later start asks for it again.
+          if (readOnlyEnforcement !== undefined)
+            yield* publishReadOnlyEnforcement(
+              sessionWithInstance,
+              requestedInstanceId,
+              sessionWithInstance.readOnlyEnforcement ?? readOnlyEnforcement,
+            );
 
           return sessionWithInstance;
         }).pipe(

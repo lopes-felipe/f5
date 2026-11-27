@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyReadOnlyShellCommand } from "./readOnlyWorkflowShell.ts";
+import {
+  classifyReadOnlyShellCommand,
+  READ_ONLY_WORKFLOW_ENVIRONMENT,
+  readOnlyShellDirectoryUses,
+} from "./readOnlyWorkflowShell.ts";
 
 const readOnly = (command: string) => classifyReadOnlyShellCommand(command).readOnly;
 
@@ -578,6 +582,59 @@ describe("classifyReadOnlyShellCommand", () => {
     expect(classifyReadOnlyShellCommand(elseIf(9))).toEqual({
       readOnly: false,
       reason: "commands are nested too deeply",
+    });
+  });
+});
+
+describe("readOnlyShellDirectoryUses", () => {
+  const cd = (path: string | undefined) => ({ kind: "cd", path });
+  const git = (...path: string[]) => ({ kind: "git", path });
+
+  it.each([
+    ["git status", [git()]],
+    ["git -C /repo log", [git("/repo")]],
+    ["git --no-pager -C a -C b diff", [git("a", "b")]],
+    ["cd /repo && git diff | head", [cd("/repo"), git()]],
+    ["cd a; git status; cd ../b && git -C c log", [cd("a"), git(), cd("../b"), git("c")]],
+    // The value a variable stands for, as the shell would pass it.
+    ['D=/repo; git -C "$D" log', [git("/repo")]],
+    ["SUB=sub; cd $SUB && git status", [cd("sub"), git()]],
+    ["( cd a && git log ); git status", [cd("a"), git(), git()]],
+    ["if cd a; then git log; fi", [cd("a"), git()]],
+    // Options, no folder (the home folder), and forms with no single target.
+    ["cd -P /repo && git log", [cd("/repo"), git()]],
+    ["cd -- /repo && git log", [cd("/repo"), git()]],
+    ["cd && git log", [cd("~"), git()]],
+    ["cd - && git log", [cd("-"), git()]],
+    ["cd old new && git log", [cd(undefined), git()]],
+    // Nothing to check without Git, but the walk is still reported.
+    ["cd /repo && cat README.md", [cd("/repo")]],
+    ["cat README.md | head", []],
+  ])("%s", (command, uses) => {
+    expect(readOnlyShellDirectoryUses(command)).toEqual(uses);
+  });
+
+  it("reports nothing for a command the classifier refuses", () => {
+    expect(readOnlyShellDirectoryUses("cd /repo && git commit -m x")).toBeUndefined();
+    expect(readOnlyShellDirectoryUses("git -C $(pwd) log")).toBeUndefined();
+    expect(readOnlyShellDirectoryUses("")).toBeUndefined();
+  });
+
+  it("starts from scratch on every call", () => {
+    expect(readOnlyShellDirectoryUses("cd a && git log")).toHaveLength(2);
+    expect(readOnlyShellDirectoryUses("git log")).toEqual([git()]);
+    // A plain classification in between records nothing.
+    expect(classifyReadOnlyShellCommand("cd b && git log").readOnly).toBe(true);
+    expect(readOnlyShellDirectoryUses("cat a")).toEqual([]);
+  });
+});
+
+describe("READ_ONLY_WORKFLOW_ENVIRONMENT", () => {
+  it("keeps Git from locking the index, paging and fetching", () => {
+    expect(READ_ONLY_WORKFLOW_ENVIRONMENT).toEqual({
+      GIT_OPTIONAL_LOCKS: "0",
+      GIT_PAGER: "cat",
+      GIT_NO_LAZY_FETCH: "1",
     });
   });
 });

@@ -71,10 +71,10 @@ describe("buildCodexAdditionalContext", () => {
     expect(context.f5_runtime_context?.value).toContain("- Active model: gpt-5.5");
   });
 
-  it("tells a policy-enforced Codex read-only stage to escalate what the sandbox can't run", () => {
+  it("tells a Codex read-only stage that asks on escalation to escalate what the sandbox can't run", () => {
     const policy = buildCodexAdditionalContext({
       workflowExecutionProfile: "unattended-readonly",
-      readOnlyEnforcement: "policy",
+      codexReadOnlyEscalation: true,
     });
     const keys = Object.keys(policy);
     expect(keys.at(-1)).toBe("f5_workflow_escalation");
@@ -82,8 +82,10 @@ describe("buildCodexAdditionalContext", () => {
     expect(policy.f5_workflow_escalation?.value).toBe(CODEX_READ_ONLY_ESCALATION_HINT);
     expect(policy.f5_workflow_escalation?.value).toContain('"require_escalated"');
     for (const input of [
+      // The requested enforcement alone never adds it: the sandbox fallback refuses escalations.
+      { workflowExecutionProfile: "unattended-readonly", readOnlyEnforcement: "policy" },
       { workflowExecutionProfile: "unattended-readonly", readOnlyEnforcement: "sandbox" },
-      { readOnlyEnforcement: "policy" },
+      { codexReadOnlyEscalation: true },
     ] as const)
       expect(buildCodexAdditionalContext(input)).not.toHaveProperty("f5_workflow_escalation");
   });
