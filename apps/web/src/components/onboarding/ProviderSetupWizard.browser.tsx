@@ -365,7 +365,7 @@ describe("ProviderSetupWizard", () => {
         .element(page.getByText(/Not supported by ready providers \(Muse Code\)/).first())
         .toBeInTheDocument();
 
-      const editsBtn = page.getByRole("button", { name: /Auto-accept edits/ });
+      const editsBtn = page.getByRole("button", { name: /Accept edits/ });
       await expect.element(editsBtn).toBeEnabled();
       await editsBtn.click();
       await vi.waitFor(() => {
