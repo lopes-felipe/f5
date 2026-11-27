@@ -239,9 +239,7 @@ describe("makeReadOnlyGitGuard", () => {
    * Windows short name such as `RUNNER~1`, as Git does in the paths it prints.
    */
   function workspace() {
-    const root = realpathSync.native(
-      mkdtempSync(path.join(os.tmpdir(), "f5-readonly-git-guard-")),
-    );
+    const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "f5-readonly-git-guard-")));
     const environment: NodeJS.ProcessEnv = {
       PATH: process.env.PATH,
       HOME: root,
