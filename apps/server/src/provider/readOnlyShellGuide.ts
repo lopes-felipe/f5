@@ -12,7 +12,7 @@
 export const READ_ONLY_SHELL_GUIDE_EXAMPLES = {
   runs: [
     "git show abc123:src/a.ts | nl -ba | sed -n '40,80p;120,140p'",
-    `REV=abc123; git show "\${REV}:src/a.ts" | rg -n 'start|stop'`,
+    `REV=abc123; cd /repo && git show "\${REV}:src/a.ts" | rg -n 'start|stop'`,
     "git grep -n -E 'start|stop' abc123 -- apps packages",
     "for f in a.ts b.ts; do git show abc123:src/$f | head -20; done",
     "gh api 'repos/OWNER/REPO/contents/a.go?ref=abc123' --jq .content | base64 -d",
@@ -22,6 +22,7 @@ export const READ_ONLY_SHELL_GUIDE_EXAMPLES = {
     "rg -n start src/{a,b}.ts",
     'F=$(git ls-files | head -1); cat "$F"',
     "REV=abc123; git show $REV:src/a.ts",
+    "cd /repo && REV=abc123; git log -1 $REV",
     "git fetch origin pull/1/head",
     "bun run test",
   ],
@@ -45,6 +46,7 @@ Refused:
 - Writing a file: \`> file\`, \`tee\`, \`sed -i\`, \`mkdir\`. Keep results in the pipe.
 - \`$(...)\`, backticks, brace lists like \`src/{a,b}.ts\`, globs in a \`for\` list, heredocs, functions, \`while\`.
 - \`$VAR:path\` without braces: write \`"\${VAR}:path"\`.
+- A variable set after \`cd dir &&\` and used after a \`;\`: set it first, \`VAR=value; cd dir && ...\`.
 - Interpreters and build tools: bun, node, python3, npm, awk, xargs. Tests cannot run in this stage.
 - Network: \`git fetch\`, \`git ls-remote\`, \`curl\`. Read remote state with \`gh\` or F5's forge tools.
 - A program named with a path (\`/usr/bin/grep\`): use the bare name.
