@@ -24,7 +24,7 @@ import { ServerConfig } from "../config.ts";
 import { GitCore } from "../git/Services/GitCore.ts";
 import { GitServiceLive } from "../git/Layers/GitService.ts";
 import { GitCoreTestLive } from "../git/testLayers.ts";
-import { assertWorktreeReady } from "./worktreeReadiness.ts";
+import { assertWorktreeReady, readWorktreeState } from "./worktreeReadiness.ts";
 
 const run = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -71,7 +71,31 @@ it("reconciles an F5-prepared group only when its live branch matches the observ
           repositories: [source],
           selected: [source],
         });
-        run(worktree.path, "switch", "-qc", "new-topic");
+        // A root the agent left detached or on another branch is still this
+        // group's folder: ready to send in, with nothing to recreate. Only a
+        // caller confirming the recorded branch sees the difference.
+        const ready = { projectCwd: project, worktreePath: worktree.path, branch: "feature" };
+        const strict = { ...input, branch: "feature" };
+        for (const args of [
+          ["switch", "-q", "--detach"],
+          ["switch", "-qc", "new-topic"],
+        ]) {
+          run(worktree.path, ...args);
+          yield* assertWorktreeReady(git, ready);
+          expect((yield* readWorktreeState(git, ready)).registration).toBe("matching");
+          expect(
+            yield* git.ensureWorktree({
+              cwd: project,
+              path: worktree.path,
+              branch: "feature",
+              owner: "thread:thread",
+            }),
+          ).toEqual({ recreated: false });
+          expect(yield* git.inspectWorktreeGroup!(strict)).toEqual({
+            ready: false,
+            recoverable: false,
+          });
+        }
         const member = path.join(worktree.path, "service");
         run(member, "switch", "-qc", "new-topic");
         const observe = (branch: string) =>

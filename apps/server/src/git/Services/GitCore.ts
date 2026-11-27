@@ -222,6 +222,12 @@ export interface GitCoreShape extends MoveSnapshotOperations {
     path: string;
     branch: string | null;
     threadId?: string;
+    /**
+     * Judge an existing root checkout by where it is and which repository it
+     * belongs to, not by the branch HEAD is on. For readiness only: a caller
+     * that confirms the checkout is on `branch` must leave this unset.
+     */
+    anyHead?: boolean;
   }) => Effect.Effect<{ ready: boolean; recoverable: boolean } | null, GitCommandError>;
   /** Inspect an observed checkout before preparing the metadata transaction's writes. */
   readonly prepareObservedWorktreeBranch?: (input: {
