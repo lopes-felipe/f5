@@ -36,20 +36,58 @@ export const WorktreesRemoveResult = Schema.Struct({
 });
 export type WorktreesRemoveResult = typeof WorktreesRemoveResult.Type;
 
-export const WorktreesThreadStateResult = Schema.Struct({
-  recovery: Schema.optional(Schema.Literals(["none", "running", "interrupted"])),
-  worktreePath: Schema.NullOr(FilesystemPath),
-  branch: Schema.NullOr(Schema.String),
-  directoryExists: Schema.Boolean,
-  /**
-   * `matching`: this repository's worktree is at the recorded path, on any
-   * branch. `stale`: registered but the folder is gone. `foreign`: the path
-   * holds something that is not this repository's worktree.
-   */
-  registration: Schema.Literals(["none", "matching", "stale", "foreign"]),
-  branchExists: Schema.Boolean,
-  defaultBranch: Schema.NullOr(Schema.String),
-});
+/**
+ * What the user can do about a workspace that needs them. `retry` runs the
+ * automatic restore again (or the failed setup), `attach` moves the thread to
+ * the checkout that holds its branch, `newWorktree` gives it a fresh worktree,
+ * `useProjectFolder` continues in the project folder and `discard` drops the
+ * message a failed setup is holding.
+ */
+export const ThreadWorkspaceAction = Schema.Literals([
+  "retry",
+  "attach",
+  "newWorktree",
+  "useProjectFolder",
+  "discard",
+]);
+export type ThreadWorkspaceAction = typeof ThreadWorkspaceAction.Type;
+
+/**
+ * The one answer to "what state is this thread's workspace in", computed on
+ * the server. Every workspace surface renders this and nothing else.
+ *
+ * `branch` is the branch the thread records. Whether the folder is on it right
+ * now, or on a detached HEAD, comes from live Git status, not from here.
+ */
+export const ThreadWorkspaceStatus = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("ready"),
+    location: Schema.Literals(["projectFolder", "worktree"]),
+    path: FilesystemPath,
+    branch: Schema.NullOr(Schema.String),
+  }),
+  /** The worktree's folder was cleaned up; the next message restores it. */
+  Schema.Struct({
+    kind: Schema.Literal("dormant"),
+    path: FilesystemPath,
+    branch: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("working"),
+    activity: Schema.Literals(["creating", "restoring", "switching", "moving"]),
+    cancellable: Schema.Boolean,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("attention"),
+    reason: Schema.Literals(["restore_failed", "setup_failed", "branch_in_use"]),
+    message: Schema.String,
+    /** The first action is the recommended one. */
+    actions: Schema.Array(ThreadWorkspaceAction),
+  }),
+]);
+export type ThreadWorkspaceStatus = typeof ThreadWorkspaceStatus.Type;
+
+export const WorktreesThreadStateResult = ThreadWorkspaceStatus;
 export type WorktreesThreadStateResult = typeof WorktreesThreadStateResult.Type;
 
 export const InPlaceSwitchBlockerKind = Schema.Literals([

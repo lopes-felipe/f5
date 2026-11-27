@@ -45,11 +45,13 @@ import {
 } from "../worktreeClaims.ts";
 import { canonicalWorkspace, inspectAttachableWorkspace } from "../workspaceAttachment.ts";
 import { syncObservedCheckout } from "../observedBranch.ts";
+import { findRemoteBranch } from "../worktreeReadiness.ts";
 import { WorkspaceWriteContext } from "../workspaceTransitionContext.ts";
 import { appendWorkspaceNote } from "../workspaceNotes.ts";
 import { WorktreePreparation } from "../Services/WorktreePreparation.ts";
 import { WorktreeSetupGate } from "../Services/WorktreeSetupGate.ts";
 import {
+  WORKSPACE_SWITCH_CANCELLED,
   WorkspaceTransition,
   type WorkspaceTransitionShape,
 } from "../Services/WorkspaceTransition.ts";
@@ -98,6 +100,11 @@ const unfinishedSummary = (record: WorkspaceTransitionSnapshot) => {
       return "Restoring the worktree did not finish.";
   }
 };
+/** `<remote>/<branch>` as a base means the branch was restored from its remote copy. */
+const remoteBranchOf = (baseRef: string | undefined, branch: string | null) =>
+  baseRef && branch && baseRef.endsWith(`/${branch}`) && baseRef.length > branch.length + 1
+    ? { remote: baseRef.slice(0, -branch.length - 1) }
+    : null;
 const identity = (checkout: CheckoutInspection): WorkspaceCheckoutIdentity => ({
   path: checkout.canonicalRoot,
   repository: checkout.commonDir,
@@ -894,6 +901,18 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
                 replaceMissing: true,
               },
             });
+            // Restored from its remote copy, the branch tracks it again. The
+            // worktree is usable without that, so a failure here is not one.
+            const remoteCopy = remoteBranchOf(record.baseRef, record.target.branch);
+            if (remoteCopy)
+              yield* git
+                .setBranchUpstream({
+                  cwd: record.target.path,
+                  branch: record.target.branch!,
+                  remoteName: remoteCopy.remote,
+                  remoteBranch: record.target.branch!,
+                })
+                .pipe(Effect.ignore);
           }
           const checkout = yield* inspectAttachableWorkspace(
             git,
@@ -967,9 +986,12 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
     });
   const resumeMissingPause = (record: WorkspaceTransitionSnapshot) =>
     Effect.gen(function* () {
+      // Any switch that gives the thread a folder again answers the pause.
       if (
         record.phase !== "completed" ||
-        !["recreate", "recreate_from_base", "use_project_checkout"].includes(record.intent)
+        !["recreate", "recreate_from_base", "use_project_checkout", "attach_existing"].includes(
+          record.intent,
+        )
       )
         return;
       const state = (yield* queue.listByThread(record.threadId)).state;
@@ -1123,18 +1145,54 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
       const sourcePath = yield* canonicalWorkspace(
         threadWorkspaceCwd(thread, project) ?? project.workspaceRoot,
       );
-      // Missing sources are supported by recovery; all other inspection errors remain blocking.
-      const source = yield* inspect(sourcePath).pipe(
+      // Recovery starts from a folder that is gone, or that now holds something
+      // else; every other inspection error remains blocking.
+      const recovering =
+        ["recreate", "recreate_from_base", "use_project_checkout", "attach_existing"].includes(
+          input.intent,
+        ) && thread.worktreePath !== null;
+      const lost = { path: sourcePath, repository, branch: thread.branch, headSha: null };
+      const inspected = yield* inspect(sourcePath).pipe(
         Effect.map(identity),
-        Effect.catch((error) =>
-          ["recreate", "recreate_from_base", "use_project_checkout"].includes(input.intent) &&
-          thread.worktreePath !== null
-            ? Effect.succeed({ path: sourcePath, repository, branch: thread.branch, headSha: null })
-            : Effect.fail(error),
-        ),
+        Effect.catch((error) => (recovering ? Effect.succeed(null) : Effect.fail(error))),
       );
+      const source =
+        inspected === null || (recovering && inspected.repository !== repository)
+          ? lost
+          : inspected;
       if (source.repository !== repository)
         return yield* Effect.fail(new Error("The source belongs to another repository."));
+      const sourceMissing = Effect.tryPromise({
+        try: async () => {
+          try {
+            await lstat(sourcePath);
+            return false;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+            throw error;
+          }
+        },
+        catch: (error) => new WorkspaceTransitionError(String(error)),
+      });
+      /** The usual folder for `branch`, or a sibling of it when that one is taken. */
+      const freeWorktreePath = (branch: string) =>
+        Effect.gen(function* () {
+          const usual = yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch });
+          const taken = yield* Effect.tryPromise({
+            try: () =>
+              lstat(usual).then(
+                () => true,
+                () => false,
+              ),
+            catch: (error) => new WorkspaceTransitionError(String(error)),
+          });
+          return taken
+            ? yield* git.allocateWorktreePath({
+                cwd: project.workspaceRoot,
+                branch: `${branch}-${crypto.randomUUID().slice(0, 8)}`,
+              })
+            : usual;
+        });
       let target = source;
       let baseRef: string | undefined;
       if (input.intent === "move_to_new_worktree") {
@@ -1209,35 +1267,51 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
             input.intent === "attach_existing" ? input.branch : undefined,
           ),
         );
+      } else if (input.intent === "recreate" && source === lost && !(yield* sourceMissing)) {
+        // The recorded folder now holds something else, which stays untouched:
+        // the branch comes back in a folder of its own.
+        if (!thread.branch)
+          return yield* Effect.fail(new Error("The worktree branch is unavailable."));
+        target = {
+          ...lost,
+          path: yield* canonicalWorkspace(yield* freeWorktreePath(thread.branch)),
+        };
       } else if (input.intent === "recreate_from_base") {
+        // The recorded branch is where the thread's work is: start from it when
+        // it still exists (another checkout holds it, so the new worktree gets
+        // a branch of its own), and from the default branch when it is gone.
+        const recorded =
+          thread.branch && (yield* git.branchExists(project.workspaceRoot, thread.branch))
+            ? thread.branch
+            : null;
+        // A branch that is gone here but still on a remote starts again from
+        // that copy: a branch of the same name cut from the default branch
+        // would not have its commits, and pushing it would overwrite them.
+        const remoteCopy =
+          thread.branch && recorded === null
+            ? yield* findRemoteBranch(git, project.workspaceRoot, thread.branch).pipe(
+                Effect.orElseSucceed(() => null),
+              )
+            : null;
         const base =
+          recorded ??
+          remoteCopy ??
           (yield* git.readDefaultBranch(project.workspaceRoot)) ??
           (yield* git.inspectCheckoutIdentity(project.workspaceRoot)).branch;
         const sha = base ? yield* git.resolveCommit(project.workspaceRoot, base) : null;
         if (!sha) return yield* Effect.fail(new Error("No committed recovery base is available."));
         const branch =
-          thread.branch && !(yield* git.branchExists(project.workspaceRoot, thread.branch))
+          thread.branch && recorded === null
             ? thread.branch
             : `t3code/${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
         baseRef = base!;
         const managed = yield* readManagedWorktreesDirectories(config.worktreesDir);
-        const missing = yield* Effect.tryPromise({
-          try: async () => {
-            try {
-              await lstat(sourcePath);
-              return false;
-            } catch (error) {
-              if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
-              throw error;
-            }
-          },
-          catch: (error) => new WorkspaceTransitionError(String(error)),
-        });
         target = {
           path:
-            missing && managed.some((root) => sourcePath !== root && pathContains(root, sourcePath))
+            (yield* sourceMissing) &&
+            managed.some((root) => sourcePath !== root && pathContains(root, sourcePath))
               ? sourcePath
-              : yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch }),
+              : yield* freeWorktreePath(branch),
           repository,
           branch,
           headSha: sha,
@@ -1301,7 +1375,7 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         // Stop the worker first, so nothing changes Git while the row is settled.
         if (worker) yield* Fiber.interrupt(worker.fiber);
         const settled = yield* settle(yield* currentRecord(record.operationId), {
-          reason: "The workspace switch was cancelled.",
+          reason: WORKSPACE_SWITCH_CANCELLED,
           phase: "cancelled",
           announce: false,
         });

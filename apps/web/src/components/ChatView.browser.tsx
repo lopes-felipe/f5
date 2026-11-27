@@ -51,6 +51,7 @@ import {
   ProviderDriverKind,
   type ServerConfig,
   ThreadId,
+  type ThreadWorkspaceStatus,
   TurnId,
   type WsWelcomePayload,
   WS_CHANNELS,
@@ -4394,24 +4395,26 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  const missingWorktreeState = {
-    recovery: "none",
-    worktreePath: "/wt/gone",
-    branch: "fix/gone",
-    directoryExists: false,
-    registration: "none",
-    branchExists: true,
-    defaultBranch: "main",
+  const dormantWorkspace = { kind: "dormant", path: "/wt/gone", branch: "fix/gone" } as const;
+  const branchInUse = {
+    kind: "attention",
+    reason: "branch_in_use",
+    message:
+      "fix/gone is checked out in the project folder, so this thread's worktree cannot be restored on it.",
+    actions: ["attach", "newWorktree"],
   } as const;
 
+  /** A thread whose worktree folder is not on disk; the queue snapshot carries its status. */
   const mountMissingWorktree = (
     archived: boolean,
     options: {
-      threadState?: () => MaybePromise<WsRequestResolution>;
+      workspace?: ThreadWorkspaceStatus;
       recover?: () => MaybePromise<WsRequestResolution>;
       sessionStatus?: OrchestrationSessionStatus;
     } = {},
   ) => {
+    let workspace: ThreadWorkspaceStatus = options.workspace ?? dormantWorkspace;
+    let revision = 0;
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-missing-worktree" as MessageId,
       targetText: "Missing worktree",
@@ -4443,50 +4446,60 @@ describe("ChatView timeline (full app)", () => {
                 branches: [],
               },
             };
-          if (body._tag === WS_METHODS.worktreesThreadState)
-            return options.threadState?.() ?? { type: "result", result: missingWorktreeState };
-          if (body._tag === WS_METHODS.worktreesRecover)
-            return (
-              options.recover?.() ?? {
-                type: "result",
-                result: {
-                  ...missingWorktreeState,
-                  directoryExists: true,
-                  registration: "matching",
-                },
-              }
-            );
+          if (body._tag === WS_METHODS.nextTurnQueueList)
+            return {
+              type: "result",
+              result: {
+                threadId: THREAD_ID,
+                items: [],
+                revision: ++revision,
+                paused: false,
+                blockedKind: null,
+                reasonCode: null,
+                reasonDetail: null,
+                maxItems: 20,
+                quarantinedCount: 0,
+                workspace,
+              },
+            };
+          if (body._tag === WS_METHODS.worktreesRecover) {
+            const answer = options.recover?.();
+            if (answer) return answer;
+            // The server did what was asked; the queue reports the new status next.
+            workspace = {
+              kind: "ready",
+              location: "worktree",
+              path: "/wt/new",
+              branch: "t3code/1",
+            };
+            return { type: "result", result: workspace };
+          }
           return null;
         };
       },
     });
   };
+  const workspaceCards = () => page.getByRole("region", { name: "Workspace status" });
+  const recoverRequests = () =>
+    wsRequests.filter((request) => request._tag === WS_METHODS.worktreesRecover);
 
-  it("offers to recreate a missing worktree from the header instead of Git initialization", async () => {
+  it("says a cleaned-up worktree restores on send, and asks for nothing", async () => {
     const mounted = await mountMissingWorktree(false);
     try {
-      const recreate = page.getByRole("button", { name: "Recreate worktree", exact: true });
-      await expect.element(recreate).toBeEnabled();
+      await expect
+        .element(page.getByText("Worktree restores on send", { exact: true }))
+        .toHaveAttribute(
+          "title",
+          "This thread's worktree was cleaned up. Your next message restores it.",
+        );
       await expect
         .element(page.getByRole("button", { name: "Initialize Git" }))
         .not.toBeInTheDocument();
-      await recreate.click();
-      await vi.waitFor(() =>
-        expect(
-          wsRequests.find((request) => request._tag === WS_METHODS.worktreesRecover),
-        ).toMatchObject({ threadId: THREAD_ID, action: "recreate" }),
-      );
-
-      await page.getByRole("button", { name: "More recovery options" }).click();
-      await expect
-        .element(page.getByRole("menuitem", { name: "Recreate from main" }))
-        .toBeVisible();
-      await page.getByRole("menuitem", { name: "Continue in Local" }).click();
-      await vi.waitFor(() =>
-        expect(
-          wsRequests.filter((request) => request._tag === WS_METHODS.worktreesRecover).at(-1),
-        ).toMatchObject({ action: "useProjectCheckout" }),
-      );
+      // Nothing to decide: no card, no recovery buttons, and no recovery request.
+      expect(workspaceCards().elements()).toHaveLength(0);
+      for (const name of ["Recreate worktree", "Continue in Local", "Try again"])
+        expect(page.getByRole("button", { name, exact: true }).elements()).toHaveLength(0);
+      expect(recoverRequests()).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }
@@ -4497,120 +4510,81 @@ describe("ChatView timeline (full app)", () => {
     try {
       await expect
         .element(page.getByText("Worktree removed", { exact: true }))
-        .toHaveAttribute("title", "Unarchive to recreate it");
-      expect(
-        page.getByRole("button", { name: "Recreate worktree", exact: true }).elements(),
-      ).toHaveLength(0);
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  const headerRecovery = () => page.getByRole("group", { name: "Worktree recovery" });
-
-  it("names the default branch on the header button when the thread's branch is gone", async () => {
-    const mounted = await mountMissingWorktree(false, {
-      threadState: () => ({
-        type: "result",
-        result: { ...missingWorktreeState, branchExists: false },
-      }),
-    });
-    try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate from main" });
-      await expect.element(recreate).toBeEnabled();
-      await expect
-        .element(recreate)
-        .toHaveAttribute("title", "Branch fix/gone is gone. Recreate from main.");
-      await recreate.click();
-      await vi.waitFor(() =>
-        expect(
-          wsRequests.find((request) => request._tag === WS_METHODS.worktreesRecover),
-        ).toMatchObject({ action: "recreateFromBase" }),
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("does not recreate from the default branch while something else holds the path", async () => {
-    const mounted = await mountMissingWorktree(false, {
-      threadState: () => ({
-        type: "result",
-        result: { ...missingWorktreeState, directoryExists: true, registration: "foreign" },
-      }),
-    });
-    try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
-      await expect.element(recreate).toBeDisabled();
-      await expect
-        .element(recreate)
         .toHaveAttribute(
           "title",
-          "The recorded folder no longer belongs to this repository. Choose another workspace to continue.",
+          "This thread's worktree was removed. Unarchive the thread and send a message to restore it.",
         );
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("waits for the worktree state before offering to recreate it", async () => {
-    const pending = createDeferred<WsRequestResolution>();
-    const mounted = await mountMissingWorktree(false, { threadState: () => pending.promise });
+  it("asks once, in the composer, when only the user can decide where the thread continues", async () => {
+    const mounted = await mountMissingWorktree(false, { workspace: branchInUse });
     try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
-      await expect.element(recreate).toBeDisabled();
-      await expect
-        .element(headerRecovery().getByRole("button", { name: "More recovery options" }))
-        .toBeDisabled();
-      pending.resolve({ type: "result", result: missingWorktreeState });
-      await expect.element(recreate).toBeEnabled();
+      await expect.element(workspaceCards()).toHaveTextContent(branchInUse.message);
+      // The card is the only workspace surface, and its buttons are the server's actions.
+      expect(workspaceCards().elements()).toHaveLength(1);
+      expect(
+        [...workspaceCards().element().querySelectorAll("button")].map((button) =>
+          button.textContent?.trim(),
+        ),
+      ).toEqual(["Continue there", "New worktree"]);
+      await workspaceCards().getByRole("button", { name: "New worktree" }).click();
+      await vi.waitFor(() =>
+        expect(recoverRequests().at(-1)).toMatchObject({
+          threadId: THREAD_ID,
+          action: "newWorktree",
+        }),
+      );
+      // The status the queue reports afterwards needs nothing, so the card goes away.
+      await vi.waitFor(() => expect(workspaceCards().elements()).toHaveLength(0));
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("offers only Continue in Local when the worktree state cannot be read", async () => {
+  it("holds the workspace actions while the session is running", async () => {
     const mounted = await mountMissingWorktree(false, {
-      threadState: () => ({ type: "error", message: "state unavailable" }),
+      workspace: branchInUse,
+      sessionStatus: "running",
     });
     try {
-      const local = page.getByRole("button", { name: "Continue in Local", exact: true }).first();
-      await expect.element(local).toBeEnabled();
-      expect(
-        page.getByRole("button", { name: "Recreate worktree", exact: true }).elements(),
-      ).toHaveLength(0);
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("keeps header recovery disabled while the session is running", async () => {
-    const mounted = await mountMissingWorktree(false, { sessionStatus: "running" });
-    try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
-      await expect.element(recreate).toBeDisabled();
       await expect
-        .element(recreate)
-        .toHaveAttribute("title", "Available after the current turn finishes.");
-      await expect
-        .element(headerRecovery().getByRole("button", { name: "More recovery options" }))
+        .element(workspaceCards().getByRole("button", { name: "Continue there" }))
         .toBeDisabled();
+      await expect
+        .element(workspaceCards().getByRole("button", { name: "New worktree" }))
+        .toBeDisabled();
+      await expect
+        .element(workspaceCards().getByText("Available after the current turn finishes."))
+        .toBeVisible();
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("reports a failed header recovery in a toast", async () => {
+  it("reports a failed recovery on the card and stays ready for another try", async () => {
     const mounted = await mountMissingWorktree(false, {
+      workspace: {
+        kind: "attention",
+        reason: "restore_failed",
+        message: "The worktree could not be restored.",
+        actions: ["retry", "useProjectFolder"],
+      },
       recover: () => ({ type: "error", message: "Branch fix/gone is locked." }),
     });
     try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
-      await expect.element(recreate).toBeEnabled();
-      await recreate.click();
-      await expect.element(page.getByText("Could not recover the worktree")).toBeVisible();
-      await expect.element(page.getByText("Branch fix/gone is locked.")).toBeVisible();
-      await expect.element(recreate).toBeEnabled();
+      const retry = workspaceCards().getByRole("button", { name: "Try again" });
+      await retry.click();
+      await vi.waitFor(() => expect(recoverRequests().at(-1)).toMatchObject({ action: "restore" }));
+      await expect
+        .element(workspaceCards().getByRole("alert"))
+        .toHaveTextContent("Branch fix/gone is locked.");
+      await expect.element(retry).toBeEnabled();
+      await expect
+        .element(workspaceCards().getByRole("button", { name: "Continue in Local" }))
+        .toBeEnabled();
     } finally {
       await mounted.cleanup();
     }

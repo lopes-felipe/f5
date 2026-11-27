@@ -237,7 +237,11 @@ describe("WebSocket Server", () => {
           const state = await sendRequest(ws, WS_METHODS.worktreesThreadState, {
             threadId: "observed-branch",
           });
-          expect(state.result).toMatchObject({ registration: "matching", branch: "next-topic" });
+          expect(state.result).toMatchObject({
+            kind: "ready",
+            location: "worktree",
+            branch: "next-topic",
+          });
           if (managed)
             expect(
               db

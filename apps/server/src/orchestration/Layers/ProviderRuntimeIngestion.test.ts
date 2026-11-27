@@ -23,7 +23,6 @@ import { createHash } from "node:crypto";
 import { createAttachmentId } from "../../attachmentStore.ts";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { makeAutomationRuntimeEventPreparer } from "../../provider/prepareAutomationRuntimeEvent";
-import { GitCommandError } from "../../git/Errors.ts";
 import { cleanupStaleWorktrees } from "./WorktreeStartupCleanup.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { makeFakeGitCore } from "../../git/testDoubles.ts";
@@ -2192,14 +2191,9 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
-  it.each([
-    { branchExists: true, paused: false },
-    { branchExists: false, paused: false },
-    { branchExists: "probe-error", paused: false },
-    { branchExists: false, paused: true },
-  ] as const)(
-    "retains a missing worktree without replacing an existing pause: %o",
-    async ({ branchExists, paused }) => {
+  it.each([{ pause: null }, { pause: "worktree_missing" }, { pause: "manual_pause" }] as const)(
+    "retains a missing worktree, and neither pauses its queue nor releases it: %o",
+    async ({ pause }) => {
       const harness = await createHarness({ startIngestion: false });
       const threadId = asThreadId("thread-1");
       const missingPath = path.join(os.tmpdir(), `missing-worktree-${crypto.randomUUID()}`);
@@ -2212,26 +2206,16 @@ describe("ProviderRuntimeIngestion", () => {
           worktreePath: missingPath,
         }),
       );
-      const git = makeFakeGitCore({
-        branchExists: () =>
-          branchExists === "probe-error"
-            ? Effect.fail(
-                new GitCommandError({
-                  operation: "test",
-                  command: "git show-ref",
-                  cwd: "/unavailable",
-                  detail: "Repository unavailable",
-                }),
-              )
-            : Effect.succeed(branchExists),
-      });
+      const git = makeFakeGitCore({});
       const setPaused = vi.fn(() => Effect.void);
       await Effect.runPromise(
         cleanupStaleWorktrees(harness.engine).pipe(
           Effect.provideService(NextTurnQueueStore, {
             setPaused,
             listByThread: () =>
-              Effect.succeed({ state: { paused, revision: 7, pauseReasonCode: "manual_pause" } }),
+              Effect.succeed({
+                state: { paused: pause !== null, revision: 7, pauseReasonCode: pause },
+              }),
           } as never),
           Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
         ),
@@ -2240,10 +2224,12 @@ describe("ProviderRuntimeIngestion", () => {
       expect(model.threads.find((thread) => thread.id === threadId)?.worktreePath).toBe(
         missingPath,
       );
-      expect(git.calls.branchExists).toHaveLength(1);
-      expect(setPaused).toHaveBeenCalledTimes(branchExists === false && !paused ? 1 : 0);
-      if (branchExists === false && !paused)
-        expect(setPaused).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 7 }));
+      // Startup never asks Git whether the worktree can come back: the next
+      // message restores it, so no queue is paused for it. A message that is
+      // already waiting behind a pause stays there: releasing it would recreate
+      // the folder and send it without anyone asking.
+      expect(git.calls.branchExists).toHaveLength(0);
+      expect(setPaused).not.toHaveBeenCalled();
     },
   );
 

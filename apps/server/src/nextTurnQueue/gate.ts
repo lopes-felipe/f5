@@ -90,8 +90,8 @@ export function resolveNextTurnQueueGate(input: {
       reasonCode: "worktree_missing",
       detail:
         input.thread.branch === null
-          ? "This thread's worktree is gone. Recreate it or continue in the project checkout."
-          : `Worktree '${input.thread.worktreePath}' is missing.`,
+          ? "This thread's worktree is gone and it recorded no branch to restore."
+          : "This thread's worktree is not on disk.",
     };
   }
   if (

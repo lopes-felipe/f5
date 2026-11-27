@@ -29,6 +29,14 @@ Each harness release bumps the version once: Release 1 is 16, and Release 2 is 1
 (session capability snapshots, reported model capabilities, catalog sources and the
 provider inventory RPC).
 
+Version 51 gives each thread one server-computed workspace status. `worktrees.threadState` and
+`worktrees.recover` return a `ThreadWorkspaceStatus` (`ready`, `dormant`, `working` or
+`attention`, the last with the actions that apply) instead of the raw registration fields, and
+the same value is carried as `workspace` on the next-turn-queue snapshot, replacing
+`workspaceTransition`. `worktrees.recover` takes `restore`, `attach`, `newWorktree`,
+`useProjectFolder` or `cancel`, and no longer takes `expectedQueueRevision`: the server reads
+the queue under its own lock.
+
 Version 50 makes workspace switches settle themselves. `worktrees.previewTransitionRecovery`
 and `worktrees.resolveTransition` are removed, the `workspace_switch_failed` queue reason is
 no longer sent, and a transition snapshot is never left in `needs_recovery` (the phase still
