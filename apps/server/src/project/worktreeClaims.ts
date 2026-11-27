@@ -517,6 +517,11 @@ export type WorktreeRemovalPolicy = WorktreeRemovalContext &
     | {
         readonly kind: "manual";
         readonly approvedIgnoredEntries?: ReadonlyArray<string> | undefined;
+        /**
+         * Ignored files go without being named, but only build and cache
+         * output, as in automatic cleanup. Anything else refuses the removal.
+         */
+        readonly disposableIgnoredOnly?: boolean | undefined;
       }
     | { readonly kind: "autoCleanup" | "legacyCleanup" | "ownedRollback" }
     | {
@@ -590,7 +595,9 @@ const USAGE_LIMIT_CLEANUP_BLOCK = "a thread is waiting to resume after a usage l
 
 const ignoredRemovalPolicy = (policy: WorktreeRemovalPolicy): IgnoredFilesRemovalPolicy =>
   policy.kind === "manual"
-    ? { kind: "manual", approvedEntries: policy.approvedIgnoredEntries }
+    ? policy.disposableIgnoredOnly
+      ? { kind: "rebuildable" }
+      : { kind: "manual", approvedEntries: policy.approvedIgnoredEntries }
     : // Automatic cleanup may run unattended on rules users enabled long ago, so
       // it gets no wider an ignored-file exception than storage maintenance.
       policy.kind === "autoCleanup" || isStorageCleanupPolicy(policy)
@@ -630,6 +637,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
         entries: ReadonlyArray<string>;
         truncated: boolean;
         requiresApproval: boolean;
+        disposableOnly: boolean;
       }
     | undefined;
   let ignoredReason: string | null = null;
@@ -1085,11 +1093,19 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       { entries: ignoredEntries, truncated: childIgnoredTruncated },
       ignoredRemovalPolicy(input.policy),
     );
+    const entries = ignoredEntries;
     ignoredFiles = {
-      entries: ignoredEntries,
+      entries,
       truncated: childIgnoredTruncated,
       requiresApproval:
         input.policy.kind === "manual" && !childIgnoredTruncated && ignoredReason !== null,
+      // The same rule automatic cleanup applies, so a person is asked only about the rest.
+      disposableOnly:
+        !childIgnoredTruncated &&
+        entries.length > 0 &&
+        (yield* Effect.promise(() =>
+          blockingIgnoredEntriesOnDisk(input.path, entries, { kind: "rebuildable" }),
+        )).length === 0,
     };
   }
   return {

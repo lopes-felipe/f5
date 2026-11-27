@@ -46,6 +46,7 @@ import {
 import { switchConversationWorkspace } from "../lib/workspaceTransitions";
 import { cn } from "../lib/utils";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
+import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { parsePullRequestReference } from "../pullRequestReference";
 import { useWorktreeRemovalDialogStore } from "../worktreeRemovalDialogStore";
 import { WsRequestError } from "../wsTransport";
@@ -550,6 +551,32 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         close();
         void navigate({ to: "/worktrees", search: { projectId, threadId } });
         return;
+      case "restoreWorktree":
+        close();
+        void ensureNativeApi()
+          .worktrees.recover({ threadId, action: "restore" })
+          .then(async (status) => {
+            // The workspace card says what is needed when the restore has to ask.
+            useNextTurnQueueStore
+              .getState()
+              .applySnapshot(await ensureNativeApi().nextTurnQueue.list({ threadId }));
+            await queryClient.invalidateQueries({ queryKey: ["worktrees"] });
+            await queryClient.invalidateQueries({ queryKey: ["git"] });
+            if (status.kind === "attention")
+              toastManager.add({
+                type: "warning",
+                title: "Worktree not restored",
+                description: status.message,
+              });
+          })
+          .catch((error) =>
+            toastManager.add({
+              type: "error",
+              title: "Could not restore the worktree",
+              description: errorMessage(error),
+            }),
+          );
+        return;
       case "removeWorktree":
         close();
         if (state.kind === "worktree")
@@ -759,8 +786,8 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
             <p role="status" className="px-3 py-2 text-xs text-muted-foreground">
               {state.kind === "worktree"
                 ? activeThreadBranch
-                  ? `Worktree missing. Send a message to recreate it on ${activeThreadBranch}.`
-                  : "Worktree missing."
+                  ? `This worktree is not on disk. Your next message restores it on ${activeThreadBranch}.`
+                  : "This worktree is not on disk."
                 : "The project folder could not be found."}
             </p>
           )}

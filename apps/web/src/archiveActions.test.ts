@@ -26,9 +26,8 @@ vi.mock("./nativeApi", () => ({
     terminal: { close: mocks.close },
   }),
 }));
-vi.mock("./worktreeRemovalDialogStore", () => ({
-  useWorktreeRemovalDialogStore: { getState: () => ({ request: mocks.request }) },
-}));
+// Deletion hands its worktrees over; which of them go without a dialog is decided there.
+vi.mock("./worktreeSilentRemoval", () => ({ offerWorktreeRemovalAfterDeletion: mocks.request }));
 vi.mock("./components/ui/toast", () => ({ toastManager: { add: mocks.toast } }));
 
 function harness(order: string[]) {

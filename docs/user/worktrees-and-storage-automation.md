@@ -62,16 +62,27 @@ the action F5 would take or why it would skip it. **Recent activity** shows what
 
 ## Removing worktrees and missing checkouts
 
-Deleting conversations opens one removal dialog for their worktrees. Unsafe rows are disabled, and
-**Keep all** leaves every checkout in place. Branch deletion is optional and preselected only for
-merged branches.
+When you delete threads, F5 removes their worktrees without asking when that loses nothing, and
+a toast says "Removed N worktrees · branches kept". A worktree is removed this way only when all
+of this holds:
 
-Manual removal lists every ignored file and folder, including build outputs and local configuration.
-This deliberately includes `node_modules/`: manual removal requires confirmation even when that is
-the only ignored folder. Confirm each checkout separately, including in bulk conversation deletion.
-Check **Also delete the ignored files and folders listed above** to include them in removal.
-Deleting a listed folder deletes everything inside it. If a removal recheck finds another ignored
-path, the dialog refreshes the list and requires confirmation again. An incomplete list blocks removal.
+- Its tree is clean: no uncommitted or untracked files.
+- No thread that still exists uses it, and nothing else blocks removal (a running turn, an open
+  terminal, initialized submodules, a detached HEAD, a worktree group).
+- Its only ignored files are build and cache output that a build brings back, such as
+  `node_modules/`, `dist/` or `.turbo/`. This is the same list automatic cleanup uses.
+
+The server checks all of it again under its locks immediately before removing, and it never
+deletes the branch, so nothing committed is lost.
+
+Every other worktree is shown in one removal dialog. Unsafe rows are disabled, and **Keep all**
+leaves every worktree in place. Branch deletion is optional and preselected only for merged
+branches. The dialog lists every ignored file and folder. Build and cache output goes with the
+worktree. Anything else, such as `.env` or a local database, needs **Also delete the ignored files
+and folders listed above**, per worktree; deleting a listed folder deletes everything inside it.
+If a removal recheck finds another ignored path, the dialog refreshes the list and asks again. An
+incomplete list blocks removal. **Remove worktree…** in the picker and **Remove…** on the
+Worktrees page always open this dialog.
 
 If a thread's worktree is not on disk, your next message restores it. Nothing asks first, and the
 thread's timeline says what was done. Until then the thread header shows **Worktree restores on
@@ -119,11 +130,12 @@ Restoring a backup takes effect on restart.
 > [!NOTE]
 > F5 never removes a worktree that has uncommitted or untracked files, initialized submodules,
 > an open terminal or provider session, queued turns,
-> or an active turn in another conversation using it. Automatic cleanup always keeps the branch,
-> so the next message recreates the worktree. Automatic cleanup removes ignored files only when
-> they are well-known build or cache output such as `node_modules/`, `dist/` or `.turbo/`. Any
-> other ignored file, such as `.env`, `.envrc`, a private key or a local database, keeps the
-> worktree; deleting it requires confirmation through manual removal.
+> or an active turn in another conversation using it. Automatic cleanup, and the removal that
+> follows deleting a thread, always keep the branch, so the next message recreates the worktree.
+> Both remove ignored files only when they are well-known build or cache output such as
+> `node_modules/`, `dist/` or `.turbo/`. Any other ignored file, such as `.env`, `.envrc`, a
+> private key or a local database, keeps the worktree; deleting it requires confirmation in the
+> removal dialog.
 
 - Cleanup and auto-pull can be set per project, but never from a checked-in `f5.json`.
 - If F5 restarts mid-setup, the setup shows as failed and nothing is removed.
@@ -255,10 +267,18 @@ so a list entry never grants permission to mutate a checkout.
 
 ## The workspace picker
 
-One picker under the composer chooses where a conversation works. Its label says where that is:
-**Local · main** for the project folder, **New worktree · from main** for a worktree created at
-send, the branch name inside an existing worktree, and **· missing** when that worktree's
-directory is gone. The workspace and branch keyboard commands both open it.
+One picker under the composer chooses where a thread works. Its label says where that is:
+
+| Label                         | Meaning                                                                |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| **Local · main**              | The project folder, on the branch it has checked out                   |
+| **feat-x**                    | A worktree, on the branch its folder has checked out now               |
+| **feat-x · detached**         | A worktree on a detached HEAD; `feat-x` is the last branch it was on   |
+| **feat-x · restores on send** | The worktree's folder is not on disk; your next message brings it back |
+| **New worktree · from main**  | A new thread whose worktree is created from `main` when you send       |
+| **Creating worktree…**        | The first message was sent and the worktree is being set up            |
+
+The workspace and branch keyboard commands both open it.
 
 The top of the picker shows the current path, with buttons to copy it, open it in an editor,
 reveal it, or open a terminal there. The list below has these groups:
@@ -270,8 +290,10 @@ reveal it, or open a terminal there. The list below has these groups:
   worktree and its branch are created when you send.
 - **Open worktrees**: join a worktree that already exists. The row shows how many conversations
   already use it.
-- **Manage**: **Switch branch here…**, **Move to a new worktree…**, **Manage worktrees…**,
-  **Discard originals from move…** and **Remove worktree…**, where they apply.
+- **Manage**: **Switch branch here…**, **Restore worktree now**, **Move to a new worktree…**,
+  **Manage worktrees…**, **Discard originals from move…** and **Remove worktree…**, where they
+  apply. **Restore worktree now** appears while the label reads **· restores on send**, for when
+  you want the files back before sending anything.
 
 Type to filter. A pull request reference offers **Checkout Pull Request**. In a new
 conversation, a name with no matching branch offers **New worktree on new branch "name"**,

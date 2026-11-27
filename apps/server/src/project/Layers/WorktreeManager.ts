@@ -6,6 +6,7 @@ import {
   type ThreadId,
   type WorktreesInspectInput,
   type WorktreesInspectResult,
+  type WorktreesRemoveInput,
   type WorktreesSwitchWorkspaceInput,
 } from "@t3tools/contracts";
 import { transitionIsActive } from "../../persistence/Services/WorkspaceTransitions.ts";
@@ -185,13 +186,24 @@ export const makeWorktreeManager = Effect.gen(function* () {
         branchBlockedReason,
       };
     });
-  const inspect = (input: WorktreesInspectInput, approvedIgnoredEntries?: ReadonlyArray<string>) =>
+  const inspect = (
+    input: WorktreesInspectInput,
+    /** How removal will treat ignored files; a plain inspection names none. */
+    ignored: Partial<
+      Pick<WorktreesRemoveInput, "approvedIgnoredEntries" | "disposableIgnoredOnly">
+    > = {},
+  ) =>
     Effect.gen(function* () {
       const project = yield* projectFor(input.projectId);
       const gate = yield* evaluateWorktreeRemoval({
         projectCwd: project.workspaceRoot,
         path: input.path,
-        policy: { kind: "manual", ownThreadId: null, approvedIgnoredEntries },
+        policy: {
+          kind: "manual",
+          ownThreadId: null,
+          approvedIgnoredEntries: ignored.approvedIgnoredEntries,
+          disposableIgnoredOnly: ignored.disposableIgnoredOnly,
+        },
       }).pipe(Effect.provideServices(services));
       const branch = gate.registration?.branch ?? null;
       const headSha = gate.registration?.headSha ?? null;
@@ -204,8 +216,22 @@ export const makeWorktreeManager = Effect.gen(function* () {
           archived: thread.archivedAt !== null,
         }));
       const facts = yield* inspectBranch(project, input.path, branch, headSha);
+      // A worktree group is several checkouts; removing one always asks.
+      const grouped = git.readWorktreeGroup
+        ? (yield* git.readWorktreeGroup(input.path)) !== null
+        : false;
+      // The gate already refuses a dirty tree, a live turn, an open terminal
+      // and the rest. What is left to decide is whether a person has anything
+      // to look at: another thread that would lose the folder, or ignored
+      // files that a build does not bring back.
+      const onlyDisposableIgnored =
+        gate.ignoredFiles?.canRemoveAfterApproval === true && gate.ignoredFiles.disposableOnly;
       return {
         ...gate,
+        safeToRemoveSilently:
+          !grouped &&
+          linkedThreads.length === 0 &&
+          (gate.blockedReasons.length === 0 || onlyDisposableIgnored),
         linkedThreads,
         branch,
         headSha,
@@ -215,7 +241,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
   const remove: WorktreeManagerShape["remove"] = (input) =>
     Effect.gen(function* () {
       const project = yield* projectFor(input.projectId);
-      const preview = yield* inspect(input, input.approvedIgnoredEntries);
+      const preview = yield* inspect(input, input);
       if (preview.blockedReasons.length)
         return { removed: false, branchDeleted: false, blockedReasons: preview.blockedReasons };
       yield* stopDeletedWorktreeClaims(preview.deletedThreadClaims).pipe(
@@ -234,6 +260,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
           kind: "manual",
           ownThreadId: null,
           approvedIgnoredEntries: input.approvedIgnoredEntries,
+          disposableIgnoredOnly: input.disposableIgnoredOnly,
         },
         expectedHead: input.expectedHead,
         afterRemoval: (registration) =>

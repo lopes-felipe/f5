@@ -402,6 +402,160 @@ describe("WorktreeManager safety and recovery", { timeout: 60_000 }, () => {
     );
   });
 
+  describe("removal without asking", () => {
+    /** A worktree whose ignore rules cover build output and local configuration. */
+    const makeWorktree = (repoRoot: string, root: string, branch: string) =>
+      Effect.promise(async () => {
+        const target = path.join(root, branch);
+        git(repoRoot, "worktree", "add", "-q", "-b", branch, target, "main");
+        git(target, "config", "core.excludesFile", path.join(repoRoot, "no-global-ignore"));
+        await fs.writeFile(path.join(target, ".gitignore"), "node_modules/\ndist/\n.env\n");
+        git(target, "add", ".gitignore");
+        git(target, "commit", "-qm", "Ignore local content");
+        return target;
+      });
+    const build = (target: string) =>
+      Effect.promise(async () => {
+        for (const directory of ["node_modules", "dist"]) {
+          await fs.mkdir(path.join(target, directory));
+          await fs.writeFile(path.join(target, directory, "output"), "rebuilt by a build");
+        }
+      });
+
+    it("removes a clean worktree whose only ignored content is build output, and keeps the branch", async () => {
+      const { repo, world, projectId, run } = await fixture();
+      await run((manager, root) =>
+        Effect.gen(function* () {
+          const target = yield* makeWorktree(repo.root, root, "built");
+          yield* build(target);
+          // The thread that used it is deleted; nobody else does.
+          world.threads.push(
+            thread({
+              id: "gone",
+              projectId,
+              worktreePath: target,
+              branch: "built",
+              deletedAt: "2026-11-27T00:00:00.000Z",
+            }),
+          );
+          const preview = yield* manager.inspect({ projectId, path: target });
+          expect(preview.ignoredFiles?.entries.toSorted()).toEqual(["dist/", "node_modules/"]);
+          expect(preview.ignoredFiles?.disposableOnly).toBe(true);
+          expect(preview.safeToRemoveSilently).toBe(true);
+          expect(
+            yield* manager.remove({
+              projectId,
+              path: target,
+              deleteBranch: false,
+              expectedHead: preview.headSha,
+              disposableIgnoredOnly: true,
+            }),
+          ).toEqual({ removed: true, branchDeleted: false, blockedReasons: [] });
+          expect(yield* Effect.promise(() => fs.stat(target).catch(() => null))).toBeNull();
+          expect(git(repo.root, "rev-parse", "refs/heads/built")).toBe(preview.headSha);
+        }),
+      );
+    });
+
+    it("asks when a file a build does not bring back is ignored, and refuses to remove it unnamed", async () => {
+      const { repo, projectId, run } = await fixture();
+      await run((manager, root) =>
+        Effect.gen(function* () {
+          const target = yield* makeWorktree(repo.root, root, "configured");
+          yield* build(target);
+          yield* Effect.promise(() => fs.writeFile(path.join(target, ".env"), "TOKEN=local"));
+          const preview = yield* manager.inspect({ projectId, path: target });
+          expect(preview.ignoredFiles?.disposableOnly).toBe(false);
+          expect(preview.safeToRemoveSilently).toBe(false);
+          // A client that asks anyway is refused, under the same check.
+          const refused = yield* manager.remove({
+            projectId,
+            path: target,
+            deleteBranch: false,
+            expectedHead: preview.headSha,
+            disposableIgnoredOnly: true,
+          });
+          expect(refused.removed).toBe(false);
+          expect(refused.blockedReasons.join(" ")).toContain(".env");
+          expect(yield* Effect.promise(() => fs.readFile(path.join(target, ".env"), "utf8"))).toBe(
+            "TOKEN=local",
+          );
+        }),
+      );
+    });
+
+    it("asks about a dirty tree and about a worktree another thread still uses", async () => {
+      const { repo, world, projectId, run } = await fixture();
+      await run((manager, root) =>
+        Effect.gen(function* () {
+          const dirty = yield* makeWorktree(repo.root, root, "dirty");
+          yield* Effect.promise(() => fs.writeFile(path.join(dirty, "notes.txt"), "not committed"));
+          const dirtyPreview = yield* manager.inspect({ projectId, path: dirty });
+          expect(dirtyPreview.safeToRemoveSilently).toBe(false);
+          expect(
+            (yield* manager.remove({
+              projectId,
+              path: dirty,
+              deleteBranch: false,
+              expectedHead: dirtyPreview.headSha,
+              disposableIgnoredOnly: true,
+            })).removed,
+          ).toBe(false);
+
+          const shared = yield* makeWorktree(repo.root, root, "shared");
+          expect((yield* manager.inspect({ projectId, path: shared })).safeToRemoveSilently).toBe(
+            true,
+          );
+          world.threads.push(
+            thread({ id: "other", projectId, worktreePath: shared, branch: "shared" }),
+          );
+          expect((yield* manager.inspect({ projectId, path: shared })).safeToRemoveSilently).toBe(
+            false,
+          );
+        }),
+      );
+    });
+
+    it("refuses when a file that is not build output appears after the check", async () => {
+      const { repo, projectId, run } = await fixture();
+      let realCore: GitCoreShape;
+      let target = "";
+      let probes = 0;
+      await run(
+        (manager, root) =>
+          Effect.gen(function* () {
+            realCore = yield* GitCore;
+            target = yield* makeWorktree(repo.root, root, "raced");
+            yield* build(target);
+            const preview = yield* manager.inspect({ projectId, path: target });
+            expect(preview.safeToRemoveSilently).toBe(true);
+            probes = 0;
+            const result = yield* manager.remove({
+              projectId,
+              path: target,
+              deleteBranch: false,
+              expectedHead: preview.headSha,
+              disposableIgnoredOnly: true,
+            });
+            expect(result.removed).toBe(false);
+            expect(
+              yield* Effect.promise(() => fs.readFile(path.join(target, ".env"), "utf8")),
+            ).toBe("late");
+          }),
+        {
+          // The file lands after both unlocked previews, just before the check
+          // that runs under the locks.
+          inspectCheckout: (cwd, options) =>
+            Effect.gen(function* () {
+              if (cwd === target && ++probes === 3)
+                yield* Effect.promise(() => fs.writeFile(path.join(target, ".env"), "late"));
+              return yield* realCore.inspectCheckout(cwd, options);
+            }),
+        },
+      );
+    });
+  });
+
   it("blocks removal when the ignored-file listing is incomplete even with approval", async () => {
     const { repo, projectId, run } = await fixture();
     let realCore: GitCoreShape;
