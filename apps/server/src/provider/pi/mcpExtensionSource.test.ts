@@ -4,7 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as NodeVM from "node:vm";
-import { assert, describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it, vi } from "@effect/vitest";
 
 import { PI_F5_MCP_EXTENSION_SOURCE } from "./mcpExtensionSource.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
@@ -505,6 +505,89 @@ describe("Pi tool discovery permissions", () => {
     const replaced = await toolCall!({ toolName: "tool_search", input: {} }, ctx);
     assert.equal(replaced?.block, true);
     assert.equal(confirmations.at(-1), "Allow tool_search?");
+  });
+});
+
+describe("Pi hub MCP servers", () => {
+  const userMcpServers = [
+    { name: "docs", url: "http://127.0.0.1/mcp/user/docs", token: "docs-token", timeoutMs: 1000 },
+    { name: "gone", url: "http://127.0.0.1/mcp/user/down", token: "x", timeoutMs: 1000 },
+  ];
+
+  it("registers each hub server's tools under its own name with its own credential", async () => {
+    const bridge = await loadMcpBridge({ modern: true, userMcpServers });
+    const names = bridge.tools.map((tool) => tool.name);
+    expect(names).toContain("mcp__docs__thread_status");
+    expect(names).toContain("mcp__f5__thread_status");
+    expect(names.some((name) => name.startsWith("mcp__gone__"))).toBe(false);
+    const tool = bridge.tools.find((entry) => entry.name === "mcp__docs__html_render")!;
+    const result = await tool.execute("call-1", { value: 1 });
+    expect(result.content).toEqual([{ type: "text", text: "browser snapshot" }]);
+    expect(bridge.transports.at(-1)).toMatchObject({
+      url: "http://127.0.0.1/mcp/user/docs",
+      authorization: "Bearer docs-token",
+    });
+    expect(bridge.requests.at(-1)).toEqual(
+      expect.objectContaining({
+        method: "tools/call",
+        params: { name: "html_render", arguments: { value: 1 } },
+      }),
+    );
+
+    const notices: string[] = [];
+    const [hubSessionStart] = bridge.allHandlers.get("session_start")! as unknown as Array<
+      (event: unknown, ctx: { ui: { notify: (message: string) => void } }) => Promise<void>
+    >;
+    await hubSessionStart!({}, { ui: { notify: (message) => notices.push(message) } });
+    await vi.waitFor(() => expect(notices).toContain("MCP servers unavailable: gone"));
+  });
+
+  it("waits for the server's startup timeout and drops the hub tokens from the environment", async () => {
+    const bridge = await loadMcpBridge({
+      modern: true,
+      userMcpServers: [{ ...userMcpServers[0]!, startupTimeoutMs: 90_000 }],
+    });
+    expect(bridge.abortTimeouts).toContain(120_000);
+    expect(bridge.processEnv.F5_PI_MCP_SERVERS).toBeUndefined();
+    expect(bridge.tools.map((tool) => tool.name)).toContain("mcp__docs__thread_status");
+  });
+
+  it("retries a server that failed at load when the session starts", async () => {
+    let down = true;
+    const bridge = await loadMcpBridge({
+      modern: true,
+      userMcpServers: [userMcpServers[0]!],
+      isDown: (url) => down && url.includes("/user/docs"),
+    });
+    expect(bridge.tools.some((tool) => tool.name.startsWith("mcp__docs__"))).toBe(false);
+
+    down = false;
+    const notices: string[] = [];
+    const [hubSessionStart] = bridge.allHandlers.get("session_start")! as unknown as Array<
+      (event: unknown, ctx: { ui: { notify: (message: string) => void } }) => Promise<void>
+    >;
+    await hubSessionStart!({}, { ui: { notify: (message) => notices.push(message) } });
+    await vi.waitFor(() =>
+      expect(bridge.tools.map((tool) => tool.name)).toContain("mcp__docs__thread_status"),
+    );
+    expect(notices).toEqual([]);
+  });
+
+  it("asks before running a hub tool even when it claims to be read-only", async () => {
+    const bridge = await loadMcpBridge({
+      modern: true,
+      runtimeMode: "approval-required",
+      userMcpServers,
+    });
+    const hook = bridge.handlers.get("tool_call") as unknown as (
+      event: { toolName: string; input: unknown },
+      ctx: { ui: { confirm: () => Promise<boolean> } },
+    ) => Promise<{ block: true } | undefined>;
+    const ctx = { ui: { confirm: async () => false } };
+    expect((await hook({ toolName: "mcp__docs__thread_status", input: {} }, ctx))?.block).toBe(
+      true,
+    );
+    expect(await hook({ toolName: "mcp__f5__thread_status", input: {} }, ctx)).toBeUndefined();
   });
 });
 

@@ -1,1 +1,0 @@
-- Generated pull request titles and descriptions stay focused on the code changes when the supplied context includes follow-up requests.

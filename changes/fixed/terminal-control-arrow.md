@@ -1,1 +1,0 @@
-- Ctrl+Left and Ctrl+Right in the terminal send the shell's modified arrow keys on Windows and Linux.

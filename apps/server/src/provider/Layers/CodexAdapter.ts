@@ -96,7 +96,12 @@ import {
   isSyntheticOneOffThreadId,
 } from "../../codexAppServerManager.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
-import { ServerConfig } from "../../config.ts";
+import { resolveProviderHomesDir, ServerConfig } from "../../config.ts";
+import {
+  codexProjectRulesConflictMessage,
+  codexReadOnlyHomeDir,
+  findCodexProjectRulesConflict,
+} from "../../codex/CodexReadOnlyHome.ts";
 import type { PreviewMcpSessionConfig } from "../../mcp/PreviewMcpHttpServer.ts";
 import { writeProviderEventLog, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { appendProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
@@ -156,6 +161,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
     const serverConfig = yield* Effect.service(ServerConfig);
     const shutdown = yield* Effect.serviceOption(ServerShutdown);
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make(PROVIDER);
+    // `${env:…}` in MCP definitions resolve from the environment Codex runs in.
+    const mcpInterpolationEnv = { environment: options?.processEnvironment ?? process.env };
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -181,6 +188,35 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
         }),
     );
+    /**
+     * Refuses a read-only stage in a workspace whose own Codex rules would let commands run
+     * without asking F5, or that F5 can't check with certainty (CodexReadOnlyHome.ts).
+     */
+    const assertCodexReadOnlyWorkspace = (
+      cwd: string | undefined,
+      operation: "startSession" | "sendTurn",
+    ) =>
+      Effect.tryPromise({
+        try: () => findCodexProjectRulesConflict(cwd ?? process.cwd()),
+        catch: (cause) =>
+          new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation,
+            issue: `Codex can't run read-only workflow stages here: F5 couldn't check the workspace's Codex rules (${toMessage(cause, "unknown error")}).`,
+          }),
+      }).pipe(
+        Effect.flatMap((conflict) =>
+          conflict
+            ? Effect.fail(
+                new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation,
+                  issue: codexProjectRulesConflictMessage(conflict),
+                }),
+              )
+            : Effect.void,
+        ),
+      );
     const inheritsFastMode = (model: string | undefined) =>
       resolveCodexFastMode(
         undefined,
@@ -279,7 +315,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           options?.defaultProviderOptions,
           input.providerOptions,
         );
-        const baseProviderMcpServers = providerOptions?.mcpServers;
+        // A read-only workflow stage gets only F5's read-only thread catalog. MCP tools run
+        // outside Codex's shell sandbox and Codex never asks before using them, so the user's
+        // servers, the preview server and plugins would each be a way to write.
+        const readOnlyStage = input.workflowExecutionProfile !== undefined;
+        if (readOnlyStage) yield* assertCodexReadOnlyWorkspace(input.cwd, "startSession");
+        const baseProviderMcpServers = readOnlyStage ? undefined : providerOptions?.mcpServers;
         yield* Effect.try({
           try: () => {
             assertMcpRuntimeConfig(input.providerOptions?.mcpServers, PROVIDER);
@@ -296,7 +337,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
-          serverConfig.mode === "desktop" && !isSyntheticOneOffThreadId(input.threadId)
+          serverConfig.mode === "desktop" &&
+          !readOnlyStage &&
+          !isSyntheticOneOffThreadId(input.threadId)
             ? options?.previewMcpHttpServer?.createSessionConfig({
                 threadId: input.threadId,
                 ...(input.providerInstanceId
@@ -524,10 +567,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                 ...(chromeServer ? { [CODEX_CHROME_SERVER_NAME]: chromeServer } : {}),
               }
             : baseProviderMcpServers;
+        const mcpEnvironment =
+          previewMcpSession || computerMcpSession || threadMcpSession
+            ? {
+                ...previewMcpSession?.env,
+                ...computerMcpSession?.env,
+                ...threadMcpSession?.env,
+              }
+            : undefined;
         yield* Effect.try({
           try: () =>
             assertMcpServerLimit(
-              filterEnabledMcpServers(providerMcpServers),
+              filterEnabledMcpServers(providerMcpServers, "codex"),
               MCP_RUNTIME_SERVER_LIMIT,
             ),
           catch: (cause) =>
@@ -593,6 +644,22 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             ? { effectiveModelCapabilities: options.getEffectiveModelCapabilities() }
             : {}),
           runtimeMode: input.runtimeMode,
+          // Without this the stage runs with the thread's runtime mode (full access when the
+          // thread is Full access) instead of Codex's read-only sandbox.
+          ...(input.workflowExecutionProfile
+            ? {
+                workflowExecutionProfile: input.workflowExecutionProfile,
+                disablePlugins: true,
+                readOnlyHomePath: codexReadOnlyHomeDir(
+                  resolveProviderHomesDir(serverConfig),
+                  boundInstanceId,
+                ),
+                // `policy` where Codex's sandbox can't start: F5 answers every command instead.
+                ...(input.readOnlyEnforcement
+                  ? { readOnlyEnforcement: input.readOnlyEnforcement }
+                  : {}),
+              }
+            : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...codexServiceTierOptions(
             resolveCodexSelectionOptions({
@@ -603,17 +670,16 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             inheritsFastMode(input.model ?? input.modelSelection?.model),
           ),
           ...(providerMcpServers
-            ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
-            : {}),
-          ...(previewMcpSession || computerMcpSession || threadMcpSession
             ? {
-                mcpEnvironment: {
-                  ...previewMcpSession?.env,
-                  ...computerMcpSession?.env,
-                  ...threadMcpSession?.env,
-                },
+                mcpServers:
+                  translateMcpForCodex(providerMcpServers, {
+                    ...mcpInterpolationEnv,
+                    // F5's own catalogs read their credentials from these variables.
+                    ownBearerEnvVars: new Set(Object.keys(mcpEnvironment ?? {})),
+                  }) ?? {},
               }
             : {}),
+          ...(mcpEnvironment ? { mcpEnvironment } : {}),
           ...(chromeInstructions ? { integrationInstructions: [chromeInstructions] } : {}),
           ...(mcpOAuthCallbackConfig.port
             ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
@@ -641,7 +707,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             Effect.sync(() => {
               launchedMcpConfigKeys.set(
                 input.threadId,
-                stableMcpConfigKey(translateMcpForCodex(baseProviderMcpServers) ?? {}),
+                stableMcpConfigKey(
+                  translateMcpForCodex(baseProviderMcpServers, mcpInterpolationEnv) ?? {},
+                ),
               );
             }),
           ),
@@ -659,6 +727,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             deliveryCertainty: "not_sent",
             deliveryRetryable: false,
           });
+        // A rules file the workspace gained since the stage started would apply from now on.
+        const readOnlyCwd = manager.readOnlyStageCwd(input.threadId);
+        if (readOnlyCwd !== undefined) yield* assertCodexReadOnlyWorkspace(readOnlyCwd, "sendTurn");
         const codexAttachments = yield* Effect.forEach(
           (input.attachments ?? []).filter((attachment) => attachment.type === "image"),
           (attachment) =>
@@ -998,11 +1069,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               issue: mcpConfigErrorMessage(cause),
             }),
         });
+        // What Codex is given: enabled servers whose variables resolve. A server left out
+        // for an unset variable is neither expected nor owned by this reload.
+        const translated = translateMcpForCodex(mcpServers, mcpInterpolationEnv) ?? {};
+        const desired = Object.keys(translated);
         const launched = launchedMcpConfigKeys.get(threadId);
-        if (
-          launched !== undefined &&
-          launched !== stableMcpConfigKey(translateMcpForCodex(mcpServers) ?? {})
-        ) {
+        if (launched !== undefined && launched !== stableMcpConfigKey(translated)) {
           // This also applies after login: never reload a launch config that differs
           // from the saved snapshot. Credentials take effect at the safe restart boundary.
           return restartRequiredMcpReload("Codex fixes its MCP servers when the session starts.");
@@ -1012,7 +1084,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           catch: (cause) => toRequestError(threadId, "config/mcpServer/reload", cause),
         });
         return summarizeMcpReload({
-          desired: Object.keys(filterEnabledMcpServers(mcpServers)),
+          desired,
           observed:
             statuses === undefined
               ? undefined
@@ -1021,7 +1093,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                     const decoded = decodeCodexMcpServerStatus(status);
                     return decoded ? [decoded] : [];
                   }),
-                  new Set(Object.keys(filterEnabledMcpServers(mcpServers))),
+                  new Set(desired),
                   builtInMcpServerNames(threadId),
                 ),
           sameName: codexServerNamesMatch,

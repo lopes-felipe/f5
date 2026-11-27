@@ -1,8 +1,8 @@
 import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
 import {
-  type McpOauthLoginStatusRequest,
   McpOauthLoginStatusResult,
-  type McpStartOauthLoginRequest,
+  type ProjectId,
+  type ProviderInstanceId,
   type ProviderStartOptions,
 } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "@t3tools/shared/codexOAuthTiming";
@@ -28,6 +28,19 @@ import {
 } from "./codexMcpServerStatus.ts";
 
 const OAUTH_RECONCILE_INTERVAL_MS = 5_000;
+
+/**
+ * Server-internal: McpRuntimeService builds this after resolving the account, so
+ * the executable and home come from the provider instance, never from a client.
+ */
+export interface McpOauthLoginStatusRequest {
+  readonly projectId: ProjectId;
+  readonly serverName: string;
+  readonly instanceId?: ProviderInstanceId | undefined;
+  readonly binaryPath?: string | undefined;
+  readonly homePath?: string | undefined;
+}
+export type McpStartOauthLoginRequest = McpOauthLoginStatusRequest;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -290,6 +303,11 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       if (hasLease) {
         return existing;
       }
+      // The login finished (or a new one started) while reconciliation and the lease
+      // check ran; the stored outcome wins over a timeout decided from stale reads.
+      if (pendingMetadataByKey.get(key) !== metadata) {
+        return statusByKey.get(key) ?? existing;
+      }
 
       const expiredStatus = makeFailedStatus(input, {
         startedAt: existing.startedAt ?? nowIso(),
@@ -299,6 +317,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       metadata?.cleanupListeners();
       statusByKey.set(key, expiredStatus);
       pendingMetadataByKey.delete(key);
+      yield* publishStatusUpdated(input, metadata);
       return expiredStatus;
     });
 
@@ -389,6 +408,17 @@ const makeCodexOAuthManager = Effect.gen(function* () {
           reconcileInFlight: false,
         };
         pendingMetadataByKey.set(statusKeyFor(input), pendingMetadata);
+        // Nothing polls a pending sign-in any more: reconcile here until it settles, so a
+        // completion Codex never announces still finishes (and publishes) on its own.
+        runBackgroundTask(
+          Effect.gen(function* () {
+            while (pendingMetadataByKey.get(statusKeyFor(input)) === pendingMetadata) {
+              yield* Effect.sleep(OAUTH_RECONCILE_INTERVAL_MS);
+              if (pendingMetadataByKey.get(statusKeyFor(input)) !== pendingMetadata) return;
+              yield* readStatus(input);
+            }
+          }),
+        );
 
         notificationListener = ({
           method,

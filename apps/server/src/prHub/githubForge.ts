@@ -355,6 +355,50 @@ export function makeGitHubForge(github: GitHubCliShape, cwd: string): ForgeProvi
         }
         return files;
       }),
+    readRepositoryContent: ({ ref, path, revision }) =>
+      Effect.gen(function* () {
+        // encodeURIComponent leaves !'()*~ alone; the endpoint check only admits encoded forms.
+        const segment = (part: string) =>
+          encodeURIComponent(part).replace(
+            /[!'()*~]/g,
+            (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+          );
+        const encoded = path ? "/" + path.split("/").map(segment).join("/") : "";
+        const query = revision ? "?" + new URLSearchParams({ ref: revision }).toString() : "";
+        const raw = yield* request(ref, `/contents${encoded}${query}`);
+        if (Array.isArray(raw))
+          return {
+            kind: "directory" as const,
+            path,
+            entries: raw.map((value) => {
+              const entry = record(value);
+              const type = String(entry.type);
+              return {
+                name: String(entry.name ?? ""),
+                type:
+                  type === "dir" || type === "symlink" || type === "submodule"
+                    ? type
+                    : ("file" as const),
+                size: typeof entry.size === "number" ? entry.size : 0,
+              };
+            }),
+          };
+        const file = record(raw);
+        if (file.type !== "file")
+          return yield* failure("contents", `The path is a ${String(file.type)}, not a file.`);
+        const size = typeof file.size === "number" ? file.size : 0;
+        if (file.encoding !== "base64" || typeof file.content !== "string")
+          return { kind: "file" as const, path, size, text: null, binary: false };
+        const bytes = Buffer.from(file.content, "base64");
+        let decoded: string | null = null;
+        try {
+          // NUL bytes or invalid UTF-8 mean a binary file.
+          if (!bytes.includes(0)) decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        } catch {
+          decoded = null;
+        }
+        return { kind: "file" as const, path, size, text: decoded, binary: decoded === null };
+      }),
     getDiff: (ref) =>
       scope(ref, (context) =>
         github

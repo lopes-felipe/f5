@@ -160,9 +160,9 @@ import { GlobalSearchQueryInput } from "./globalSearch";
 import { KeybindingRule } from "./keybindings";
 import {
   McpApplyToLiveSessionsRequest,
-  McpGetCodexStatusRequest,
   McpGetCommonConfigRequest,
   McpGetEffectiveConfigRequest,
+  McpGetHubStatusRequest,
   McpGetLoginStatusRequest,
   McpGetProjectConfigRequest,
   McpGetProviderStatusRequest,
@@ -171,13 +171,15 @@ import {
   McpProbeServerRequest,
   McpStoreSecretRequest,
   McpInspectServerRequest,
-  McpOauthLoginStatusRequest,
+  McpReconnectHubServerRequest,
+  McpGetHubAuthStatusRequest,
+  McpStartHubSignInRequest,
+  McpCompleteHubSignInRequest,
+  McpSignOutHubServerRequest,
   McpReconnectServerRequest,
-  McpReloadProjectRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
   McpStartLoginRequest,
-  McpStartOauthLoginRequest,
 } from "./mcp";
 import {
   NextTurnQueueCancelInput,
@@ -786,11 +788,13 @@ const WebSocketRequestBody = Schema.Union([
   tagMcpAccountRequestBody(WS_METHODS.mcpReconnectServer, McpReconnectServerRequest),
   tagMcpAccountRequestBody(WS_METHODS.mcpStartLogin, McpStartLoginRequest),
   tagMcpAccountRequestBody(WS_METHODS.mcpGetLoginStatus, McpGetLoginStatusRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpGetCodexStatus, McpGetCodexStatusRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpReloadProject, McpReloadProjectRequest),
   tagMcpAccountRequestBody(WS_METHODS.mcpApplyToLiveSessions, McpApplyToLiveSessionsRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpStartOAuthLogin, McpStartOauthLoginRequest),
-  tagMcpAccountRequestBody(WS_METHODS.mcpGetOAuthStatus, McpOauthLoginStatusRequest),
+  tagRequestBody(WS_METHODS.mcpGetHubStatus, McpGetHubStatusRequest),
+  tagRequestBody(WS_METHODS.mcpReconnectHubServer, McpReconnectHubServerRequest),
+  tagRequestBody(WS_METHODS.mcpGetHubAuthStatus, McpGetHubAuthStatusRequest),
+  tagRequestBody(WS_METHODS.mcpStartHubSignIn, McpStartHubSignInRequest),
+  tagRequestBody(WS_METHODS.mcpCompleteHubSignIn, McpCompleteHubSignInRequest),
+  tagRequestBody(WS_METHODS.mcpSignOutHubServer, McpSignOutHubServerRequest),
 
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.listAccounts, Schema.Struct({})),

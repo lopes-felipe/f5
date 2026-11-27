@@ -8,6 +8,9 @@ import { ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderKind } from "./orchestration";
 import { McpServerDefinition, McpProjectServersConfig } from "./mcpServer";
 
+// Account-scoped requests select a provider instance; the server resolves its
+// executable and home. Client-supplied paths are rejected on the wire.
+
 export const McpGetCommonConfigRequest = Schema.Struct({});
 export type McpGetCommonConfigRequest = typeof McpGetCommonConfigRequest.Type;
 
@@ -39,8 +42,6 @@ export const McpGetProviderStatusRequest = Schema.Struct({
   provider: ProviderKind,
   projectId: ProjectId,
   instanceId: Schema.optional(ProviderInstanceId),
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpGetProviderStatusRequest = typeof McpGetProviderStatusRequest.Type;
 
@@ -51,32 +52,12 @@ export const McpGetServerStatusesRequest = Schema.Struct({
 
 export type McpGetServerStatusesRequest = typeof McpGetServerStatusesRequest.Type;
 
-export const McpCodexEnvironmentOptions = Schema.Struct({
-  instanceId: Schema.optional(ProviderInstanceId),
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
-});
-export type McpCodexEnvironmentOptions = typeof McpCodexEnvironmentOptions.Type;
-
-export const McpGetCodexStatusRequest = Schema.Struct({
-  projectId: ProjectId,
-  instanceId: Schema.optional(ProviderInstanceId),
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
-});
-export type McpGetCodexStatusRequest = typeof McpGetCodexStatusRequest.Type;
-
-export const McpReloadProjectRequest = McpGetCodexStatusRequest;
-export type McpReloadProjectRequest = typeof McpReloadProjectRequest.Type;
-
 export const McpApplyToLiveSessionsRequest = Schema.Struct({
   scope: McpConfigScope,
   projectId: Schema.optional(ProjectId),
   instanceId: Schema.optional(ProviderInstanceId),
   threadIds: Schema.optional(Schema.Array(ThreadId)),
   retryUnchanged: Schema.optional(Schema.Boolean),
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpApplyToLiveSessionsRequest = typeof McpApplyToLiveSessionsRequest.Type;
 
@@ -85,8 +66,6 @@ export const McpStartLoginRequest = Schema.Struct({
   projectId: ProjectId,
   serverName: Schema.optional(TrimmedNonEmptyString),
   instanceId: Schema.optional(ProviderInstanceId),
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
   /** Running conversation that performs a session-routed sign-in (Claude). */
   threadId: Schema.optional(ThreadId),
 });
@@ -95,24 +74,6 @@ export type McpStartLoginRequest = typeof McpStartLoginRequest.Type;
 export const McpGetLoginStatusRequest = McpStartLoginRequest;
 export type McpGetLoginStatusRequest = typeof McpGetLoginStatusRequest.Type;
 
-export const McpStartOauthLoginRequest = Schema.Struct({
-  projectId: ProjectId,
-  serverName: TrimmedNonEmptyString,
-  instanceId: Schema.optional(ProviderInstanceId),
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
-});
-export type McpStartOauthLoginRequest = typeof McpStartOauthLoginRequest.Type;
-
-export const McpOauthLoginStatusRequest = Schema.Struct({
-  projectId: ProjectId,
-  serverName: TrimmedNonEmptyString,
-  instanceId: Schema.optional(ProviderInstanceId),
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
-});
-export type McpOauthLoginStatusRequest = typeof McpOauthLoginStatusRequest.Type;
-
 export const McpStatusUpdatedReason = Schema.Literals([
   "updated",
   "reloaded",
@@ -120,6 +81,8 @@ export const McpStatusUpdatedReason = Schema.Literals([
   "oauth-completed",
   "login-completed",
   "runtime",
+  /** An MCP hub connection or sign-in changed; only hub status and sign-in queries need a refresh. */
+  "hub",
 ]);
 export type McpStatusUpdatedReason = typeof McpStatusUpdatedReason.Type;
 
@@ -130,8 +93,46 @@ export const McpStatusUpdatedPayload = Schema.Struct({
   projectId: Schema.optional(ProjectId),
   reason: McpStatusUpdatedReason,
   configVersion: Schema.optional(TrimmedNonEmptyString),
+  serverName: Schema.optional(TrimmedNonEmptyString),
 });
 export type McpStatusUpdatedPayload = typeof McpStatusUpdatedPayload.Type;
+
+export const McpGetHubStatusRequest = Schema.Struct({
+  /** Limits the result to connections serving this project. */
+  projectId: Schema.optional(ProjectId),
+});
+export type McpGetHubStatusRequest = typeof McpGetHubStatusRequest.Type;
+
+export const McpReconnectHubServerRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  projectId: Schema.optional(ProjectId),
+});
+export type McpReconnectHubServerRequest = typeof McpReconnectHubServerRequest.Type;
+
+/** Without a project, common servers are listed and signed in. */
+export const McpGetHubAuthStatusRequest = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+});
+export type McpGetHubAuthStatusRequest = typeof McpGetHubAuthStatusRequest.Type;
+
+export const McpStartHubSignInRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  projectId: Schema.optional(ProjectId),
+});
+export type McpStartHubSignInRequest = typeof McpStartHubSignInRequest.Type;
+
+export const McpCompleteHubSignInRequest = Schema.Struct({
+  attemptId: TrimmedNonEmptyString,
+  /** The address the browser was sent to after authorizing, pasted by the user. */
+  redirectedUrl: TrimmedNonEmptyString.check(Schema.isMaxLength(8192)),
+});
+export type McpCompleteHubSignInRequest = typeof McpCompleteHubSignInRequest.Type;
+
+export const McpSignOutHubServerRequest = Schema.Struct({
+  serverName: TrimmedNonEmptyString,
+  projectId: Schema.optional(ProjectId),
+});
+export type McpSignOutHubServerRequest = typeof McpSignOutHubServerRequest.Type;
 
 export const McpInspectServerRequest = Schema.Struct({
   ...McpGetServerStatusesRequest.fields,

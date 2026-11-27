@@ -111,6 +111,7 @@ export const LEGACY_SETTINGS_CATEGORY_ALIASES: Readonly<Record<string, SettingsC
 export const LEGACY_SETTINGS_ITEM_ALIASES: Readonly<Record<string, string>> = {
   "general.theme": "appearance.theme",
   // General
+  "general.composer-collapse": "conversation.composer-collapse",
   "general.composer-editor": "conversation.composer-editor",
   "general.send-shortcut": "conversation.send-shortcut",
   "general.pr-merge-method": "git.merge-method",
@@ -238,6 +239,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
   "appearance.palette": {
     category: "appearance",
   },
+  "appearance.app-icon": {
+    category: "appearance",
+  },
   "appearance.diff-colors": {
     category: "appearance",
   },
@@ -310,6 +314,9 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     category: "conversation",
   },
   "conversation.composer-editor": {
+    category: "conversation",
+  },
+  "conversation.composer-collapse": {
     category: "conversation",
   },
   "conversation.compact-layout": {
@@ -651,11 +658,14 @@ export interface SettingsSearch {
   readonly instance?: string;
   /** With `instance`: the project whose project-scoped hooks the inventory lists first. */
   readonly instanceProject?: string;
+  /** With item `tools.mcp`: the MCP server whose detail panel opens. */
+  readonly server?: string;
 }
 
 const PROVIDER_INSTANCES_ITEM = "providers.instances";
+const MCP_SERVERS_ITEM = "tools.mcp";
 
-function boundedSearchString(search: unknown, field: "instance" | "instanceProject") {
+function boundedSearchString(search: unknown, field: "instance" | "instanceProject" | "server") {
   const raw = (search as Record<string, unknown> | null | undefined)?.[field];
   return typeof raw === "string" && raw.length > 0 && raw.length <= 256 ? raw : undefined;
 }
@@ -675,12 +685,14 @@ export function resolveSettingsSearch(search: unknown): SettingsSearch {
     const instance =
       item.id === PROVIDER_INSTANCES_ITEM ? boundedSearchString(search, "instance") : undefined;
     const instanceProject = instance ? boundedSearchString(search, "instanceProject") : undefined;
+    const server = item.id === MCP_SERVERS_ITEM ? boundedSearchString(search, "server") : undefined;
     return {
       category: item.category,
       item: item.id,
       ...(project && itemScope !== "global" ? { project } : {}),
       ...(instance ? { instance } : {}),
       ...(instanceProject ? { instanceProject } : {}),
+      ...(server ? { server } : {}),
     };
   }
 

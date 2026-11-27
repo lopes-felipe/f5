@@ -108,6 +108,16 @@ describe("detectPlatform and resolveHeroDownloadCta", () => {
       href: "/download",
     });
 
+    const linuxArmv7Ua = detectPlatform(
+      "Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36 Chrome/135.0.0.0 Safari/537.36",
+    );
+    expect(linuxArmv7Ua?.target).toBeNull();
+    expect(resolveHeroDownloadCta(linuxArmv7Ua, RELEASE)).toEqual({
+      os: "linux",
+      label: "Linux: see download options",
+      href: "/download",
+    });
+
     const linuxArmHint = detectPlatform(
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/135.0.0.0 Safari/537.36",
       "arm",

@@ -14,6 +14,7 @@ import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
 import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import { makeGrokTextGeneration } from "../../git/Layers/GrokTextGeneration.ts";
 import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer";
+import { mcpHubAdapterOption } from "../../mcp/hub/McpHub";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeGrokAdapter } from "../Layers/GrokAdapter.ts";
 import { checkCustomAcpProvider } from "../Layers/CustomAcpProvider.ts";
@@ -76,6 +77,7 @@ export const AcpDriver: ProviderDriver<AcpSettings, AcpDriverEnv> = {
         makeRuntime,
         normalizeModel,
         ...(preview ? { previewMcpHttpServer: preview } : {}),
+        ...(yield* mcpHubAdapterOption),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         onRuntimeReady: (runtime, started) =>
           Effect.gen(function* () {

@@ -14,6 +14,7 @@ import {
   removeFavoritePreset,
   toggleModelFavorite,
 } from "~/favoritePresets";
+import { isSameRecentModels, type RecentModel, recordRecentModel } from "~/recentModels";
 import {
   type ModelSlug,
   type ProviderDriverKind,
@@ -22,7 +23,14 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
-import { BoxIcon, ChevronDownIcon, SearchIcon, StarIcon } from "lucide-react";
+import {
+  BoxIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  SearchIcon,
+  StarIcon,
+} from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
 
@@ -38,7 +46,6 @@ import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { COMPOSER_CHIP_CLASS_NAME } from "./composer/composerChip";
-import { ModelPickerSidebarRail, type ModelPickerSidebarRailItem } from "./ModelPickerSidebar";
 import {
   getDisplayModelName,
   getTriggerDisplayModelLabel,
@@ -53,22 +60,63 @@ interface InstanceModelItem extends ModelPickerModelOption {
   readonly instance: ProviderInstanceEntry;
   /** Set on Favorites rows: the stored preset, which may pin an effort. */
   readonly preset?: FavoritePreset | undefined;
-  /** Zero-based favorite number shared with `model.favorite.N`, across all instances. */
-  readonly presetIndex?: number | undefined;
+  /** Zero-based `mod+N` number of a usable Favorites row. */
+  readonly jumpIndex?: number | undefined;
 }
 
-type ModelPickerSource =
+/** Which rows the list shows: everything, only favorites, or one provider instance. */
+type ModelPickerFilter =
+  | { readonly kind: "all" }
   | { readonly kind: "favorites" }
   | { readonly kind: "instance"; readonly instanceId: ProviderInstanceId };
 
-const INSTANCE_SIDEBAR_ID_PREFIX = "instance:";
+type SectionKind = "recent" | "favorites" | "provider";
 
-function selectFavoriteSettings(settings: UnifiedWebSettings) {
-  return { favorites: settings.favorites };
+interface ModelRowEntry {
+  readonly kind: "model";
+  readonly key: string;
+  readonly item: InstanceModelItem;
+  readonly section: SectionKind;
 }
 
-function instanceSidebarId(instanceId: ProviderInstanceId): string {
-  return `${INSTANCE_SIDEBAR_ID_PREFIX}${instanceId}`;
+/** The collapsed "Legacy · N" row at the end of a provider section. */
+interface LegacyRowEntry {
+  readonly kind: "legacy";
+  readonly key: string;
+  readonly instanceId: ProviderInstanceId;
+  readonly count: number;
+  readonly expanded: boolean;
+  /** Held open because a legacy model is active or selected, so it cannot collapse. */
+  readonly forced: boolean;
+}
+
+type RowEntry = ModelRowEntry | LegacyRowEntry;
+
+interface PickerSection {
+  readonly key: string;
+  readonly kind: SectionKind;
+  readonly label: string;
+  /** Provider sections show their instance's icon in the header. */
+  readonly instance: ProviderInstanceEntry | null;
+  readonly count: number;
+  readonly rows: ReadonlyArray<RowEntry>;
+}
+
+const ALL_FILTER_ID = "all";
+const FAVORITES_FILTER_ID = "favorites";
+const INSTANCE_FILTER_ID_PREFIX = "instance:";
+const ALL_FILTER: ModelPickerFilter = { kind: "all" };
+
+const NO_RECENT_MODELS: UnifiedWebSettings["recentModels"] = [];
+
+function selectPickerSettings(settings: UnifiedWebSettings) {
+  return { favorites: settings.favorites, recentModels: settings.recentModels };
+}
+
+function filterId(filter: ModelPickerFilter): string {
+  if (filter.kind === "all") return ALL_FILTER_ID;
+  if (filter.kind === "favorites") return FAVORITES_FILTER_ID;
+  return `${INSTANCE_FILTER_ID_PREFIX}${filter.instanceId}`;
 }
 
 function modelKey(instanceId: ProviderInstanceId, model: string): string {
@@ -124,14 +172,17 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   ultrathinkActive?: boolean;
   compact?: boolean;
   docked?: boolean;
-  stayOpenOnSelect?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"] | undefined;
   triggerClassName?: string | undefined;
   onOpenChange?: ((open: boolean) => void) | undefined;
-  /** `preset` is the picked Favorites row's stored preset, only with `favoritePresets`. */
+  /**
+   * `preset` is the picked Favorites row's stored preset, only with `favoritePresets`.
+   * Return null to refuse the pick, or the slug actually applied; Recent records only
+   * accepted picks, under the applied slug. Any other return counts as accepted as-is.
+   */
   onInstanceModelChange: (
     instanceId: ProviderInstanceId,
     driver: ProviderDriverKind,
@@ -156,20 +207,47 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     | undefined;
   /**
    * Extra reason an available instance cannot be picked here (for example a workflow
-   * restriction). Its rows stay listed, disabled with the reason, and it stays in the rail.
+   * restriction). Its rows stay listed, disabled with the reason, and it keeps its chip.
    */
   instanceUnavailableReason?: ((instance: ProviderInstanceEntry) => string | null) | undefined;
+  /**
+   * Picks are remembered in Recent unless this is false. Settings pickers choose a
+   * configuration, not the model to talk to, so they still list Recent (a quick way to
+   * reach the models in use) without adding their choice to it.
+   */
+  recordRecents?: boolean;
 }) {
-  const settings = useSettings(selectFavoriteSettings);
+  const settings = useSettings(selectPickerSettings);
+  // Partial settings snapshots (test doubles of `useSettings`) may lack the field.
+  const recentModels = settings.recentModels ?? NO_RECENT_MODELS;
   const { updateSettings } = useUpdateSettings();
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const [showLegacy, setShowLegacy] = useState(false);
+  const [filter, setFilter] = useState<ModelPickerFilter>(ALL_FILTER);
+  // Provider instances whose legacy models the user expanded; reset on close.
+  const [expandedLegacy, setExpandedLegacy] = useState<ReadonlySet<ProviderInstanceId>>(
+    () => new Set(),
+  );
   // The row Enter picks, moved with the arrow keys; null means the first selectable row.
   const [highlightedKey, setHighlightedKey] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const chipsRef = useRef<HTMLDivElement>(null);
   const isOpen = props.open ?? uncontrolledOpen;
+  // Every open starts on All, with no search, nothing highlighted and legacy collapsed,
+  // however it opened: the trigger, or a controlled `open` such as `modelPicker.toggle`.
+  // Adjusting during render (not in an effect) keeps the stale list from flashing.
+  const [renderedOpen, setRenderedOpen] = useState(isOpen);
+  if (renderedOpen !== isOpen) {
+    setRenderedOpen(isOpen);
+    if (isOpen) {
+      setFilter(ALL_FILTER);
+      setSearch("");
+      setHighlightedKey(null);
+      setExpandedLegacy(new Set());
+    }
+  }
   const entries = useMemo(
     () => sortProviderInstanceEntries(deriveProviderInstanceEntries(props.providers)),
     [props.providers],
@@ -178,34 +256,53 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   // The trigger describes only the instance actually selected: a selection whose instance is
   // gone (a removed provider) shows the bare model, not another provider's icon.
   const activeInstance = entries.find((entry) => entry.instanceId === activeInstanceId) ?? null;
-  // Where the menu opens browsing.
-  const selectedInstance = activeInstance ?? entries[0] ?? null;
-  const visibleEntries = props.lockedInstanceId
-    ? entries.filter((entry) => entry.instanceId === props.lockedInstanceId)
-    : entries;
+  const visibleEntries = useMemo(
+    () =>
+      props.lockedInstanceId
+        ? entries.filter((entry) => entry.instanceId === props.lockedInstanceId)
+        : entries,
+    [entries, props.lockedInstanceId],
+  );
+  // Instances with a filter chip. Unavailable ones only show up in search results.
+  const chipEntries = useMemo(
+    () => visibleEntries.filter((entry) => unavailableReason(entry) === null),
+    [visibleEntries],
+  );
+  const showChips = !props.lockedInstanceId;
+  // A filter whose instance went away while open falls back to All.
+  const effectiveFilter: ModelPickerFilter =
+    filter.kind === "instance" &&
+    !chipEntries.some((entry) => entry.instanceId === filter.instanceId)
+      ? ALL_FILTER
+      : filter;
   const favoriteKeys = useMemo(
     () => new Set(settings.favorites.map((entry) => modelKey(entry.provider, entry.model))),
     [settings.favorites],
   );
-  const [selectedSource, setSelectedSource] = useState<ModelPickerSource>(() =>
-    favoriteKeys.has(modelKey(activeInstanceId, props.model))
-      ? { kind: "favorites" }
-      : selectedInstance
-        ? { kind: "instance", instanceId: selectedInstance.instanceId }
-        : { kind: "favorites" },
-  );
   const isSearching = search.trim().length > 0;
-  const showFavorites = !isSearching && selectedSource.kind === "favorites";
-  // Favorites follow the stored order. With presets on, rows carry their
-  // favorite number across every instance, so `mod+N` here and `model.favorite.N`
-  // name the same preset even when a locked thread hides other instances.
-  const favoriteItems = useMemo((): InstanceModelItem[] => {
-    if (!showFavorites) return [];
-    const optionFor = (instanceId: ProviderInstanceId, slug: string): ModelPickerModelOption =>
+
+  const usablePresets = useMemo(
+    () => listUsableFavoritePresets(settings.favorites, entries, props.modelOptionsByInstance),
+    [entries, props.modelOptionsByInstance, settings.favorites],
+  );
+  const optionFor = useCallback(
+    (instanceId: ProviderInstanceId, slug: string): ModelPickerModelOption =>
       props.modelOptionsByInstance.get(instanceId)?.find((option) => option.slug === slug) ?? {
         slug,
         name: slug,
-      };
+      },
+    [props.modelOptionsByInstance],
+  );
+  const jumpLabelByIndex = useMemo(
+    () =>
+      Array.from({ length: 9 }, (_, index) => {
+        const command = modelPickerJumpCommandForIndex(index);
+        return command ? shortcutLabelForCommand(props.keybindings ?? [], command) : null;
+      }),
+    [props.keybindings],
+  );
+
+  const favoriteItems = useMemo((): InstanceModelItem[] => {
     const seen = new Set<string>();
     const out: InstanceModelItem[] = [];
     const push = (item: InstanceModelItem) => {
@@ -215,16 +312,21 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       out.push(item);
     };
     const visibleIds = new Set(visibleEntries.map((entry) => entry.instanceId));
-    listUsableFavoritePresets(settings.favorites, entries, props.modelOptionsByInstance).forEach(
-      (preset, presetIndex) => {
-        if (!visibleIds.has(preset.instance.instanceId)) return;
-        push({
-          ...optionFor(preset.instance.instanceId, preset.model),
-          instance: preset.instance,
-          ...(props.favoritePresets ? { preset: preset.favorite, presetIndex } : {}),
-        });
-      },
-    );
+    // With presets, numbers follow the stored order across every instance, so `mod+N` here
+    // and `model.favorite.N` name the same preset even when a locked thread hides some.
+    // Without presets each model is listed once, so rows are numbered as shown.
+    let shownCount = 0;
+    usablePresets.forEach((preset, presetIndex) => {
+      if (!visibleIds.has(preset.instance.instanceId)) return;
+      const before = out.length;
+      push({
+        ...optionFor(preset.instance.instanceId, preset.model),
+        instance: preset.instance,
+        jumpIndex: props.favoritePresets ? presetIndex : shownCount,
+        ...(props.favoritePresets ? { preset: preset.favorite } : {}),
+      });
+      if (out.length > before) shownCount += 1;
+    });
     // Favorites on an unavailable instance stay visible (disabled) after the usable ones.
     for (const favorite of settings.favorites) {
       const instance = visibleEntries.find((entry) => entry.instanceId === favorite.provider);
@@ -236,117 +338,151 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       });
     }
     return out;
-  }, [
-    entries,
-    props.favoritePresets,
-    props.modelOptionsByInstance,
-    settings.favorites,
-    showFavorites,
-    visibleEntries,
-  ]);
-  const groups = useMemo(() => {
-    if (showFavorites) {
-      return favoriteItems.length > 0 ? [{ company: "Favorites", items: favoriteItems }] : [];
-    }
-    const byCompany = new Map<string, InstanceModelItem[]>();
-    for (const instance of visibleEntries) {
-      if (
-        !isSearching &&
-        selectedSource.kind === "instance" &&
-        instance.instanceId !== selectedSource.instanceId
-      ) {
-        continue;
-      }
-      const selectedSlugs = new Set(
+  }, [optionFor, props.favoritePresets, settings.favorites, usablePresets, visibleEntries]);
+  // `mod+N` always targets favorite N, whatever the filter or search shows.
+  const jumpTargets = useMemo(
+    (): ReadonlyArray<InstanceModelItem | undefined> =>
+      Array.from({ length: 9 }, (_, index) =>
+        favoriteItems.find((item) => item.jumpIndex === index),
+      ),
+    [favoriteItems],
+  );
+
+  // Slugs on an instance that stay listed even when unlisted: the active and fan-out models.
+  const selectedSlugsFor = useCallback(
+    (instanceId: ProviderInstanceId): Set<string> => {
+      const slugs = new Set(
         (props.selectedModels ?? [])
-          .filter((selected) => selected.instanceId === instance.instanceId)
+          .filter((selected) => selected.instanceId === instanceId)
           .map((selected) => selected.model),
       );
-      if (instance.instanceId === activeInstanceId) selectedSlugs.add(props.model);
-      for (const model of filterPickerVisibleModels(
+      if (instanceId === activeInstanceId) slugs.add(props.model);
+      return slugs;
+    },
+    [activeInstanceId, props.model, props.selectedModels],
+  );
+
+  // Recent picks that still resolve to a visible instance and a model the picker lists.
+  const recentItems = useMemo((): InstanceModelItem[] => {
+    const out: InstanceModelItem[] = [];
+    for (const recent of recentModels) {
+      const instance = visibleEntries.find((entry) => entry.instanceId === recent.provider);
+      if (!instance) continue;
+      const option = filterPickerVisibleModels(
         props.modelOptionsByInstance.get(instance.instanceId) ?? [],
-        selectedSlugs,
-      )) {
-        const item = { ...model, instance } satisfies InstanceModelItem;
-        if (!matchesSearch(item, search)) continue;
-        const companyName = getModelCompanyLabel({
-          driverKind: instance.driverKind,
-          instanceDisplayName: instance.displayName,
-          name: model.name,
-          slug: model.slug,
-          subProvider: model.subProvider,
+        selectedSlugsFor(instance.instanceId),
+      ).find((candidate) => candidate.slug === recent.model);
+      if (!option) continue;
+      out.push({ ...option, instance });
+    }
+    return out;
+  }, [props.modelOptionsByInstance, recentModels, selectedSlugsFor, visibleEntries]);
+
+  const sections = useMemo((): PickerSection[] => {
+    const modelRow = (item: InstanceModelItem, section: SectionKind): ModelRowEntry => ({
+      kind: "model",
+      key: `${section}\0${itemKey(item)}`,
+      item,
+      section,
+    });
+    const out: PickerSection[] = [];
+    const showShortcutSections = !isSearching && effectiveFilter.kind === "all";
+    if (showShortcutSections && recentItems.length > 0) {
+      out.push({
+        key: "recent",
+        kind: "recent",
+        label: "Recent",
+        instance: null,
+        count: recentItems.length,
+        rows: recentItems.map((item) => modelRow(item, "recent")),
+      });
+    }
+    if (showShortcutSections || effectiveFilter.kind === "favorites") {
+      const items = favoriteItems.filter((item) => matchesSearch(item, search));
+      if (items.length > 0) {
+        out.push({
+          key: "favorites",
+          kind: "favorites",
+          label: "Favorites",
+          instance: null,
+          count: items.length,
+          rows: items.map((item) => modelRow(item, "favorites")),
         });
-        const company = model.isLegacy ? companyName + " · Legacy" : companyName;
-        const group = byCompany.get(company);
-        if (group) group.push(item);
-        else byCompany.set(company, [item]);
       }
     }
+    if (effectiveFilter.kind === "favorites") return out;
 
-    return Array.from(byCompany, ([company, groupItems]) => ({
-      company,
-      items: groupItems.toSorted((left, right) => {
-        const favoriteDelta =
-          Number(favoriteKeys.has(modelKey(right.instance.instanceId, right.slug))) -
-          Number(favoriteKeys.has(modelKey(left.instance.instanceId, left.slug)));
-        if (favoriteDelta !== 0) return favoriteDelta;
+    const providerEntries =
+      effectiveFilter.kind === "instance"
+        ? visibleEntries.filter((entry) => entry.instanceId === effectiveFilter.instanceId)
+        : isSearching || props.lockedInstanceId
+          ? visibleEntries
+          : chipEntries;
+    for (const instance of providerEntries) {
+      const selectedSlugs = selectedSlugsFor(instance.instanceId);
+      const items = filterPickerVisibleModels(
+        props.modelOptionsByInstance.get(instance.instanceId) ?? [],
+        selectedSlugs,
+      )
+        .map((model): InstanceModelItem => ({ ...model, instance }))
+        .filter((item) => matchesSearch(item, search))
         // The catalog has already applied capability and manual ordering.
-        // Stable sorting groups favorites without replacing that order with names.
-        return 0;
-      }),
-    })).toSorted(
-      (left, right) =>
-        Number(left.items[0]?.isLegacy === true) - Number(right.items[0]?.isLegacy === true),
-    );
+        // Stable sorting floats favorites without replacing that order with names.
+        .toSorted(
+          (left, right) =>
+            Number(favoriteKeys.has(modelKey(right.instance.instanceId, right.slug))) -
+            Number(favoriteKeys.has(modelKey(left.instance.instanceId, left.slug))),
+        );
+      if (items.length === 0) continue;
+      const current = items.filter((item) => item.isLegacy !== true);
+      const legacy = items.filter((item) => item.isLegacy === true);
+      const rows: RowEntry[] = current.map((item) => modelRow(item, "provider"));
+      if (legacy.length > 0) {
+        if (isSearching) {
+          rows.push(...legacy.map((item) => modelRow(item, "provider")));
+        } else {
+          // A legacy model that is in use keeps the disclosure open so it stays visible.
+          const forced = legacy.some((item) => selectedSlugs.has(item.slug));
+          const expanded = forced || expandedLegacy.has(instance.instanceId);
+          rows.push({
+            kind: "legacy",
+            key: `legacy\0${instance.instanceId}`,
+            instanceId: instance.instanceId,
+            count: legacy.length,
+            expanded,
+            forced,
+          });
+          if (expanded) rows.push(...legacy.map((item) => modelRow(item, "provider")));
+        }
+      }
+      out.push({
+        key: `provider\0${instance.instanceId}`,
+        kind: "provider",
+        label: instance.displayName,
+        instance,
+        count: items.length,
+        rows,
+      });
+    }
+    return out;
   }, [
+    chipEntries,
+    effectiveFilter,
+    expandedLegacy,
     favoriteItems,
     favoriteKeys,
     isSearching,
+    props.lockedInstanceId,
     props.modelOptionsByInstance,
-    activeInstanceId,
-    props.model,
-    props.selectedModels,
+    recentItems,
     search,
-    selectedSource,
-    showFavorites,
+    selectedSlugsFor,
     visibleEntries,
   ]);
-  const hideLegacy = props.stayOpenOnSelect && !showFavorites && !isSearching && !showLegacy;
-  const visibleGroups = useMemo(() => {
-    if (!hideLegacy) return groups;
-    return groups.flatMap((group) => {
-      const current = group.items.filter(
-        (item) =>
-          !item.isLegacy ||
-          (item.instance.instanceId === activeInstanceId && item.slug === props.model),
-      );
-      return current.length > 0 ? [{ ...group, items: current }] : [];
-    });
-  }, [activeInstanceId, groups, hideLegacy, props.model]);
-  const hasLegacy = groups.some((group) =>
-    group.items.some(
-      (item) =>
-        item.isLegacy &&
-        (item.instance.instanceId !== activeInstanceId || item.slug !== props.model),
-    ),
-  );
-  const items = useMemo(() => visibleGroups.flatMap((group) => group.items), [visibleGroups]);
-  // `mod+N` targets: favorite N on numbered preset rows, otherwise row N.
-  const jumpTargets = useMemo((): ReadonlyArray<InstanceModelItem | undefined> => {
-    const numbered = items.some((item) => item.presetIndex !== undefined);
-    return Array.from({ length: 9 }, (_, index) =>
-      numbered ? items.find((item) => item.presetIndex === index) : items[index],
-    );
-  }, [items]);
-  const jumpLabelByItem = useMemo(() => {
-    const labels = new Map<InstanceModelItem, string>();
-    jumpTargets.forEach((item, index) => {
-      const command = modelPickerJumpCommandForIndex(index);
-      const label = command ? shortcutLabelForCommand(props.keybindings ?? [], command) : null;
-      if (item && label) labels.set(item, label);
-    });
-    return labels;
-  }, [jumpTargets, props.keybindings]);
+  const rowEntries = useMemo(() => sections.flatMap((section) => section.rows), [sections]);
+  // A section of only legacy models still shows its disclosure, so any row counts.
+  const hasRows = rowEntries.length > 0;
+
   const selectedOptions = activeInstance
     ? (props.modelOptionsByInstance.get(activeInstance.instanceId) ?? [])
     : [];
@@ -356,57 +492,30 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
   const DriverIcon = activeInstance
     ? PROVIDER_ICON_BY_PROVIDER[activeInstance.driverKind]
     : undefined;
-  const sidebarItems = useMemo<ModelPickerSidebarRailItem[]>(
-    () =>
-      visibleEntries.flatMap((instance) => {
-        const reason = unavailableReason(instance);
-        if (reason !== null) return [];
-        return [
-          {
-            id: instanceSidebarId(instance.instanceId),
-            label: instance.displayName,
-            icon: PROVIDER_ICON_BY_PROVIDER[instance.driverKind] ?? BoxIcon,
-            iconClassName: providerIconClassName(instance.driverKind),
-            isCustom: !instance.isDefault,
-            accentColor: instance.accentColor,
-          } satisfies ModelPickerSidebarRailItem,
-        ];
-      }),
-    [visibleEntries],
+  const filters = useMemo(
+    (): ReadonlyArray<ModelPickerFilter> => [
+      ALL_FILTER,
+      { kind: "favorites" },
+      ...chipEntries.map(
+        (entry): ModelPickerFilter => ({ kind: "instance", instanceId: entry.instanceId }),
+      ),
+    ],
+    [chipEntries],
   );
 
   const setOpen = useCallback(
     (open: boolean) => {
       props.onOpenChange?.(open);
       if (props.open === undefined) setUncontrolledOpen(open);
-      if (open && !props.lockedInstanceId) {
-        setSelectedSource(
-          favoriteKeys.has(modelKey(activeInstanceId, props.model))
-            ? { kind: "favorites" }
-            : selectedInstance
-              ? { kind: "instance", instanceId: selectedInstance.instanceId }
-              : visibleEntries[0]
-                ? { kind: "instance", instanceId: visibleEntries[0].instanceId }
-                : { kind: "favorites" },
-        );
-      }
-      if (!open) {
-        setSearch("");
-        setShowLegacy(false);
-        setHighlightedKey(null);
-      }
     },
-    [
-      favoriteKeys,
-      activeInstanceId,
-      props.lockedInstanceId,
-      props.model,
-      props.onOpenChange,
-      props.open,
-      selectedInstance?.instanceId,
-      visibleEntries,
-    ],
+    [props.onOpenChange, props.open],
   );
+
+  const changeFilter = useCallback((next: ModelPickerFilter) => {
+    setFilter(next);
+    setHighlightedKey(null);
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -418,24 +527,38 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     if (props.disabled && isOpen) setOpen(false);
   }, [isOpen, props.disabled, setOpen]);
 
+  const currentFilterId = filterId(effectiveFilter);
+  useEffect(() => {
+    if (!isOpen) return;
+    chipsRef.current
+      ?.querySelector(`[data-model-picker-provider="${CSS.escape(currentFilterId)}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [currentFilterId, isOpen]);
+
   const rowUnavailableReason = (instance: ProviderInstanceEntry): string | null =>
     unavailableReason(instance) ?? props.instanceUnavailableReason?.(instance) ?? null;
 
-  // Arrow keys move over the rows that can be picked, skipping disabled ones.
-  const selectableItems = items.filter((item) => rowUnavailableReason(item.instance) === null);
-  const highlightedItem =
-    selectableItems.find((item) => itemKey(item) === highlightedKey) ?? selectableItems[0] ?? null;
-  const highlightedItemKey = highlightedItem ? itemKey(highlightedItem) : null;
+  // Arrow keys move over the rows that can be picked and the legacy disclosures that toggle.
+  const navigableEntries = rowEntries.filter((entry) =>
+    entry.kind === "legacy" ? !entry.forced : rowUnavailableReason(entry.item.instance) === null,
+  );
+  const highlightedEntry =
+    navigableEntries.find((entry) => entry.key === highlightedKey) ??
+    navigableEntries.find((entry) => entry.kind === "model") ??
+    null;
+  const highlightedEntryKey = highlightedEntry?.key ?? null;
   const moveHighlight = (direction: 1 | -1) => {
-    if (selectableItems.length === 0) return;
+    if (navigableEntries.length === 0) return;
+    const fallbackKey = highlightedEntryKey;
     // Functional, so keys pressed faster than React renders still all count.
     setHighlightedKey((previous) => {
+      const currentKey = previous ?? fallbackKey;
       const current = Math.max(
-        selectableItems.findIndex((item) => itemKey(item) === previous),
+        navigableEntries.findIndex((entry) => entry.key === currentKey),
         0,
       );
-      const next = Math.min(Math.max(current + direction, 0), selectableItems.length - 1);
-      return itemKey(selectableItems[next]!);
+      const next = Math.min(Math.max(current + direction, 0), navigableEntries.length - 1);
+      return navigableEntries[next]!.key;
     });
   };
   useEffect(() => {
@@ -444,6 +567,24 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       ?.querySelector("[data-model-picker-row][data-highlighted]")
       ?.scrollIntoView({ block: "nearest" });
   }, [highlightedKey]);
+
+  const setLegacyExpanded = (instanceId: ProviderInstanceId, expanded: boolean) => {
+    setExpandedLegacy((previous) => {
+      if (previous.has(instanceId) === expanded) return previous;
+      const next = new Set(previous);
+      if (expanded) next.add(instanceId);
+      else next.delete(instanceId);
+      return next;
+    });
+  };
+
+  // A stored pick is stale once its instance's loaded catalog no longer offers the model.
+  // Instances this picker doesn't know about are left alone: callers may pass a subset.
+  const isStaleRecent = (recent: RecentModel): boolean => {
+    if (!entries.some((entry) => entry.instanceId === recent.provider)) return false;
+    const options = props.modelOptionsByInstance.get(recent.provider) ?? [];
+    return options.length > 0 && !options.some((option) => option.slug === recent.model);
+  };
 
   const selectModel = (item: InstanceModelItem, additive = false) => {
     if (props.disabled || rowUnavailableReason(item.instance) !== null) return;
@@ -458,15 +599,26 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       props.onToggleModel(item.instance.instanceId, item.instance.driverKind, resolved);
       return;
     }
-    if (item.preset)
-      props.onInstanceModelChange(
+    const applied = item.preset
+      ? props.onInstanceModelChange(
+          item.instance.instanceId,
+          item.instance.driverKind,
+          resolved,
+          item.preset,
+        )
+      : props.onInstanceModelChange(item.instance.instanceId, item.instance.driverKind, resolved);
+    // A caller returns null when it refused the pick, or the slug it applied instead.
+    if (props.recordRecents !== false && applied !== null) {
+      const appliedModel = typeof applied === "string" && applied.length > 0 ? applied : resolved;
+      const next = recordRecentModel(
+        recentModels,
         item.instance.instanceId,
-        item.instance.driverKind,
-        resolved,
-        item.preset,
+        appliedModel,
+        isStaleRecent,
       );
-    else props.onInstanceModelChange(item.instance.instanceId, item.instance.driverKind, resolved);
-    if (!props.stayOpenOnSelect) setOpen(false);
+      if (!isSameRecentModels(next, recentModels)) void updateSettings({ recentModels: next });
+    }
+    setOpen(false);
   };
   // The window keydown listener reads the latest rows without resubscribing per render.
   const jumpTargetsRef = useRef({ jumpTargets, selectModel });
@@ -507,31 +659,246 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       }
       if (command !== "modelPicker.previousProvider" && command !== "modelPicker.nextProvider")
         return;
-      const available = visibleEntries.filter(isSelectableProviderInstance);
-      if (!available.length) return;
-      const current =
-        selectedSource.kind === "instance"
-          ? available.findIndex((item) => item.instanceId === selectedSource.instanceId)
-          : -1;
+      if (!showChips) return;
       const direction = command === "modelPicker.nextProvider" ? 1 : -1;
-      const index =
-        current < 0
-          ? direction === 1
-            ? 0
-            : available.length - 1
-          : (current + direction + available.length) % available.length;
+      const current = Math.max(
+        filters.findIndex((candidate) => filterId(candidate) === currentFilterId),
+        0,
+      );
       event.preventDefault();
-      setSearch("");
-      setSelectedSource({ kind: "instance", instanceId: available[index]!.instanceId });
+      changeFilter(filters[(current + direction + filters.length) % filters.length]!);
     };
     window.addEventListener("keydown", handle, true);
     return () => window.removeEventListener("keydown", handle, true);
-  }, [isOpen, props.keybindings, selectedSource, visibleEntries]);
+  }, [changeFilter, currentFilterId, filters, isOpen, props.keybindings, showChips]);
 
   const triggerTitle = getTriggerDisplayModelName(selectedModel);
   const triggerLabel = activeInstance
     ? `${activeInstance.displayName} · ${getTriggerDisplayModelLabel(selectedModel)}`
     : getTriggerDisplayModelLabel(selectedModel);
+  const providerShortcutHint = showChips
+    ? [
+        shortcutLabelForCommand(props.keybindings ?? [], "modelPicker.previousProvider"),
+        shortcutLabelForCommand(props.keybindings ?? [], "modelPicker.nextProvider"),
+      ].filter((label): label is string => Boolean(label))
+    : [];
+
+  const renderModelRow = (entry: ModelRowEntry) => {
+    const { item, section } = entry;
+    const isFavorite = favoriteKeys.has(modelKey(item.instance.instanceId, item.slug));
+    const reason = rowUnavailableReason(item.instance);
+    const Icon = PROVIDER_ICON_BY_PROVIDER[item.instance.driverKind];
+    const isMixedSection = section !== "provider";
+    const jumpLabel =
+      section === "favorites" && item.jumpIndex !== undefined && !reason
+        ? (jumpLabelByIndex[item.jumpIndex] ?? null)
+        : null;
+    const presetEffort = item.preset?.effort;
+    const fanOutSelected = isFanOutSelected(item);
+    const isActive =
+      fanOutCount <= 1 &&
+      (item.preset && props.activePreset !== undefined
+        ? props.activePreset !== null && isSameFavoritePreset(item.preset, props.activePreset)
+        : item.instance.instanceId === activeInstanceId && item.slug === props.model);
+    const isChecked = isActive || fanOutSelected;
+    const isHighlighted = entry.key === highlightedEntryKey;
+    // Provider sections keep a favorite's filled star visible; Recent and Favorites
+    // show the star only on hover, since there it is not news.
+    const starAlwaysVisible = section === "provider" && isFavorite;
+    return (
+      <div
+        key={entry.key}
+        data-model-picker-row={entry.key}
+        data-model-picker-section={section}
+        data-highlighted={isHighlighted ? "true" : undefined}
+        data-model-picker-active={isActive ? "true" : undefined}
+        title={reason ?? undefined}
+        className={cn(
+          "group flex items-center gap-1 rounded-md pr-1",
+          reason
+            ? "opacity-55"
+            : isChecked
+              ? isHighlighted
+                ? "bg-primary/15"
+                : "bg-primary/10"
+              : isHighlighted && "bg-muted",
+        )}
+        onMouseMove={reason || isHighlighted ? undefined : () => setHighlightedKey(entry.key)}
+      >
+        <button
+          type="button"
+          data-model-picker-select
+          className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-2 text-left disabled:cursor-not-allowed"
+          onClick={(event) => selectModel(item, event.shiftKey)}
+          aria-pressed={fanOutCount > 1 ? fanOutSelected : undefined}
+          disabled={Boolean(reason)}
+        >
+          {isMixedSection && Icon ? (
+            <Icon
+              className={cn("size-3.5 shrink-0", providerIconClassName(item.instance.driverKind))}
+            />
+          ) : null}
+          <span className="flex min-w-0 shrink items-center gap-1.5 text-xs font-medium">
+            <span className="truncate" data-model-picker-name>
+              {getDisplayModelName(item)}
+            </span>
+            {isMixedSection && !item.instance.isDefault ? (
+              <span className="shrink-0 truncate text-2xs font-normal text-muted-foreground">
+                {item.instance.displayName}
+              </span>
+            ) : null}
+            {presetEffort ? (
+              <span
+                className="shrink-0 rounded border border-border px-1 text-2xs font-normal text-muted-foreground"
+                data-model-picker-preset-effort={presetEffort}
+              >
+                {presetEffort}
+              </span>
+            ) : null}
+          </span>
+          {/* A disabled row says why in place of its slug, so it is visible and announced. */}
+          <span
+            className={cn(
+              "ml-auto min-w-0 shrink-[2] truncate pl-2 text-right text-2xs text-muted-foreground",
+              !reason && "font-mono",
+            )}
+            data-model-picker-reason={reason ? true : undefined}
+          >
+            {reason ?? item.slug}
+          </span>
+          {jumpLabel ? (
+            <kbd className="shrink-0 font-sans text-2xs text-faint-foreground tabular-nums">
+              {jumpLabel}
+            </kbd>
+          ) : null}
+          {isChecked ? (
+            <CheckIcon
+              className="size-3.5 shrink-0 text-primary"
+              aria-label={fanOutSelected ? "Selected" : "Active"}
+            />
+          ) : null}
+        </button>
+        <button
+          type="button"
+          className={cn(
+            "shrink-0 rounded p-1 text-muted-foreground transition-opacity hover:text-foreground focus-visible:opacity-100 disabled:cursor-not-allowed",
+            starAlwaysVisible || isHighlighted
+              ? "opacity-100"
+              : "opacity-0 group-hover:opacity-100",
+          )}
+          aria-label={
+            item.preset
+              ? `Remove ${getDisplayModelName(item)}${presetEffort ? ` · ${presetEffort}` : ""} from favorites`
+              : isFavorite
+                ? "Remove from favorites"
+                : "Add to favorites"
+          }
+          onClick={() => toggleFavorite(item)}
+          disabled={Boolean(reason)}
+        >
+          <StarIcon
+            className={cn(
+              "size-3.5",
+              (isFavorite || item.preset) && "fill-current text-warning-foreground",
+            )}
+          />
+        </button>
+      </div>
+    );
+  };
+
+  const renderLegacyRow = (entry: LegacyRowEntry) => {
+    const isHighlighted = entry.key === highlightedEntryKey;
+    return (
+      <button
+        key={entry.key}
+        type="button"
+        data-model-picker-row={entry.key}
+        data-model-picker-legacy={entry.instanceId}
+        data-highlighted={isHighlighted ? "true" : undefined}
+        aria-expanded={entry.expanded}
+        // Held open while a legacy model is in use, so there is nothing to toggle.
+        disabled={entry.forced}
+        title={entry.forced ? "Shown while a legacy model is selected" : undefined}
+        className={cn(
+          "flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-2xs text-muted-foreground",
+          entry.forced ? "cursor-default" : "hover:text-foreground",
+          isHighlighted && "bg-muted text-foreground",
+        )}
+        onMouseMove={isHighlighted || entry.forced ? undefined : () => setHighlightedKey(entry.key)}
+        onClick={() => {
+          setLegacyExpanded(entry.instanceId, !entry.expanded);
+          searchRef.current?.focus();
+        }}
+      >
+        {entry.expanded ? (
+          <ChevronDownIcon className="size-3 shrink-0" />
+        ) : (
+          <ChevronRightIcon className="size-3 shrink-0" />
+        )}
+        <span>Legacy</span>
+        <span className="tabular-nums opacity-60">{entry.count}</span>
+      </button>
+    );
+  };
+
+  const renderChip = (chipFilter: ModelPickerFilter) => {
+    const id = filterId(chipFilter);
+    const isSelected = id === currentFilterId;
+    const instance =
+      chipFilter.kind === "instance"
+        ? (chipEntries.find((entry) => entry.instanceId === chipFilter.instanceId) ?? null)
+        : null;
+    const ChipIcon = instance ? (PROVIDER_ICON_BY_PROVIDER[instance.driverKind] ?? BoxIcon) : null;
+    const label =
+      chipFilter.kind === "all"
+        ? "All"
+        : chipFilter.kind === "favorites"
+          ? "Favorites"
+          : (instance?.displayName ?? chipFilter.instanceId);
+    return (
+      <button
+        key={id}
+        type="button"
+        data-model-picker-provider={id}
+        aria-pressed={isSelected}
+        className={cn(
+          "relative flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-2xs font-medium transition-colors",
+          isSelected
+            ? "border-foreground bg-foreground text-background"
+            : "border-border text-muted-foreground hover:bg-muted hover:text-foreground",
+        )}
+        onClick={() => {
+          changeFilter(chipFilter);
+          window.requestAnimationFrame(() => searchRef.current?.focus());
+        }}
+      >
+        {chipFilter.kind === "favorites" ? (
+          <StarIcon
+            className={cn("size-3 shrink-0 fill-current", !isSelected && "text-warning-foreground")}
+            aria-hidden
+          />
+        ) : null}
+        {ChipIcon && instance ? (
+          <ChipIcon
+            className={cn(
+              "size-3 shrink-0",
+              !isSelected && providerIconClassName(instance.driverKind),
+            )}
+            aria-hidden
+          />
+        ) : null}
+        <span>{label}</span>
+        {instance && !instance.isDefault ? (
+          <span
+            className="size-1.5 shrink-0 rounded-full bg-current opacity-60"
+            style={instance.accentColor ? { backgroundColor: instance.accentColor } : undefined}
+            aria-hidden
+          />
+        ) : null}
+      </button>
+    );
+  };
 
   return (
     <Popover
@@ -585,18 +952,16 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
       </PopoverTrigger>
       <PopoverPopup
         align="start"
+        // Docked, the list always opens above the trigger and shrinks to the room there
+        // (`--available-height`), so it never covers the selected model. Shifting on the
+        // side axis would slide it down over the trigger in short windows.
         {...(props.docked
-          ? { side: "top" as const, collisionAvoidance: { side: "shift", align: "shift" } as const }
+          ? { side: "top" as const, collisionAvoidance: { side: "none", align: "shift" } as const }
           : {})}
         className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0] *:data-[slot=popover-viewport]:p-0"
       >
         <TooltipProvider delay={0}>
-          <div
-            className={cn(
-              "relative flex h-screen max-h-[min(24rem,var(--available-height))] w-screen max-w-100 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg/5",
-              props.lockedInstanceId ? "flex-col" : "flex-row",
-            )}
-          >
+          <div className="relative flex h-screen max-h-[min(24rem,var(--available-height))] w-screen max-w-100 flex-col overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg/5">
             {props.lockedInstanceId && activeInstance && DriverIcon ? (
               <div className="flex items-center gap-2 border-b px-4 py-3">
                 <DriverIcon
@@ -609,213 +974,144 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
               </div>
             ) : null}
 
-            {!props.lockedInstanceId && !isSearching ? (
-              <ModelPickerSidebarRail
-                selectedId={
-                  selectedSource.kind === "favorites"
-                    ? "favorites"
-                    : instanceSidebarId(selectedSource.instanceId)
-                }
-                items={sidebarItems}
-                onSelect={(id) => {
-                  if (id === "favorites") {
-                    setSelectedSource({ kind: "favorites" });
-                  } else if (id.startsWith(INSTANCE_SIDEBAR_ID_PREFIX)) {
-                    const instanceId = id.slice(INSTANCE_SIDEBAR_ID_PREFIX.length);
-                    const entry = visibleEntries.find(
-                      (candidate) => candidate.instanceId === instanceId,
-                    );
-                    if (entry) {
-                      setSelectedSource({ kind: "instance", instanceId: entry.instanceId });
+            <div className="border-b px-3 py-2">
+              <div className="relative">
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 z-10 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  ref={searchRef}
+                  className={cn("pl-8 shadow-none", providerShortcutHint.length > 0 && "pr-16")}
+                  size="sm"
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setHighlightedKey(null);
+                    // Enter picks the first result, so keep it in view.
+                    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+                  }}
+                  onKeyDown={(event) => {
+                    // Composition keys belong to the IME, and a key the window shortcut
+                    // listener already handled (provider cycling) must not also move rows.
+                    if (
+                      isKeyboardEventComposing(event.nativeEvent) ||
+                      event.nativeEvent.defaultPrevented
+                    ) {
+                      event.stopPropagation();
+                      return;
                     }
-                  }
-                  window.requestAnimationFrame(() => searchRef.current?.focus());
-                }}
-              />
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setOpen(false);
+                      return;
+                    }
+                    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      moveHighlight(event.key === "ArrowDown" ? 1 : -1);
+                      return;
+                    }
+                    if (
+                      highlightedEntry?.kind === "legacy" &&
+                      (event.key === "Enter" ||
+                        event.key === "ArrowRight" ||
+                        event.key === "ArrowLeft")
+                    ) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setLegacyExpanded(
+                        highlightedEntry.instanceId,
+                        event.key === "Enter"
+                          ? !highlightedEntry.expanded
+                          : event.key === "ArrowRight",
+                      );
+                      return;
+                    }
+                    if (event.key === "Enter" && highlightedEntry?.kind === "model") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      selectModel(highlightedEntry.item, event.shiftKey);
+                      return;
+                    }
+                    event.stopPropagation();
+                  }}
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onTouchStart={(event) => event.stopPropagation()}
+                  placeholder="Search models..."
+                />
+                {providerShortcutHint.length > 0 ? (
+                  <span
+                    className="pointer-events-none absolute top-1/2 right-2 flex -translate-y-1/2 gap-1"
+                    aria-hidden
+                  >
+                    {providerShortcutHint.map((label) => (
+                      <kbd
+                        key={label}
+                        className="rounded border border-border px-1 font-sans text-2xs leading-4 text-faint-foreground"
+                      >
+                        {label}
+                      </kbd>
+                    ))}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            {showChips ? (
+              <div
+                ref={chipsRef}
+                role="toolbar"
+                aria-label="Filter models by provider"
+                className="flex gap-1 overflow-x-auto border-b px-3 py-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              >
+                {filters.map(renderChip)}
+              </div>
             ) : null}
 
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-              <div className="border-b px-3 py-2">
-                <div className="relative">
-                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    ref={searchRef}
-                    className="pl-8 shadow-none"
-                    size="sm"
-                    value={search}
-                    onChange={(event) => {
-                      setSearch(event.target.value);
-                      setHighlightedKey(null);
-                    }}
-                    onKeyDown={(event) => {
-                      if (isKeyboardEventComposing(event.nativeEvent)) {
-                        event.stopPropagation();
-                        return;
-                      }
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setOpen(false);
-                        return;
-                      }
-                      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        moveHighlight(event.key === "ArrowDown" ? 1 : -1);
-                        return;
-                      }
-                      if (event.key === "Enter" && highlightedItem) {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        selectModel(highlightedItem, event.shiftKey);
-                        return;
-                      }
-                      event.stopPropagation();
-                    }}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onTouchStart={(event) => event.stopPropagation()}
-                    placeholder="Search models..."
-                  />
-                </div>
-              </div>
-
-              <div className="relative min-h-0 flex-1 overflow-y-auto p-1 before:pointer-events-none before:absolute before:inset-0 before:bg-muted/40">
-                <div ref={listRef} className="relative">
-                  {items.length === 0 ? (
-                    <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-                      {selectedSource.kind === "favorites" && !isSearching
-                        ? "No favorite models yet"
-                        : "No models found"}
-                    </div>
-                  ) : (
-                    visibleGroups.map((group) => (
+            <div
+              ref={scrollRef}
+              className="relative min-h-0 flex-1 overflow-y-auto p-1 before:pointer-events-none before:absolute before:inset-0 before:bg-muted/40"
+            >
+              <div ref={listRef} className="relative">
+                {!hasRows ? (
+                  <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                    {effectiveFilter.kind === "favorites" && !isSearching
+                      ? "No favorite models yet"
+                      : "No models found"}
+                  </div>
+                ) : (
+                  sections.map((section) => {
+                    const SectionIcon = section.instance
+                      ? (PROVIDER_ICON_BY_PROVIDER[section.instance.driverKind] ?? BoxIcon)
+                      : null;
+                    return (
                       <section
-                        key={group.company}
+                        key={section.key}
                         role="group"
-                        aria-label={`${group.company} models`}
+                        aria-label={`${section.label} models`}
+                        data-model-picker-section-kind={section.kind}
                       >
-                        <div className="sticky top-0 z-10 flex items-center gap-2 bg-popover/95 px-3 py-1.5 text-2xs font-semibold tracking-wider text-muted-foreground uppercase backdrop-blur-sm">
-                          <span>{group.company}</span>
+                        <div className="sticky top-0 z-10 flex items-center gap-1.5 bg-popover/95 px-2 py-1.5 text-2xs font-semibold tracking-wider text-muted-foreground uppercase backdrop-blur-sm">
+                          {SectionIcon && section.instance ? (
+                            <SectionIcon
+                              className={cn(
+                                "size-3 shrink-0",
+                                providerIconClassName(section.instance.driverKind),
+                              )}
+                              aria-hidden
+                            />
+                          ) : null}
+                          <span>{section.label}</span>
                           <span className="font-normal tabular-nums opacity-60">
-                            {group.items.length}
+                            {section.count}
                           </span>
                         </div>
-                        {group.items.map((item) => {
-                          const key = itemKey(item);
-                          const isFavorite = favoriteKeys.has(
-                            modelKey(item.instance.instanceId, item.slug),
-                          );
-                          const reason = rowUnavailableReason(item.instance);
-                          const Icon = PROVIDER_ICON_BY_PROVIDER[item.instance.driverKind];
-                          const jumpLabel = jumpLabelByItem.get(item) ?? null;
-                          const presetEffort = item.preset?.effort;
-                          const isActive =
-                            fanOutCount <= 1 &&
-                            (item.preset && props.activePreset !== undefined
-                              ? props.activePreset !== null &&
-                                isSameFavoritePreset(item.preset, props.activePreset)
-                              : item.instance.instanceId === activeInstanceId &&
-                                item.slug === props.model);
-                          const isHighlighted = key === highlightedItemKey;
-                          return (
-                            <div
-                              key={key}
-                              data-model-picker-row={key}
-                              data-highlighted={isHighlighted ? "true" : undefined}
-                              className={cn(
-                                "group flex items-center gap-2 rounded-md px-2 py-1.5",
-                                reason ? "opacity-55" : isHighlighted && "bg-muted",
-                              )}
-                              onMouseMove={
-                                reason || isHighlighted ? undefined : () => setHighlightedKey(key)
-                              }
-                            >
-                              <button
-                                type="button"
-                                className="rounded p-1 text-muted-foreground opacity-45 transition-opacity group-hover:opacity-100 hover:text-foreground disabled:cursor-not-allowed"
-                                aria-label={
-                                  item.preset
-                                    ? `Remove ${getDisplayModelName(item)}${presetEffort ? ` · ${presetEffort}` : ""} from favorites`
-                                    : isFavorite
-                                      ? "Remove from favorites"
-                                      : "Add to favorites"
-                                }
-                                onClick={() => toggleFavorite(item)}
-                                disabled={Boolean(reason)}
-                              >
-                                <StarIcon
-                                  className={cn(
-                                    "size-3.5",
-                                    (isFavorite || item.preset) &&
-                                      "fill-current text-warning-foreground opacity-100",
-                                  )}
-                                />
-                              </button>
-                              <button
-                                type="button"
-                                className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-not-allowed"
-                                onClick={(event) => selectModel(item, event.shiftKey)}
-                                aria-pressed={fanOutCount > 1 ? isFanOutSelected(item) : undefined}
-                                disabled={Boolean(reason)}
-                                title={reason ?? undefined}
-                              >
-                                {Icon ? (
-                                  <Icon
-                                    className={cn(
-                                      "size-4 shrink-0",
-                                      providerIconClassName(item.instance.driverKind),
-                                    )}
-                                  />
-                                ) : null}
-                                <span className="min-w-0 flex-1">
-                                  <span className="flex items-center gap-2 text-xs font-medium">
-                                    <span className="truncate">{getDisplayModelName(item)}</span>
-                                    {presetEffort ? (
-                                      <span
-                                        className="shrink-0 rounded border border-border px-1 text-2xs font-normal text-muted-foreground"
-                                        data-model-picker-preset-effort={presetEffort}
-                                      >
-                                        {presetEffort}
-                                      </span>
-                                    ) : null}
-                                    {isFanOutSelected(item) ? (
-                                      <span className="rounded border border-primary/30 bg-primary/10 px-1 text-2xs uppercase text-primary">
-                                        Selected
-                                      </span>
-                                    ) : isActive ? (
-                                      <span className="rounded border border-primary/30 bg-primary/10 px-1 text-2xs uppercase text-primary">
-                                        Active
-                                      </span>
-                                    ) : null}
-                                  </span>
-                                  <span className="block truncate text-2xs text-muted-foreground">
-                                    {item.instance.displayName} · {item.slug}
-                                    {reason ? ` · ${reason}` : ""}
-                                  </span>
-                                </span>
-                                {jumpLabel && !reason ? (
-                                  <kbd className="shrink-0 font-sans text-2xs text-faint-foreground tabular-nums">
-                                    {jumpLabel}
-                                  </kbd>
-                                ) : null}
-                              </button>
-                            </div>
-                          );
-                        })}
+                        {section.rows.map((entry) =>
+                          entry.kind === "model" ? renderModelRow(entry) : renderLegacyRow(entry),
+                        )}
                       </section>
-                    ))
-                  )}
-                  {props.stayOpenOnSelect && !showFavorites && !isSearching && hasLegacy ? (
-                    <button
-                      type="button"
-                      aria-expanded={showLegacy}
-                      className="w-full rounded-md px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                      onClick={() => setShowLegacy((shown) => !shown)}
-                    >
-                      {showLegacy ? "Show less" : "Show more"}
-                    </button>
-                  ) : null}
-                </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>

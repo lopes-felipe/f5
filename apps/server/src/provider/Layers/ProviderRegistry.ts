@@ -31,7 +31,9 @@ import { ServerSettingsService } from "../../serverSettings.ts";
  *
  * @module ProviderRegistryLive
  */
+import * as NodeOs from "node:os";
 import { providerRuntimeCapabilities } from "@t3tools/shared/providerRuntimeCapabilities";
+import { runtimeBuildTarget } from "@t3tools/shared/workflowProviders";
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
@@ -459,6 +461,8 @@ export const ProviderRegistryLive = Layer.effect(
                 rawProvider.driver,
                 rawProvider.version,
                 rawProvider.harnessVariant,
+                runtimeBuildTarget(),
+                NodeOs.release(),
               ),
             };
             const key = snapshotInstanceKey(provider);

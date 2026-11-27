@@ -16,7 +16,26 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { vi } from "vitest";
 import { ProviderRuntimeInfoBanner } from "./ProviderRuntimeInfoBanner";
 
-const { getEffectiveConfig, getLoginStatus, startLogin, openExternal } = vi.hoisted(() => ({
+const {
+  getEffectiveConfig,
+  getLoginStatus,
+  startLogin,
+  openExternal,
+  getHubAuthStatus,
+  startHubSignIn,
+} = vi.hoisted(() => ({
+  getHubAuthStatus: vi.fn(async () => ({
+    servers: [{ name: "search", signedIn: false, refreshable: false }],
+  })),
+  startHubSignIn: vi.fn(async () => ({
+    status: "pending" as const,
+    attempt: {
+      attemptId: "attempt-1",
+      authorizationUrl: "https://auth.example.test/hub-search",
+      redirectUrl: "http://127.0.0.1:4000/callback",
+      startedAt: "2026-11-25T10:00:00.000Z",
+    },
+  })),
   getEffectiveConfig: vi.fn(),
   getLoginStatus: vi.fn(
     async (input: { provider: string; projectId: string; serverName: string }) => ({
@@ -31,7 +50,14 @@ const { getEffectiveConfig, getLoginStatus, startLogin, openExternal } = vi.hois
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({
-    mcp: { getEffectiveConfig, getLoginStatus, startLogin },
+    mcp: {
+      getEffectiveConfig,
+      getLoginStatus,
+      startLogin,
+      getHubAuthStatus,
+      startHubSignIn,
+      onStatusUpdated: () => () => {},
+    },
     shell: { openExternal },
   }),
 }));
@@ -210,3 +236,68 @@ it.each(["codex", "claudeAgent"] as ProviderKind[])(
     }
   },
 );
+
+it("offers F5 sign-in and links each server's settings panel for agents served by the hub", async () => {
+  getEffectiveConfig.mockResolvedValue({
+    projectId: "project-1",
+    effectiveVersion: "v1",
+    servers: {
+      docs: { type: "http", url: "https://docs.example.test/mcp" },
+      search: { type: "http", url: "https://search.example.test/mcp" },
+    },
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const root = createRootRoute({ component: () => <Outlet /> });
+  const index = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => (
+      <ProviderRuntimeInfoBanner
+        provider="cursor"
+        projectId={ProjectId.make("project-1")}
+        entries={[{ label: "MCP", value: "1/2 connected" }]}
+        mcpServers={[
+          { name: "docs", status: "ready", toolCount: 3 },
+          { name: "search", status: "needs-auth" },
+          { name: "f5_thread", status: "ready" },
+        ]}
+      />
+    ),
+  });
+  const router = createRouter({
+    routeTree: root.addChildren([index]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  await router.load();
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+  try {
+    await page.getByRole("button", { name: "MCP: 1/2 connected, 1 needs sign-in" }).click();
+    await expect.element(page.getByText("docs · ready · 3 tools", { exact: true })).toBeVisible();
+    const details = page.getByRole("link", { name: "search in MCP settings" });
+    await expect.element(details).toHaveAttribute("href", expect.stringContaining("server=search"));
+    await expect
+      .element(details)
+      .toHaveAttribute("href", expect.stringContaining("project=project-1"));
+    // A built-in server has no saved entry, so it has no settings link.
+    expect(page.getByRole("link", { name: "f5_thread in MCP settings" }).elements()).toEqual([]);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await vi.waitFor(() =>
+      expect(startHubSignIn).toHaveBeenCalledWith({
+        serverName: "search",
+        projectId: "project-1",
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(openExternal).toHaveBeenCalledWith("https://auth.example.test/hub-search"),
+    );
+    expect(startLogin).not.toHaveBeenCalled();
+  } finally {
+    openExternal.mockClear();
+    queryClient.clear();
+    await screen.unmount();
+  }
+});

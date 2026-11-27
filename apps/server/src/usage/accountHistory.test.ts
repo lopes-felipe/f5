@@ -154,6 +154,34 @@ it.layer(SqliteClient.layerMemory())("account history recorder", (it) => {
     }).pipe(Effect.provide(UsageAccountHistoryRepositoryLive)),
   );
 
+  it.effect("keeps and hydrates the last snapshot through an expired sign-in", () =>
+    Effect.gen(function* () {
+      yield* Migration0116;
+      const repository = yield* UsageAccountHistoryRepository;
+      const recorder = yield* makeAccountHistoryRecorder;
+      yield* recorder.observe(
+        account("claude:expired", [claudeSection("2026-10-15T10:00:00.000Z", 30)]),
+        "id-e",
+      );
+      const expired = account("claude:expired", [
+        {
+          ...emptyAccountSection("claude-usage"),
+          errorCode: "credentials-expired",
+          lastAttemptAt: "2026-10-15T11:00:00.000Z",
+        },
+      ]);
+      yield* recorder.observe(expired, "id-e");
+      assert.include(
+        (yield* repository.listSnapshots).map((row) => row.accountKey),
+        "claude:expired",
+      );
+      const restarted = yield* makeAccountHistoryRecorder;
+      const section = restarted.hydrate(expired, "id-e").sections[0]!;
+      assert.equal(section.snapshot?.fetchedAt, "2026-10-15T10:00:00.000Z");
+      assert.equal(section.errorCode, "credentials-expired");
+    }).pipe(Effect.provide(UsageAccountHistoryRepositoryLive)),
+  );
+
   it.effect("retries a failed write on the next observation", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

@@ -20,6 +20,7 @@ import {
 } from "./AcpReadOnlyWorkflowPolicy.ts";
 import { antigravityEditTargetsInWorkspace } from "./AntigravityEditLocation.ts";
 import { AntigravityInstallation } from "../AntigravityInstallation.ts";
+import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
 import {
   ANTIGRAVITY_PERSONAL_AUTH,
   antigravityLaunchEnvironment,
@@ -287,6 +288,36 @@ export async function prepareAntigravityProfile(input: {
   return { executable, home, browser };
 }
 
+/**
+ * `agy acp` arguments. A read-only workflow session adds `--sandbox`: shell commands run in
+ * Antigravity's OS sandbox (Seatbelt on macOS, namespaces on Linux, AppContainer on Windows 11
+ * 24H2+), with no network and no writes outside the workspace. Its permission prompts still reach
+ * F5, which refuses anything that writes. The app-data dir stays `antigravity-acp` because its
+ * sign-in tokens, conversations and plan artifacts live there, and F5 reads those from that path.
+ */
+export function antigravityAcpArgs(home: string, readOnlySandbox: boolean): ReadonlyArray<string> {
+  return [
+    "acp",
+    ...(readOnlySandbox ? ["--sandbox"] : []),
+    "--gemini-dir",
+    home,
+    "--app-data-dir",
+    "antigravity-acp",
+  ];
+}
+
+/**
+ * The runtime input the Antigravity driver launches with: everything the adapter asked for,
+ * including `readOnlySandbox`, plus the instance's own settings. Kept as a spread on purpose, so
+ * a field the adapter adds later can't be dropped by picking fields one by one.
+ */
+export function antigravityDriverRuntimeInput<Input extends object, Instance extends object>(
+  input: Input,
+  instance: Instance,
+): Input & Instance {
+  return { ...input, ...instance };
+}
+
 export const makeAntigravityAcpRuntime = (input: {
   stateDir: string;
   instanceId: string;
@@ -304,6 +335,14 @@ export const makeAntigravityAcpRuntime = (input: {
   sanitizeStderr?: AcpSessionRuntimeOptions["sanitizeStderr"];
   hasSensitiveConfiguration?: AcpSessionRuntimeOptions["hasSensitiveConfiguration"];
   auth?: AntigravityAuthConfig;
+  /** A read-only workflow session: launch it in Antigravity's native sandbox. */
+  readOnlySandbox?: boolean;
+  /**
+   * A read-only workflow session, sandboxed or not. Where the sandbox can't start (F5's macOS
+   * desktop backend already runs in one), the session runs without `--sandbox` and F5's command
+   * policy decides every command.
+   */
+  readOnlyWorkflow?: boolean;
 }): Effect.Effect<AcpSessionRuntimeShape, AcpErrors.AcpError, Scope.Scope> =>
   Effect.gen(function* () {
     const auth = input.auth ?? ANTIGRAVITY_PERSONAL_AUTH;
@@ -358,7 +397,7 @@ export const makeAntigravityAcpRuntime = (input: {
         },
         spawn: {
           command: prepared.executable.executablePath,
-          args: ["acp", "--gemini-dir", prepared.home, "--app-data-dir", "antigravity-acp"],
+          args: antigravityAcpArgs(prepared.home, input.readOnlySandbox === true),
           cwd: input.cwd,
           env: {
             ...antigravityEnvironment(
@@ -371,6 +410,9 @@ export const makeAntigravityAcpRuntime = (input: {
             TMPDIR: tempDirectory,
             TMP: tempDirectory,
             TEMP: tempDirectory,
+            ...(input.readOnlySandbox === true || input.readOnlyWorkflow === true
+              ? READ_ONLY_WORKFLOW_ENVIRONMENT
+              : {}),
           },
           extendEnv: false,
         },
@@ -767,6 +809,7 @@ const writeAntigravitySessionMode = <E>(input: {
 export function antigravityReadOnlyWorkflowDecision(input: {
   readonly toolCall: AcpReadOnlyWorkflowToolCall;
   readonly computerRequest: boolean;
+  readonly f5ThreadServerName?: string | undefined;
 }): "allow" | "deny" {
   return acpReadOnlyWorkflowDecision(input);
 }

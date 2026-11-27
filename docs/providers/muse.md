@@ -21,10 +21,10 @@ API; F5 doesn't imitate it.
 Muse Code always approves file edits inside the workspace, so F5 doesn't offer **Supervised** for
 it.
 
-| F5 mode           | What still asks you                                |
-| ----------------- | -------------------------------------------------- |
-| Auto-accept edits | Unlisted commands and writes outside the workspace |
-| Full access       | Nothing                                            |
+| F5 mode      | What still asks you                                |
+| ------------ | -------------------------------------------------- |
+| Accept edits | Unlisted commands and writes outside the workspace |
+| Full access  | Nothing                                            |
 
 Plan mode and read-only workflow steps aren't supported, and Muse Code is never available through
 the [Agent Bridge](../agent-bridge.md).

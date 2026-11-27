@@ -21,6 +21,7 @@ interface Job {
     name?: string;
     run?: string;
     env?: Record<string, string>;
+    with?: Record<string, string>;
   }[];
 }
 const workflow = parse(
@@ -241,15 +242,20 @@ describe("CI workflow policy", () => {
   it("classifies changes inside every heavy job without a scheduling prerequisite", () => {
     expect(workflow.jobs.changes).toBeUndefined();
     expect(workflow.permissions).toEqual({ contents: "read" });
-    for (const id of [
-      "server-unit",
-      "windows-server-unit",
-      "browser",
-      "desktop",
-      "windows-build",
-      "macos-profiles",
-    ]) {
+    // Jobs whose checks never read one app skip pull requests that change only that app.
+    const unaffectedBy: Record<string, string | undefined> = {
+      "server-unit": "web",
+      browser: "server",
+      desktop: undefined,
+      "windows-build": undefined,
+      "macos-profiles": "web",
+    };
+    for (const [id, app] of Object.entries(unaffectedBy)) {
       const job = workflow.jobs[id]!;
+      expect(
+        job.steps!.find((step) => step.uses === "./.github/actions/changes")!.with?.unaffected_by,
+        id,
+      ).toBe(app);
       expect(job.permissions, id).toEqual({ contents: "read", "pull-requests": "read" });
       expect(job.needs, id).toBeUndefined();
       expect(job.if, id).toBeUndefined();
@@ -267,17 +273,98 @@ describe("CI workflow policy", () => {
       }
     }
   });
+  it("runs the full Windows and macOS suites outside pull requests only", () => {
+    for (const id of [
+      "windows-server-unit",
+      "macos-workspaces",
+      "macos-server-unit",
+      "macos-integration",
+      "macos-desktop",
+    ]) {
+      const job = workflow.jobs[id]!;
+      expect(job.if, id).toBe("github.event_name != 'pull_request'");
+      expect(job.permissions, id).toBeUndefined();
+      expect(job.needs, id).toBeUndefined();
+      const steps = job.steps!;
+      expect(
+        steps.some((step) => step.uses === "./.github/actions/changes"),
+        id,
+      ).toBe(false);
+      expect(steps.find((step) => step.id === "install")!.if, id).toBeUndefined();
+    }
+    // Pull requests keep Windows build, workspace, integration and smoke coverage.
+    expect(workflow.jobs["windows-build"]!.if).toBeUndefined();
+  });
   it("retains the exact docs-only filter and bypasses it for main/nightly/manual runs", () => {
     const action = parse(
       readFileSync(new URL("../.github/actions/changes/action.yml", import.meta.url), "utf8"),
     );
-    expect(action.outputs.heavy.value).toBe(
-      "${{ github.event_name != 'pull_request' || steps.paths.outputs.code == 'true' }}",
-    );
-    const filter = action.runs.steps[0];
+    expect(action.inputs.unaffected_by.default).toBe("");
+    expect(action.outputs.heavy.value).toBe("${{ steps.verdict.outputs.heavy }}");
+    const [filter, verdict] = action.runs.steps;
+    expect(filter.id).toBe("paths");
     expect(filter.if).toBe("github.event_name == 'pull_request'");
     expect(filter.with["predicate-quantifier"]).toBe("some-with-excludes");
-    expect(parse(filter.with.filters)).toEqual({ code: ["**", "!**/*.md", "!docs/**"] });
+    expect(parse(filter.with.filters)).toEqual({
+      code: ["**", "!**/*.md", "!docs/**"],
+      outside_web: ["**", "!**/*.md", "!docs/**", "!apps/web/**", "!apps/marketing/**"],
+      outside_server: ["**", "!**/*.md", "!docs/**", "!apps/server/**"],
+      server_read_by_web: ["apps/server/src/assetHttp.ts"],
+    });
+    expect(verdict.id).toBe("verdict");
+    expect(verdict.if).toBeUndefined();
+    expect(verdict.run).toBe('echo "heavy=$HEAVY" >> "$GITHUB_OUTPUT"');
+
+    // The expression uses only operators that mean the same in JavaScript, so the
+    // shipped text is evaluated here instead of a copy of its logic.
+    const expression = /^\$\{\{ (.+) \}\}$/.exec(verdict.env.HEAVY)![1]!;
+    expect(expression).toMatch(/^[\w.'()!=&| ]+$/);
+    const evaluate = new Function("github", "steps", "inputs", "return " + expression) as (
+      github: { event_name: string },
+      steps: { paths: { outputs: Record<string, string> } },
+      inputs: { unaffected_by: string },
+    ) => boolean;
+    const heavy = (event: string, input: string, outputs: Record<string, boolean>) =>
+      evaluate(
+        { event_name: event },
+        // A skipped filter step has no outputs; dorny/paths-filter writes 'true'/'false'.
+        {
+          paths: {
+            outputs: Object.fromEntries(
+              Object.entries(outputs).map(([key, value]) => [key, String(value)]),
+            ),
+          },
+        },
+        { unaffected_by: input },
+      );
+    const webOnly = { code: true, outside_web: false, outside_server: true };
+    const serverOnly = {
+      code: true,
+      outside_web: true,
+      outside_server: false,
+      server_read_by_web: false,
+    };
+    const mixed = { code: true, outside_web: true, outside_server: true };
+    for (const input of ["", "web", "server", "desktop"]) {
+      for (const event of ["push", "schedule", "workflow_dispatch"])
+        expect(heavy(event, input, {}), event + "/" + input).toBe(true);
+      // Docs-only pull requests skip every heavy job, as before.
+      expect(heavy("pull_request", input, { code: false }), "docs/" + input).toBe(false);
+      expect(heavy("pull_request", input, mixed), "mixed/" + input).toBe(true);
+    }
+    expect(heavy("pull_request", "web", webOnly)).toBe(false);
+    expect(heavy("pull_request", "server", webOnly)).toBe(true);
+    expect(heavy("pull_request", "", webOnly)).toBe(true);
+    expect(heavy("pull_request", "server", serverOnly)).toBe(false);
+    expect(heavy("pull_request", "web", serverOnly)).toBe(true);
+    expect(heavy("pull_request", "", serverOnly)).toBe(true);
+    // The browser fixture imports this server file, so changing it runs browser tests.
+    expect(heavy("pull_request", "server", { ...serverOnly, server_read_by_web: true })).toBe(true);
+    // Unknown or misspelled apps never skip a job.
+    for (const input of ["desktop", "Web", "web ", "apps/web"]) {
+      expect(heavy("pull_request", input, webOnly), input).toBe(true);
+      expect(heavy("pull_request", input, serverOnly), input).toBe(true);
+    }
   });
   it("cancels obsolete packaging PRs without cancelling release rehearsals", () => {
     const release = parse(

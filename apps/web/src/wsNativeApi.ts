@@ -5,7 +5,6 @@ import {
   McpAppToolInfo,
   McpAppToolResult,
   McpLoginStatusResult,
-  McpOauthLoginStatusResult,
   ProjectIssueAssetUrlResult,
 } from "@t3tools/contracts";
 import { isWebUrl } from "./browser/webUrl";
@@ -935,17 +934,13 @@ export function createWsNativeApi(): NativeApi {
         Schema.decodeUnknownSync(McpLoginStatusResult)(
           await transport.request(WS_METHODS.mcpGetLoginStatus, input),
         ),
-      getCodexStatus: requestMethod(WS_METHODS.mcpGetCodexStatus),
-      reloadProject: requestMethod(WS_METHODS.mcpReloadProject),
       applyToLiveSessions: requestMethod(WS_METHODS.mcpApplyToLiveSessions),
-      startOAuthLogin: async (input) =>
-        Schema.decodeUnknownSync(McpOauthLoginStatusResult)(
-          await transport.request(WS_METHODS.mcpStartOAuthLogin, input),
-        ),
-      getOAuthStatus: async (input) =>
-        Schema.decodeUnknownSync(McpOauthLoginStatusResult)(
-          await transport.request(WS_METHODS.mcpGetOAuthStatus, input),
-        ),
+      getHubStatus: requestMethod(WS_METHODS.mcpGetHubStatus),
+      reconnectHubServer: requestMethod(WS_METHODS.mcpReconnectHubServer),
+      getHubAuthStatus: requestMethod(WS_METHODS.mcpGetHubAuthStatus),
+      startHubSignIn: requestMethod(WS_METHODS.mcpStartHubSignIn),
+      completeHubSignIn: requestMethod(WS_METHODS.mcpCompleteHubSignIn),
+      signOutHubServer: requestMethod(WS_METHODS.mcpSignOutHubServer),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
         return () => {

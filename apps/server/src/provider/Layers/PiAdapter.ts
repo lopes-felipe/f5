@@ -1,6 +1,7 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import type { NativeHistoryReconciliation } from "../ProviderNativeHistory.ts";
 import { randomUUID } from "node:crypto";
+import * as NodeOS from "node:os";
 import {
   ApprovalRequestId,
   EventId,
@@ -51,6 +52,11 @@ import type {
 import { parsePiCompactCommand } from "../pi/commands.ts";
 import { readPiCatalog, type PiCatalog } from "../pi/PiMetadata.ts";
 import { buildPiRpcLaunch, resolvePiLaunchArgs } from "../pi/launch.ts";
+import {
+  describeMcpHubOmissions,
+  type McpHubOmission,
+  type McpHubShape,
+} from "../../mcp/hub/McpHub.ts";
 import { materializePiMcpExtension } from "../pi/materializeExtension.ts";
 import { makePiRpcConnection, PiRpcError, type PiRpcConnection } from "../pi/PiRpc.ts";
 import {
@@ -83,6 +89,10 @@ import {
 } from "../pi/PiHistory.ts";
 
 import { PiPromptQueue } from "../pi/PiPromptQueue.ts";
+import {
+  assertReadOnlyProjectConfig,
+  findPiProjectExtensionConflict,
+} from "../readOnlyProjectConfig.ts";
 import { updatePiExtensionStatuses } from "../pi/extensionStatuses.ts";
 
 interface PiContext {
@@ -104,6 +114,8 @@ interface PiContext {
   readonly tools: Map<string, { name: string; args: unknown; done: boolean }>;
   readonly barriers: Map<string, Deferred.Deferred<unknown, PiRpcError>>;
   readonly readOnly: boolean;
+  /** A workflow stage, not just a plan-mode chat: only stages refuse repository extensions. */
+  readonly workflowStage: boolean;
   wake: PiNativeWake | null;
   wakeTimer: Fiber.Fiber<void> | undefined;
   lastTurnId: TurnId | undefined;
@@ -128,8 +140,11 @@ export interface PiAdapterOptions {
   ) => Effect.Effect<boolean>;
   readonly onCatalog?: (catalog: PiCatalog) => Effect.Effect<void>;
   readonly beforeLaunch?: Effect.Effect<void, PiRpcError, Scope.Scope>;
+  readonly mcpHub?: McpHubShape;
   readonly createMcpSession?: (
     threadId: ThreadId,
+    /** Read-only workflow stages get only the thread tools that read. */
+    access: "full" | "read-only",
   ) => Effect.Effect<{ endpoint: string; authorizationHeader: string }, PiRpcError, Scope.Scope>;
 }
 type EventBody<E = ProviderRuntimeEvent> = E extends ProviderRuntimeEvent
@@ -163,6 +178,17 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
             : requestError(method, `Pi ${method} failed. Refresh the session before retrying.`),
         ),
       );
+    /** Refuses a read-only stage in a workspace whose own Pi extensions would run code. */
+    const assertPiReadOnlyWorkspace = (cwd: string, operation: "startSession" | "sendTurn") =>
+      assertReadOnlyProjectConfig({
+        provider: "pi",
+        providerName: "Pi",
+        operation,
+        find: () =>
+          findPiProjectExtensionConflict(cwd, {
+            homeDir: options.environment.HOME?.trim() || NodeOS.homedir(),
+          }),
+      }).pipe(Effect.mapError((error) => requestError(operation, error.issue)));
     const stamp = (ctx: PiContext, body: EventBody): ProviderRuntimeEvent =>
       ({
         eventId: EventId.make(timeOrderedUuid()),
@@ -940,6 +966,8 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   "startSession",
                   parsed.ok ? "A Pi workspace is required." : parsed.message,
                 );
+              if (input.workflowExecutionProfile)
+                yield* assertPiReadOnlyWorkspace(cwd, "startSession");
               const resume =
                 input.resumeCursor === undefined
                   ? undefined
@@ -958,13 +986,63 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   if (!piVersionSupportsF5(version))
                     return yield* requestError("startSession", "Pi 0.80.5 or newer is required.");
                   const mcpSession = options.createMcpSession
-                    ? yield* options.createMcpSession(input.threadId)
+                    ? yield* options.createMcpSession(
+                        input.threadId,
+                        input.workflowExecutionProfile ? "read-only" : "full",
+                      )
                     : undefined;
+                  // Project MCP servers reach Pi through F5's hub; read-only workflow
+                  // turns never get them.
+                  const projectMcpServers = input.workflowExecutionProfile
+                    ? undefined
+                    : input.providerOptions?.mcpServers;
+                  const wantsHub =
+                    projectMcpServers !== undefined && Object.keys(projectMcpServers).length > 0;
+                  const hubAttachment =
+                    options.mcpHub && extensionPath !== undefined && wantsHub
+                      ? options.mcpHub.attach({
+                          threadId: input.threadId,
+                          ...(input.projectId ? { projectId: input.projectId } : {}),
+                          provider: "pi",
+                          accountKey: options.instanceId,
+                          servers: projectMcpServers,
+                          environment: options.environment,
+                          cwd,
+                          // The F5 bridge owns the `mcp__f5__` tool namespace.
+                          reservedNames: new Set(["f5"]),
+                        })
+                      : undefined;
+                  if (hubAttachment) {
+                    yield* Effect.addFinalizer(() => Effect.promise(() => hubAttachment.dispose()));
+                  }
+                  // Servers Pi did not get, reported once the session is configured.
+                  const hubOmissions: ReadonlyArray<McpHubOmission> = hubAttachment
+                    ? hubAttachment.omitted
+                    : wantsHub
+                      ? Object.keys(projectMcpServers).map((serverName) => ({
+                          serverName,
+                          reason:
+                            extensionPath === undefined
+                              ? "was skipped because the F5 Pi extension is unavailable"
+                              : "was skipped because F5's MCP hub is unavailable in this runtime",
+                        }))
+                      : [];
                   const launch = buildPiRpcLaunch({
                     launchArgs: parsed.args,
                     environment: options.environment,
                     extensionPath,
                     mcpSession,
+                    ...(hubAttachment
+                      ? {
+                          userMcpServers: hubAttachment.endpoints.map((endpoint) => ({
+                            name: endpoint.serverName,
+                            url: endpoint.url,
+                            token: endpoint.token,
+                            timeoutMs: endpoint.toolTimeoutMs,
+                            startupTimeoutMs: endpoint.startupTimeoutMs,
+                          })),
+                        }
+                      : {}),
                     runtimeMode: input.runtimeMode,
                     readOnly:
                       input.interactionMode === "plan" ||
@@ -997,6 +1075,7 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                     readOnly:
                       input.interactionMode === "plan" ||
                       input.workflowExecutionProfile !== undefined,
+                    workflowStage: input.workflowExecutionProfile !== undefined,
                     activeCommandId: undefined,
                     lastCommandId: undefined,
                     continuationEligible: false,
@@ -1091,6 +1170,9 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                       },
                     },
                   });
+                  const mcpOmissions = describeMcpHubOmissions("Pi", hubOmissions);
+                  if (mcpOmissions)
+                    yield* emit(ctx, { type: "config.warning", payload: mcpOmissions });
                   if (options.onCatalog) yield* options.onCatalog(catalog);
                   return ctx.session;
                 }),
@@ -1144,6 +1226,14 @@ export const makePiAdapter = (settings: PiSettings, options: PiAdapterOptions) =
                   "sendTurn",
                   "Restart the Pi session before changing its read-only policy.",
                 );
+              // Extensions the workspace gained since the stage started would load on a restart.
+              // Plan-mode chats are read-only too, but only workflow stages refuse extensions, as
+              // at start; a stage's turn counts even when it omits the profile.
+              if (
+                (ctx.workflowStage || input.workflowExecutionProfile !== undefined) &&
+                ctx.session.cwd
+              )
+                yield* assertPiReadOnlyWorkspace(ctx.session.cwd, "sendTurn");
               yield* applySelection(ctx, input);
               const attachments = input.resolvedAttachments ?? [];
               const images: { type: "image"; data: string; mimeType: string }[] = [];
