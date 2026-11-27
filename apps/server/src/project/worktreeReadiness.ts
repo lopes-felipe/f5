@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { Effect } from "effect";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
-import { canonicalWorktreePath } from "../git/worktreePaths.ts";
+import { canonicalWorktreePath, isLeftoverWorktreeFolder } from "../git/worktreePaths.ts";
 
 export class WorktreeNotReadyError extends Error {
   readonly _tag = "WorktreeNotReadyError";
@@ -10,8 +10,7 @@ export class WorktreeInspectionError extends Error {
   readonly _tag = "WorktreeInspectionError";
 }
 
-export const MISSING_WORKTREE_MESSAGE =
-  "This thread's worktree is gone. Recreate it or continue in the project checkout.";
+export const MISSING_WORKTREE_MESSAGE = "This thread's worktree is not on disk.";
 
 /**
  * Read-only readiness shared by admission, recovery, startup and final delivery.
@@ -50,6 +49,8 @@ export const readWorktreeState = (
           defaultBranch: null,
           // Readiness no longer says which branch a group's root is on.
           headBranch: null,
+          branchCheckedOutAt: null,
+          grouped: true,
         } as const;
     }
     const canonical = yield* Effect.tryPromise(() => canonicalWorktreePath(target));
@@ -76,13 +77,40 @@ export const readWorktreeState = (
     // An unregistered folder is foreign without asking Git, which may not even
     // find a repository there.
     if (directoryExists && input.worktreePath !== null && entry !== undefined) {
-      const inspected = yield* git.inspectCheckoutIdentity(target);
+      // A registered folder Git cannot read is foreign too when it is no
+      // checkout at all. Any other failure stays a failure.
+      const inspected = yield* git
+        .inspectCheckoutIdentity(target)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.tryPromise(() => isLeftoverWorktreeFolder(target)).pipe(
+              Effect.flatMap((leftover) => (leftover ? Effect.succeed(null) : Effect.fail(error))),
+            ),
+          ),
+        );
       const expectedCommon = yield* git
         .resolveCommonDir(input.projectCwd)
         .pipe(Effect.flatMap((value) => Effect.tryPromise(() => canonicalWorktreePath(value))));
-      matching = inspected.canonicalRoot === canonical && inspected.commonDir === expectedCommon;
-      if (matching) headBranch = inspected.branch;
+      matching =
+        inspected !== null &&
+        inspected.canonicalRoot === canonical &&
+        inspected.commonDir === expectedCommon;
+      if (inspected !== null && matching) headBranch = inspected.branch;
     }
+    // Another checkout on the recorded branch: Git refuses a second one, so a
+    // missing worktree cannot come back on that branch while it stands. A
+    // leftover folder holds nothing, and recreation takes the branch from it.
+    const holder =
+      input.branch === null
+        ? undefined
+        : entries.find(
+            (other) => other.canonicalPath !== canonical && other.branch === input.branch,
+          );
+    const holderIsLeftover =
+      holder !== undefined &&
+      !holder.isMain &&
+      holder.locked === null &&
+      (yield* Effect.tryPromise(() => isLeftoverWorktreeFolder(holder.path)));
     const registration = directoryExists
       ? matching
         ? "matching"
@@ -98,6 +126,8 @@ export const readWorktreeState = (
       branchExists,
       defaultBranch,
       headBranch,
+      branchCheckedOutAt: holder && !holderIsLeftover ? holder.path : null,
+      grouped: false,
     } as const;
   });
 
@@ -125,7 +155,7 @@ export const assertWorktreeReady = (
     if (state.registration === "foreign")
       return yield* Effect.fail(
         new WorktreeNotReadyError(
-          "The recorded worktree folder does not belong to this repository. Recover the workspace before sending.",
+          "The folder recorded for this thread's worktree now holds something else.",
         ),
       );
     if (input.branch === null)
@@ -133,7 +163,7 @@ export const assertWorktreeReady = (
     if (!state.branchExists)
       return yield* Effect.fail(
         new WorktreeNotReadyError(
-          `Worktree branch ${input.branch} is missing. ${MISSING_WORKTREE_MESSAGE}`,
+          `${MISSING_WORKTREE_MESSAGE} Its branch ${input.branch} no longer exists.`,
         ),
       );
     if (!allowRecreation)

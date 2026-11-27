@@ -210,7 +210,10 @@ export function createWorkspaceTransitionFixture() {
         ),
       ),
       Layer.provideMerge(
-        Layer.succeed(NextTurnQueueDispatcher, { notify: () => Effect.void } as never),
+        Layer.succeed(NextTurnQueueDispatcher, {
+          notify: () => Effect.void,
+          setWorkspaceRestorer: () => Effect.void,
+        } as never),
       ),
       Layer.provideMerge(gitLayer),
       Layer.provideMerge(base),

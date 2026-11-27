@@ -40,9 +40,8 @@ import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { deriveProviderInstanceEntries } from "../providerInstances";
 import { preserveTimelineAnchorDuringHistoryLoad } from "./chat/timelineScrollAnchors";
 import { messageAttachmentSources } from "../lib/streamingTextRevision";
-import { WorkspaceTransitionBanner } from "./chat/WorkspaceTransitionBanner";
+import { WorkspaceStatusCard } from "./chat/WorkspaceStatusCard";
 import { flushSync } from "react-dom";
-import { WorktreeMissingBanner } from "./chat/WorktreeMissingBanner";
 import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
 import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
@@ -8946,25 +8945,17 @@ export default memo(function ChatView({
                         {inlineThreadNotices.length > 0 ? (
                           <ThreadNoticeStack notices={inlineThreadNotices} />
                         ) : null}
-                        {isServerThread && (
-                          <>
-                            <WorkspaceTransitionBanner threadId={threadId} />
-                            <WorktreeMissingBanner
-                              threadId={threadId}
-                              worktreePath={activeThread?.worktreePath}
-                              branch={activeThread?.branch}
-                              queueBlocked={
-                                nextTurnQueueState.snapshot?.reasonCode === "worktree_missing"
-                              }
-                              turnActive={
-                                phase === "running" || Boolean(activeThread?.session?.activeTurnId)
-                              }
-                            />
-                          </>
-                        )}
-                        {worktreeSetupCardVisible && !worktreeSetupAsChip
-                          ? renderWorktreeSetupCard(false)
-                          : null}
+                        {/* The only workspace surface in the tray. On a compact
+                        layout a setup that fits a chip lives in the strip above. */}
+                        {isServerThread && !worktreeSetupAsChip ? (
+                          <WorkspaceStatusCard
+                            threadId={threadId}
+                            turnActive={
+                              phase === "running" || Boolean(activeThread?.session?.activeTurnId)
+                            }
+                            setup={worktreeSetupCardVisible ? renderWorktreeSetupCard(false) : null}
+                          />
+                        ) : null}
                         {isServerThread && !queueChip ? nextTurnQueuePanel : null}
                         {activeThread?.pendingUserInputs
                           ?.filter((input) => !input.elicitation && !isBlockingUserInput(input))

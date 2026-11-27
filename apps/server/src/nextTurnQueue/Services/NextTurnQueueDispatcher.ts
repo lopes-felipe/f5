@@ -6,6 +6,7 @@ import type {
   NextTurnQueueSnapshot,
   NextTurnQueueSummary,
   ThreadId,
+  ThreadWorkspaceStatus,
   TurnSubmissionResult,
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
@@ -50,6 +51,20 @@ export interface NextTurnQueueDispatcherShape {
   readonly getSnapshot: (
     threadId: ThreadId,
   ) => Effect.Effect<NextTurnQueueSnapshot, NextTurnQueueError>;
+  /** The status the snapshot carries as `workspace`; null when the thread or its project is gone. */
+  readonly getWorkspaceStatus: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ThreadWorkspaceStatus | null, NextTurnQueueError>;
+  /**
+   * Registers what brings a missing worktree back when a send stops on it. The
+   * restorer resolves to whether it restored the worktree; `false` means only
+   * the user can decide, and a failure is retried once before the thread's
+   * status reports it. Registered late because the restorer notifies this
+   * dispatcher itself.
+   */
+  readonly setWorkspaceRestorer: (
+    restore: (threadId: ThreadId) => Effect.Effect<boolean, Error>,
+  ) => Effect.Effect<void>;
   readonly getSummary: Effect.Effect<NextTurnQueueSummary, NextTurnQueueError>;
   readonly promote: (input: {
     readonly itemId: CommandId;

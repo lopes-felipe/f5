@@ -123,8 +123,12 @@ export const makeWorkspaceTransitions = Effect.gen(function* () {
           .length
       )
         return yield* fail("Wait for the dispatching queue item to settle.");
+      // Attaching to the checkout that holds the thread's branch is one of the
+      // ways out of a missing worktree, so it is allowed for that message too.
       const recoveringPausedQueue =
-        ["recreate", "recreate_from_base", "use_project_checkout"].includes(record.intent) &&
+        ["recreate", "recreate_from_base", "use_project_checkout", "attach_existing"].includes(
+          record.intent,
+        ) &&
         setup[0]?.paused === 1 &&
         setup[0]?.reason === "worktree_missing";
       if (

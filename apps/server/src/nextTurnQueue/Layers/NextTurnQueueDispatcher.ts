@@ -2,11 +2,10 @@ import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { isBoundScheduledSubmission, scheduledSendGate } from "../../scheduledTasks/sendGate.ts";
 import { registerShutdown } from "../../shutdown.ts";
 import { makeQueueRetryScheduler } from "../retryScheduler.ts";
-import {
-  WorkspaceTransitions,
-  workspaceTransitionSnapshot,
-} from "../../persistence/Services/WorkspaceTransitions.ts";
+import { WorkspaceTransitions } from "../../persistence/Services/WorkspaceTransitions.ts";
 import { WorktreePreparation } from "../../project/Services/WorktreePreparation.ts";
+import { deriveThreadWorkspaceStatus } from "../../project/threadWorkspaceStatus.ts";
+import { appendWorkspaceNote } from "../../project/workspaceNotes.ts";
 import { assertWorktreeReady, WorktreeInspectionError } from "../../project/worktreeReadiness.ts";
 import { syncObservedBranch } from "../../project/observedBranch.ts";
 import { readProjectSettings } from "../../project/projectSettings.ts";
@@ -199,6 +198,45 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
     Option.isSome(worktreeSetupGate)
       ? worktreeSetupGate.value.check(threadId, token)
       : Effect.succeed(token === null ? ("none" as const) : ("orphaned" as const));
+
+  // Brings a missing worktree back when a send stops on it. Registered by the
+  // worktree manager, which itself depends on this dispatcher.
+  let workspaceRestorer: ((threadId: ThreadId) => Effect.Effect<boolean, Error>) | null = null;
+  /** Threads whose automatic restore is running, so their status says so at once. */
+  const restoringThreads = new Set<ThreadId>();
+  /** One automatic restore per queued message: a second stop on it is the user's to resolve. */
+  const restoredFor = new Map<ThreadId, CommandId>();
+  const readWorkspaceStatus = (
+    threadId: ThreadId,
+    state: {
+      readonly paused: boolean;
+      readonly pauseReasonCode: QueueReasonCode | null;
+      readonly pauseDetail: string | null;
+      readonly worktreeBlockToken: string | null;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const model = yield* engine.getReadModel();
+      const thread = (model.threads ?? []).find(
+        (entry) => entry.id === threadId && entry.deletedAt === null,
+      );
+      const project = thread
+        ? (model.projects ?? []).find((entry) => entry.id === thread.projectId)
+        : undefined;
+      if (!thread || !project) return null;
+      const running = Option.isSome(transitions)
+        ? yield* transitions.value.forThread(threadId, true).pipe(Effect.mapError(storageError))
+        : null;
+      return yield* deriveThreadWorkspaceStatus(git, {
+        thread,
+        project,
+        switching: running?.intent ?? null,
+        restoring: restoringThreads.has(threadId),
+        setup: yield* readWorktreeSetupGate(threadId, state.worktreeBlockToken),
+        setupToken: state.worktreeBlockToken,
+        queue: state,
+      });
+    });
 
   const changesPubSub = yield* PubSub.unbounded<ThreadId>();
   const summaryChangesPubSub = yield* PubSub.unbounded<void>();
@@ -393,6 +431,11 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
             path: thread.worktreePath!,
             branch: thread.branch!,
           });
+          // Nobody asked for this, so the timeline says it happened.
+          if (ensured.recreated)
+            yield* appendWorkspaceNote(engine, thread.threadId, {
+              summary: `Worktree restored on ${thread.branch}`,
+            });
           if (
             Option.isSome(preparation) &&
             (ensured.recreated ||
@@ -574,13 +617,8 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         (entry) => entry.id === threadId,
       )?.session;
       const blockingDelivery = yield* readBlockingDelivery(data, threadId);
-      const workspaceTransition = Option.isSome(transitions)
-        ? yield* transitions.value.forThread(threadId).pipe(Effect.mapError(storageError))
-        : null;
       return {
-        workspaceTransition: workspaceTransition
-          ? workspaceTransitionSnapshot(workspaceTransition)
-          : null,
+        workspace: yield* readWorkspaceStatus(threadId, data.state),
         threadId,
         items: [...data.items],
         revision: data.state.revision,
@@ -751,6 +789,54 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         : start;
     });
 
+  /**
+   * The queue has just paused because this message's worktree is not there.
+   * Bring it back without asking: the restorer unpauses the queue when it
+   * succeeds, and the message is sent. When only the user can decide, or the
+   * restore fails twice, the pause stays and the thread's status says why.
+   */
+  const startWorkspaceRestore = (item: NextTurnQueueItem) =>
+    Effect.gen(function* () {
+      const threadId = item.threadId;
+      const restore = workspaceRestorer;
+      if (
+        restore === null ||
+        restoringThreads.has(threadId) ||
+        restoredFor.get(threadId) === item.command.commandId
+      )
+        return;
+      restoredFor.set(threadId, item.command.commandId);
+      restoringThreads.add(threadId);
+      yield* restore(threadId).pipe(
+        Effect.retry({ times: 1 }),
+        Effect.catch((error) =>
+          // Keep the pause, with the reason the status reports.
+          store.listByThread(threadId).pipe(
+            Effect.flatMap(({ state }) =>
+              state.paused && state.pauseReasonCode === "worktree_missing"
+                ? store.setPaused({
+                    threadId,
+                    paused: true,
+                    reasonCode: "worktree_missing",
+                    detail: error.message,
+                    expectedRevision: state.revision,
+                  })
+                : Effect.void,
+            ),
+            Effect.ignore,
+          ),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => restoringThreads.delete(threadId)).pipe(
+            Effect.andThen(publishChanged(threadId)),
+            Effect.andThen(notify(threadId)),
+            Effect.ignore,
+          ),
+        ),
+        Effect.forkIn(sourceScope),
+      );
+    });
+
   const startFromGate = (
     item: NextTurnQueueItem,
     preparedGate: Awaited<Effect.Success<ReturnType<typeof readGate>>>,
@@ -787,6 +873,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
             expectedRevision,
           })
           .pipe(Effect.catchTag("NextTurnQueueConflictError", () => notify(threadId)));
+        if (gate.reasonCode === "worktree_missing") yield* startWorkspaceRestore(item);
         yield* publishSnapshotIfChanged(threadId);
         yield* settleWaiter(item.itemId, {
           disposition: "queued",
@@ -1575,6 +1662,14 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       discard: true,
     }),
     getSnapshot: (threadId) => getSnapshot(threadId),
+    getWorkspaceStatus: (threadId) =>
+      store
+        .listByThread(threadId)
+        .pipe(Effect.flatMap((data) => readWorkspaceStatus(threadId, data.state))),
+    setWorkspaceRestorer: (restore) =>
+      Effect.sync(() => {
+        workspaceRestorer = restore;
+      }),
     getSummary: store.summary,
     submitAndSettle: (input) =>
       Effect.gen(function* () {

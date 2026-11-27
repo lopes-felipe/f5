@@ -37,6 +37,7 @@ import { NextTurnQueueDispatcherLive } from "./NextTurnQueueDispatcher.ts";
 import { NextTurnQueueStoreLive } from "./NextTurnQueueStore.ts";
 
 const dispatched: CommandId[] = [];
+const notes: string[] = [];
 // Provider delivery rows keyed by command id, and the unresolved delivery that
 // the repository's supersession rule reports per thread.
 const deliveryRows = new Map<string, ReturnType<typeof deliveryRow>>();
@@ -105,9 +106,15 @@ const makeDependencies = (
         Effect.sync(() => unresolvedDeliveries.get(threadId) ?? null),
     } as never),
     Layer.succeed(OrchestrationEngineService, {
-      dispatch: (command: { readonly commandId: CommandId }) =>
+      dispatch: (command: {
+        readonly commandId: CommandId;
+        readonly type?: string;
+        readonly activity?: { readonly summary: string };
+      }) =>
         Effect.sync(() => {
-          dispatched.push(command.commandId);
+          // A timeline note is not a turn; `dispatched` lists what was sent.
+          if (command.type === "thread.activity.append") notes.push(command.activity!.summary);
+          else dispatched.push(command.commandId);
           return { sequence: dispatched.length };
         }),
       getReadModel: () =>
@@ -719,6 +726,8 @@ for (const scenario of [
   "recoverable",
   "preparing",
   "missing-ref",
+  "restored",
+  "restore-fails",
   "checked-out-elsewhere",
   "repository-busy",
   "inspection-error",
@@ -753,6 +762,8 @@ for (const scenario of [
         : undefined;
     let busy = scenario === "repository-busy";
     let unreadable = scenario === "inspection-error";
+    let branchGone =
+      scenario === "missing-ref" || scenario === "restored" || scenario === "restore-fails";
     const git = makeFakeGitCore({
       listWorktrees: () =>
         unreadable
@@ -786,7 +797,7 @@ for (const scenario of [
             behindCount: null,
           };
         }),
-      branchExists: () => Effect.succeed(scenario !== "missing-ref"),
+      branchExists: () => Effect.sync(() => !branchGone),
       ensureWorktree: () =>
         busy
           ? Effect.fail(
@@ -813,8 +824,27 @@ for (const scenario of [
     });
     return Effect.gen(function* () {
       dispatched.length = 0;
+      notes.length = 0;
       const dispatcher = yield* NextTurnQueueDispatcher;
       const threadId = ThreadId.makeUnsafe(`queue-worktree-${scenario}`);
+      const store = yield* NextTurnQueueStore;
+      // What brings the worktree back when the send cannot do it alone: it
+      // recreates the branch and releases the queue, fails, or reports that
+      // only the user can decide (the branch is checked out somewhere else).
+      const restores: ThreadId[] = [];
+      yield* dispatcher.setWorkspaceRestorer((id) =>
+        Effect.gen(function* () {
+          restores.push(id);
+          if (scenario === "restore-fails") return yield* Effect.fail(new Error("Git said no"));
+          if (scenario !== "restored") return false;
+          branchGone = false;
+          const { state } = yield* store.listByThread(id);
+          yield* store
+            .setPaused({ threadId: id, paused: false, expectedRevision: state.revision })
+            .pipe(Effect.orDie);
+          return true;
+        }),
+      );
       yield* seedThread(threadId);
       yield* insert(1, threadId);
       const before = yield* dispatcher.getSnapshot(threadId);
@@ -822,10 +852,45 @@ for (const scenario of [
       if (scenario === "recoverable") assert.equal(before.reasonCode, null);
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
-      const queue = yield* (yield* NextTurnQueueStore).listByThread(threadId);
+      // Only a send that stopped on the worktree asks for it to be restored.
+      // A failure is tried once more; "the user decides" is not.
+      const asked =
+        scenario === "restore-fails"
+          ? [threadId, threadId]
+          : scenario === "missing-ref" ||
+              scenario === "restored" ||
+              scenario === "checked-out-elsewhere"
+            ? [threadId]
+            : [];
+      // The restore runs beside the queue worker, so wait for it to land.
+      yield* Effect.promise(() => vi.waitFor(() => assert.deepEqual(restores, asked)));
+      if (scenario === "restored") {
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(dispatched.length, 1)));
+        assert.equal(git.calls.ensureWorktree.length, 1);
+        assert.equal((yield* store.listByThread(threadId)).state.paused, false);
+        return;
+      }
+      if (scenario === "restore-fails") {
+        // The queue stays held, now with the reason the status card shows.
+        yield* Effect.promise(() =>
+          vi.waitFor(async () => {
+            const { state } = await Effect.runPromise(store.listByThread(threadId));
+            assert.equal(state.pauseDetail, "Git said no");
+          }),
+        );
+        assert.equal(dispatched.length, 0);
+        // The same message never asks again on its own.
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.equal(restores.length, 2);
+        return;
+      }
+      const queue = yield* store.listByThread(threadId);
       if (scenario === "recoverable") {
         assert.equal(dispatched.length, 1);
         assert.equal(git.calls.ensureWorktree.length, 1);
+        // Nobody asked for the worktree to come back, so the timeline says it did.
+        assert.deepEqual(notes, ["Worktree restored on feature"]);
       } else if (scenario === "preparing") {
         assert.equal(backgroundPreparations, 1);
         assert.equal(dispatched.length, 0);
@@ -840,7 +905,6 @@ for (const scenario of [
           yield* dispatcher.notify(threadId);
           yield* dispatcher.drain;
         }
-        const store = yield* NextTurnQueueStore;
         const paused = yield* store.listByThread(threadId);
         assert.equal(paused.state.pauseReasonCode, "worktree_missing");
         assert.equal(paused.state.paused, true);
@@ -1246,7 +1310,6 @@ it.layer(
       const snapshot = yield* dispatcher.getSnapshot(threadId);
       assert.equal(snapshot.reasonCode, "workspace_switch");
       assert.equal(snapshot.blockedKind, "waiting");
-      assert.equal(snapshot.workspaceTransition?.operationId, operationId);
       assert.deepEqual(dispatched, []);
       assert.equal((yield* insert(item + 1, threadId).pipe(Effect.exit))._tag, "Failure");
       assert.equal(

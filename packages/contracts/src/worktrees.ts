@@ -43,10 +43,15 @@ export const WorktreesSwitchAvailabilityInput = Schema.Struct({
 });
 export type WorktreesSwitchAvailabilityInput = typeof WorktreesSwitchAvailabilityInput.Type;
 
+/**
+ * `restore` does whatever brings the thread's worktree back without asking:
+ * recreate it on its branch, recreate the branch from the default branch when
+ * it is gone, or move to a new folder when the recorded one is taken. The
+ * others are the choices `ThreadWorkspaceStatus` offers when it cannot.
+ */
 export const WorktreesRecoverInput = Schema.Struct({
   threadId: ThreadId,
-  expectedQueueRevision: NonNegativeInt,
-  action: Schema.Literals(["recreate", "recreateFromBase", "useProjectCheckout", "cancel"]),
+  action: Schema.Literals(["restore", "attach", "newWorktree", "useProjectFolder", "cancel"]),
 });
 export type WorktreesRecoverInput = typeof WorktreesRecoverInput.Type;
 

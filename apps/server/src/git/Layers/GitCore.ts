@@ -102,6 +102,7 @@ import {
 import { ServerConfig } from "../../config.ts";
 import {
   canonicalWorktreePath,
+  isLeftoverWorktreeFolder,
   worktreePathSlug,
   worktreePathExceedsWindowsLimit,
 } from "../worktreePaths.ts";
@@ -1659,7 +1660,23 @@ const makeGitCore = Effect.gen(function* () {
             const other = entries.find(
               (entry) => entry.canonicalPath !== target && entry.branch === input.branch,
             );
-            if (other)
+            // A registration whose folder is no checkout any more holds nothing.
+            // Git still counts it until it prunes it, hence `--force` below.
+            const leftover =
+              other !== undefined &&
+              !other.isMain &&
+              other.locked === null &&
+              (yield* Effect.tryPromise({
+                try: () => isLeftoverWorktreeFolder(other.path),
+                catch: () =>
+                  createGitCommandError(
+                    "GitCore.ensureWorktree",
+                    input.cwd,
+                    [],
+                    "Cannot inspect the checkout that holds the branch.",
+                  ),
+              }));
+            if (other && !leftover)
               return yield* createGitCommandError(
                 "GitCore.ensureWorktree",
                 input.cwd,
@@ -1717,7 +1734,7 @@ const makeGitCore = Effect.gen(function* () {
             yield* executeGit(
               "GitCore.ensureWorktree",
               input.cwd,
-              ["worktree", "add", "--", input.path, input.branch],
+              ["worktree", "add", ...(leftover ? ["--force"] : []), "--", input.path, input.branch],
               { timeoutMs: 300_000 },
             ).pipe(
               Effect.tapError(() =>

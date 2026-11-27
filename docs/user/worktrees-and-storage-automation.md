@@ -50,13 +50,23 @@ Check **Also delete the ignored files and folders listed above** to include them
 Deleting a listed folder deletes everything inside it. If a removal recheck finds another ignored
 path, the dialog refreshes the list and requires confirmation again. An incomplete list blocks removal.
 
-If a thread's worktree goes missing, F5 never quietly moves the thread into the project checkout.
-Use **Recreate now** (the branch still exists), **Recreate from the default branch** (it doesn't),
-or **Continue in Local** (the project folder). The thread header offers the same choices:
-**Recreate worktree**, with **Recreate from `<default branch>`** and **Continue in Local** in its
-menu. An archived thread's header shows **Worktree removed** instead; unarchive the thread to
-recreate it. A recorded folder that no longer belongs to this repository is kept untouched, and
-the thread waits until you choose another workspace.
+If a thread's worktree is not on disk, your next message restores it. Nothing asks first, and the
+thread's timeline says what was done. Until then the thread header shows **Worktree restores on
+send** (**Worktree removed** on an archived thread: unarchive it and send a message).
+
+| What F5 finds                                        | What it does                                                                                 | Timeline note                                              |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| The folder is gone, the branch exists                | Recreates the worktree in the same folder, on that branch                                    | "Worktree restored on `<branch>`"                          |
+| The folder and the branch are gone                   | Recreates the worktree in the same folder from the default branch, reusing the branch's name | "`<branch>` no longer existed; recreated from `main` at …" |
+| The folder now holds something else                  | Puts the branch in a new folder; the old folder and its files are left untouched             | "Worktree moved to `<folder>`"                             |
+| Another checkout has the branch                      | Asks: **Continue there** or **New worktree** (which starts from that branch)                 |                                                            |
+| Nothing to restore from, or Git fails twice in a row | Asks: **Try again** or **Continue in Local**, with Git's reason                              |                                                            |
+
+F5 never moves a thread into the project folder on its own. When it has to ask, it asks in one
+place: a single card above the composer with the message and its actions. The same card shows
+one line while a worktree is being created, restored or switched (with **Cancel** where that is
+possible) and the setup stages of a first send. It is the only workspace notice there; the queue
+below it does not repeat it.
 
 A thread follows its folder, not a branch. When the agent runs `git checkout`, a rebase leaves a
 detached HEAD, or you switch branches in a terminal, nothing is blocked and nothing asks: the next
@@ -145,7 +155,8 @@ never deleted recursively. Paths are preserved exactly, including whitespace.
 
 Changing an established conversation's workspace stops its idle provider session before
 switching. Active or pending turns, queued work, native operations, and setup owners block
-switching. A paused missing-worktree message can still use recovery. While a switch is
+switching. A message waiting on a worktree that could not be restored can still use the
+actions on its card. While a switch is
 running, queue resume, promotion, setup retry, and reconnect cannot bypass it; once it ends,
 nothing is held. Manual pauses remain paused after switching.
 

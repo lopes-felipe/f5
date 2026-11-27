@@ -174,15 +174,26 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     await f.runtime.runPromise(
       f.queue.setPaused({ threadId: f.threadId, paused: true, reasonCode: "worktree_missing" }),
     );
-    const before = await f.runtime.runPromise(f.queue.listByThread(f.threadId));
+    expect(await f.runtime.runPromise(f.manager.threadState({ threadId: f.threadId }))).toEqual({
+      kind: "attention",
+      reason: "restore_failed",
+      message: "The worktree could not be restored.",
+      actions: ["retry", "useProjectFolder"],
+    });
     const recovered = await f.runtime.runPromise(
-      f.manager.recover({
-        threadId: f.threadId,
-        expectedQueueRevision: before.state.revision,
-        action: "recreate",
-      }),
+      f.manager.recover({ threadId: f.threadId, action: "restore" }),
     );
-    expect(recovered.registration).toBe("matching");
+    expect(recovered).toEqual({
+      kind: "ready",
+      location: "worktree",
+      path: await fs.realpath(target),
+      branch: "recovery",
+    });
+    expect(
+      (await f.runtime.runPromise(f.engine.getReadModel())).threads[0]?.activities.map(
+        (activity) => activity.summary,
+      ),
+    ).toContain("Worktree restored on recovery");
     expect(f.preparations).toContain(await fs.realpath(target));
     expect((await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state.paused).toBe(false);
     await fs.rm(target, { recursive: true });
@@ -486,18 +497,17 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
         reasonCode: "worktree_setup_failed",
       }),
     );
+    const held = { kind: "attention", reason: "setup_failed" };
     expect(
-      (await f.runtime.runPromise(f.manager.threadState({ threadId: f.threadId }))).recovery,
-    ).toBe("interrupted");
-    const queue = await f.runtime.runPromise(f.queue.listByThread(f.threadId));
+      await f.runtime.runPromise(f.manager.threadState({ threadId: f.threadId })),
+    ).toMatchObject(held);
+    const prepared = f.preparations.length;
+    // The folder is there, so restoring only finishes the preparation a restart cut short.
     const state = await f.runtime.runPromise(
-      f.manager.recover({
-        threadId: f.threadId,
-        action: "recreate",
-        expectedQueueRevision: queue.state.revision,
-      }),
+      f.manager.recover({ threadId: f.threadId, action: "restore" }),
     );
-    expect(state.recovery).toBe("none");
+    expect(f.preparations.length).toBe(prepared + 1);
+    expect(state).toMatchObject(held);
     expect(
       (await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state.pauseReasonCode,
     ).toBe("worktree_setup_failed");

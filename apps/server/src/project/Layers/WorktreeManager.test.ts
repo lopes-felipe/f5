@@ -107,6 +107,7 @@ describe("WorktreeManager safety and recovery", { timeout: 60_000 }, () => {
               Effect.sync(() => {
                 notified.push(id);
               }),
+            setWorkspaceRestorer: () => Effect.void,
           } as never),
           Effect.provide(automationLayer(world, {}, "f5-manager-state-")),
           Effect.scoped,
@@ -556,11 +557,88 @@ describe("WorktreeManager safety and recovery", { timeout: 60_000 }, () => {
         world.threads.push(
           thread({ id: threadId, projectId: "p", branch: "recorded", worktreePath: target }),
         );
-        const intact = { registration: "matching", directoryExists: true, recovery: "none" };
+        const intact = { kind: "ready", location: "worktree", path: target, branch: "recorded" };
         git(target, "checkout", "-q", "-b", "agent-branch");
-        expect(yield* manager.threadState({ threadId })).toMatchObject(intact);
+        expect(yield* manager.threadState({ threadId })).toEqual(intact);
         git(target, "checkout", "-q", "--detach");
-        expect(yield* manager.threadState({ threadId })).toMatchObject(intact);
+        expect(yield* manager.threadState({ threadId })).toEqual(intact);
+      }),
+    );
+  });
+
+  it("reports what a thread's workspace needs, from Git and the queue", async () => {
+    const { repo, world, run } = await fixture();
+    const threadId = ThreadId.makeUnsafe("status");
+    const local = ThreadId.makeUnsafe("status-local");
+    await run((manager, root) =>
+      Effect.gen(function* () {
+        const target = path.join(root, "status");
+        git(repo.root, "worktree", "add", "-q", "-b", "topic", target, "main");
+        world.threads.push(
+          thread({ id: threadId, projectId: "p", branch: "topic", worktreePath: target }),
+          thread({ id: local, projectId: "p", branch: "main", worktreePath: null }),
+        );
+        const status = () => manager.threadState({ threadId });
+        expect(yield* manager.threadState({ threadId: local })).toEqual({
+          kind: "ready",
+          location: "projectFolder",
+          path: repo.root,
+          branch: "main",
+        });
+
+        // Cleaned up: nothing to do until the next message, which restores it.
+        git(repo.root, "worktree", "remove", "--force", target);
+        expect(yield* status()).toEqual({ kind: "dormant", path: target, branch: "topic" });
+
+        // A send that stopped on it already tried: now it is the user's.
+        world.queueStates.set(threadId, {
+          revision: 1,
+          paused: true,
+          pauseReasonCode: "worktree_missing",
+          pauseDetail: "Git could not add the worktree.",
+          worktreeBlockToken: null,
+        });
+        expect(yield* status()).toEqual({
+          kind: "attention",
+          reason: "restore_failed",
+          message: "Git could not add the worktree.",
+          actions: ["retry", "useProjectFolder"],
+        });
+        world.queueStates.delete(threadId);
+
+        // Git allows one checkout per branch.
+        git(repo.root, "checkout", "-q", "topic");
+        expect(yield* status()).toEqual({
+          kind: "attention",
+          reason: "branch_in_use",
+          message:
+            "topic is checked out in the project folder, so this thread's worktree cannot be restored on it.",
+          actions: ["attach", "newWorktree"],
+        });
+        git(repo.root, "checkout", "-q", "main");
+
+        // The branch is gone too: it starts again from the default branch.
+        git(repo.root, "branch", "-q", "-D", "topic");
+        expect(yield* status()).toEqual({ kind: "dormant", path: target, branch: "topic" });
+
+        // Something else took the folder; it is left alone and the thread moves.
+        yield* Effect.promise(() => fs.mkdir(target, { recursive: true }));
+        expect(yield* status()).toEqual({ kind: "dormant", path: target, branch: "topic" });
+
+        // A first-send setup that failed holds its message.
+        world.queueStates.set(threadId, {
+          revision: 2,
+          paused: true,
+          pauseReasonCode: "worktree_setup_failed",
+          pauseDetail: "The setup script exited with 1.",
+          worktreeBlockToken: null,
+        });
+        expect(yield* status()).toEqual({
+          kind: "attention",
+          reason: "setup_failed",
+          message: "The setup script exited with 1.",
+          actions: ["retry", "useProjectFolder", "discard"],
+        });
       }),
     );
   });
@@ -580,9 +658,7 @@ describe("WorktreeManager safety and recovery", { timeout: 60_000 }, () => {
     await run((manager) =>
       Effect.gen(function* () {
         expect(
-          (yield* manager
-            .recover({ threadId, action: "useProjectCheckout", expectedQueueRevision: 7 })
-            .pipe(Effect.exit))._tag,
+          (yield* manager.recover({ threadId, action: "useProjectFolder" }).pipe(Effect.exit))._tag,
         ).toBe("Failure");
         expect(world.queueStates.get(threadId)?.pauseReasonCode).toBe("manual_pause");
       }),

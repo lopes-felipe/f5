@@ -1,6 +1,5 @@
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
-import { assertWorktreeReady, WorktreeNotReadyError } from "../../project/worktreeReadiness.ts";
 import { NextTurnQueueStore } from "../../nextTurnQueue/Services/NextTurnQueueStore.ts";
 import { Option } from "effect";
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -59,37 +58,25 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
 
     const project = readModel.projects.find((entry) => entry.id === thread.projectId);
     if (!project || project.deletedAt === null) {
-      const readiness = project
-        ? yield* assertWorktreeReady(
-            git,
-            { projectCwd: project.workspaceRoot, worktreePath, branch: thread.branch },
-            true,
-          ).pipe(Effect.exit)
-        : null;
-      if (
-        readiness === null ||
-        (readiness._tag === "Failure" &&
-          Cause.squash(readiness.cause) instanceof WorktreeNotReadyError)
-      ) {
-        if (Option.isSome(queue)) {
-          const store = queue.value;
-          yield* store.listByThread(thread.id).pipe(
-            Effect.flatMap(({ state }) =>
-              state.paused
-                ? Effect.void
-                : store.setPaused({
-                    threadId: thread.id,
-                    paused: true,
-                    reasonCode: "worktree_missing",
-                    detail: "The recorded worktree requires recovery.",
-                    expectedRevision: state.revision,
-                  }),
-            ),
-            Effect.ignore,
-          );
-        }
+      // A missing worktree is not a reason to hold a queue: the next message
+      // restores it, and the thread's status says so when it cannot. Queues an
+      // older version paused here are released, so that message gets its try.
+      if (Option.isSome(queue)) {
+        const store = queue.value;
+        yield* store.listByThread(thread.id).pipe(
+          Effect.flatMap(({ state }) =>
+            state.paused && state.pauseReasonCode === "worktree_missing"
+              ? store.setPaused({
+                  threadId: thread.id,
+                  paused: false,
+                  expectedRevision: state.revision,
+                })
+              : Effect.void,
+          ),
+          Effect.ignore,
+        );
       }
-      if (!probe.exists || readiness === null || readiness._tag === "Failure") {
+      if (!probe.exists || !project) {
         preservedCount += 1;
         yield* Effect.logDebug("preserving recorded worktree for recovery", {
           threadId: thread.id,

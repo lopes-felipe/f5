@@ -133,6 +133,8 @@ describe("OrchestrationReactor", () => {
               drain: Effect.void,
               submitAndSettle: () => Effect.die("unsupported"),
               getSnapshot: () => Effect.die("unsupported"),
+              getWorkspaceStatus: () => Effect.succeed(null),
+              setWorkspaceRestorer: () => Effect.void,
               getSummary: Effect.die("unsupported"),
               promote: () => Effect.die("unsupported"),
               refreshGate: () => Effect.die("unsupported"),

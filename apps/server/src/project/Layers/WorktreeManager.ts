@@ -1,12 +1,16 @@
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { listWorktreeInventory } from "../worktreeInventory.ts";
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
-import { transitionIsActive } from "../../persistence/Services/WorkspaceTransitions.ts";
+import nodePath from "node:path";
 import {
   type ThreadId,
   type WorktreesInspectInput,
   type WorktreesInspectResult,
+  type WorktreesSwitchWorkspaceInput,
 } from "@t3tools/contracts";
+import { transitionIsActive } from "../../persistence/Services/WorkspaceTransitions.ts";
+import { deriveThreadWorkspaceStatus, planRestore } from "../threadWorkspaceStatus.ts";
+import { appendWorkspaceNote } from "../workspaceNotes.ts";
 import { Effect, FileSystem, Layer, Option } from "effect";
 import { ServerConfig } from "../../config.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -261,53 +265,22 @@ export const makeWorktreeManager = Effect.gen(function* () {
   const threadState: WorktreeManagerShape["threadState"] = (input) =>
     Effect.gen(function* () {
       const { thread, project } = yield* context(input.threadId);
-      const state =
-        thread.worktreePath !== null
-          ? yield* readWorktreeState(git, {
-              projectCwd: project.workspaceRoot,
-              worktreePath: thread.worktreePath,
-              branch: thread.branch,
-            })
-          : {
-              worktreePath: null,
-              branch: thread.branch,
-              directoryExists: yield* fileSystem.exists(project.workspaceRoot),
-              registration: "none" as const,
-              branchExists: false,
-              defaultBranch: null,
-            };
-      const data = yield* queue.listByThread(thread.id);
-      const token = data.state.worktreeBlockToken;
-      const receipt =
-        token === null && thread.worktreePath
-          ? yield* git.readWorktreePreparation(thread.worktreePath)
-          : null;
-      const preparationInterrupted =
-        receipt !== null &&
-        ["allocated", "setup_failed", "setup_indeterminate"].includes(receipt.phase);
+      // Reading the switch settles one nobody is running any more, so the
+      // status never reports a switch that has already ended.
       const transition = Option.isSome(transitions)
         ? yield* transitions.value.getTransition(input)
         : null;
-      // A switch is either running or settled; only setup can be left interrupted.
-      const recovery =
-        transition && transitionIsActive(transition)
-          ? "running"
-          : token?.startsWith("recovery:") || token?.startsWith("preparation:")
-            ? (yield* setup.check(thread.id, token)) === "gating"
-              ? "running"
-              : "interrupted"
-            : preparationInterrupted
-              ? "interrupted"
-              : "none";
-      return {
-        worktreePath: state.worktreePath,
-        branch: state.branch,
-        directoryExists: state.directoryExists,
-        registration: state.registration,
-        branchExists: state.branchExists,
-        defaultBranch: state.defaultBranch,
-        recovery,
-      } as const;
+      const { state } = yield* queue.listByThread(thread.id);
+      return yield* deriveThreadWorkspaceStatus(git, {
+        thread,
+        project,
+        switching: transition && transitionIsActive(transition) ? transition.intent : null,
+        // The queue's own snapshot covers the moment before a restore reserves its switch.
+        restoring: false,
+        setup: yield* setup.check(thread.id, state.worktreeBlockToken),
+        setupToken: state.worktreeBlockToken,
+        queue: state,
+      });
     });
   const switchAvailability: WorktreeManagerShape["switchAvailability"] = (input) =>
     Effect.gen(function* () {
@@ -363,70 +336,56 @@ export const makeWorktreeManager = Effect.gen(function* () {
         }),
       };
     });
-  const recover: WorktreeManagerShape["recover"] = (input) =>
-    Effect.gen(function* () {
-      const { thread, project } = yield* context(input.threadId);
-      const data = yield* queue.listByThread(thread.id);
-      if (data.state.revision !== input.expectedQueueRevision)
-        return yield* Effect.fail(new Error("The queue changed. Refresh and try again."));
-      if (
-        input.action === "recreate" &&
-        thread.worktreePath &&
-        thread.branch &&
-        git.readWorktreeGroup &&
-        (yield* git.readWorktreeGroup(thread.worktreePath))
-      ) {
-        const target = thread.worktreePath;
-        const branch = thread.branch;
-        yield* withWorktreeLifecycleLock(
-          target,
-          Effect.gen(function* () {
-            const latest = yield* queue.listByThread(thread.id);
-            if (
-              latest.state.revision !== input.expectedQueueRevision ||
-              latest.state.worktreeBlockToken
-            )
-              return yield* Effect.fail(
-                new Error("The queue changed or workspace setup is active."),
-              );
-            yield* Effect.tryPromise(() => assertExclusiveProfileCheckout(config, target));
-            const claims = yield* withClaimServices(
-              readWorktreeClaims(target).pipe(Effect.provideServices(services)),
-            );
-            if (
-              claims.unknown ||
-              claims.activeThreadIds.length ||
-              claims.setupThreadIds.length ||
-              claims.sessions.length ||
-              claims.terminals.length ||
-              claims.threadIds.some((owner) => owner !== thread.id)
-            )
-              return yield* Effect.fail(
-                new Error("A conversation, session, or terminal is using this workspace."),
-              );
-            yield* git.ensureWorktree({
-              cwd: project.workspaceRoot,
-              path: target,
-              branch,
-              owner: "thread:" + thread.id,
-            });
-          }),
+  type Recovering = Effect.Success<ReturnType<typeof context>>;
+  /** A worktree group is put back by Git alone: its folders, on the branch it records. */
+  const restoreGroup = ({ thread, project }: Recovering, target: string, branch: string) =>
+    withWorktreeLifecycleLock(
+      target,
+      Effect.gen(function* () {
+        const latest = yield* queue.listByThread(thread.id);
+        if (latest.state.worktreeBlockToken)
+          return yield* Effect.fail(new Error("Worktree setup is still running."));
+        yield* Effect.tryPromise(() => assertExclusiveProfileCheckout(config, target));
+        const claims = yield* withClaimServices(
+          readWorktreeClaims(target).pipe(Effect.provideServices(services)),
         );
-        return yield* resumeAfterRecovery(thread.id, input);
-      }
+        if (
+          claims.unknown ||
+          claims.activeThreadIds.length ||
+          claims.setupThreadIds.length ||
+          claims.sessions.length ||
+          claims.terminals.length ||
+          claims.threadIds.some((owner) => owner !== thread.id)
+        )
+          return yield* Effect.fail(
+            new Error("Another thread, an agent session or a terminal is using this worktree."),
+          );
+        yield* git.ensureWorktree({
+          cwd: project.workspaceRoot,
+          path: target,
+          branch,
+          owner: "thread:" + thread.id,
+        });
+      }),
+    );
+  /** One switch on behalf of a recovery action; fails with the reason when it does not finish. */
+  const switchTo = (
+    { thread }: Recovering,
+    request: Pick<
+      WorktreesSwitchWorkspaceInput,
+      "intent" | "targetPath" | "branch" | "sharedFilesystemConfirmed"
+    >,
+  ) =>
+    Effect.gen(function* () {
       if (Option.isNone(transitions))
-        return yield* Effect.fail(new Error("Workspace transitions are unavailable."));
-      if (input.action === "cancel") {
-        // Settles the switch at once: nothing is left to resolve before the next action.
-        yield* transitions.value.cancel(thread.id);
-        return yield* threadState(input);
-      }
+        return yield* Effect.fail(new Error("Workspace switching is unavailable."));
+      const token = (yield* queue.listByThread(thread.id)).state.worktreeBlockToken;
+      // A preparation the server no longer runs is taken over rather than waited for.
       const orphanedOwner =
-        data.state.worktreeBlockToken &&
-        (data.state.worktreeBlockToken.startsWith("recovery:") ||
-          data.state.worktreeBlockToken.startsWith("preparation:")) &&
-        (yield* setup.check(thread.id, data.state.worktreeBlockToken)) === "orphaned"
-          ? data.state.worktreeBlockToken
+        token &&
+        (token.startsWith("recovery:") || token.startsWith("preparation:")) &&
+        (yield* setup.check(thread.id, token)) === "orphaned"
+          ? token
           : undefined;
       const result = yield* transitions.value.switchWorkspace(
         {
@@ -437,12 +396,7 @@ export const makeWorktreeManager = Effect.gen(function* () {
             worktreePath: thread.worktreePath,
             sessionUpdatedAt: thread.session?.updatedAt ?? null,
           },
-          intent:
-            input.action === "recreateFromBase"
-              ? "recreate_from_base"
-              : input.action === "useProjectCheckout"
-                ? "use_project_checkout"
-                : "recreate",
+          ...request,
         },
         orphanedOwner,
       );
@@ -456,9 +410,10 @@ export const makeWorktreeManager = Effect.gen(function* () {
           token: null,
           expectedToken: orphanedOwner,
         });
-      return yield* resumeAfterRecovery(thread.id, input);
+      return result;
     });
-  const resumeAfterRecovery = (threadId: ThreadId, input: { threadId: ThreadId }) =>
+  /** Lets the message that stopped on the missing worktree go. */
+  const resume = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const latest = yield* queue.listByThread(threadId);
       if (latest.state.paused && latest.state.pauseReasonCode === "worktree_missing")
@@ -468,8 +423,106 @@ export const makeWorktreeManager = Effect.gen(function* () {
           expectedRevision: latest.state.revision,
         });
       yield* dispatcher.notify(threadId);
+    });
+  const inspectRecorded = ({ thread, project }: Recovering) =>
+    thread.worktreePath === null
+      ? Effect.succeed(null)
+      : readWorktreeState(git, {
+          projectCwd: project.workspaceRoot,
+          worktreePath: thread.worktreePath,
+          branch: thread.branch,
+        });
+  /**
+   * Brings the thread's worktree back without asking, as `planRestore` decides,
+   * and says in the timeline what it did. Resolves to false when only the user
+   * can decide (the branch is checked out elsewhere, or nothing can be restored).
+   */
+  const restore = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const found = yield* context(threadId);
+      const { thread } = found;
+      const state = yield* inspectRecorded(found);
+      const plan = state ? planRestore(state) : ({ kind: "none" } as const);
+      if (plan.kind === "branchInUse" || plan.kind === "impossible") return false;
+      if (plan.kind === "none" && thread.worktreePath !== null) {
+        // The folder is there but a restart cut its preparation short: finish it.
+        const receipt = yield* git.readWorktreePreparation(thread.worktreePath);
+        if (
+          receipt !== null &&
+          ["allocated", "setup_failed", "setup_indeterminate"].includes(receipt.phase)
+        )
+          yield* switchTo(found, { intent: "recreate" });
+      } else if (plan.kind === "recreate" && state?.grouped) {
+        if (!thread.worktreePath || !thread.branch) return false;
+        yield* restoreGroup(found, thread.worktreePath, thread.branch);
+        yield* appendWorkspaceNote(engine, thread.id, {
+          summary: `Worktree restored on ${thread.branch}`,
+        });
+      } else if (plan.kind === "recreate") {
+        const result = yield* switchTo(found, { intent: "recreate" });
+        yield* appendWorkspaceNote(engine, thread.id, {
+          summary:
+            result.target.path === result.source.path
+              ? `Worktree restored on ${result.result?.branch ?? thread.branch}`
+              : `Worktree moved to ${nodePath.basename(result.target.path)}`,
+        });
+      } else if (plan.kind === "fromBase") {
+        const result = yield* switchTo(found, { intent: "recreate_from_base" });
+        const at = result.target.headSha ? ` at ${result.target.headSha.slice(0, 7)}` : "";
+        // The branch's commits are gone, which the user did not ask for.
+        yield* appendWorkspaceNote(engine, thread.id, {
+          tone: "error",
+          summary: thread.branch
+            ? `${thread.branch} no longer existed; recreated from ${plan.base}${at}`
+            : `Worktree recreated from ${plan.base}${at}`,
+        });
+      }
+      yield* resume(thread.id);
+      return true;
+    });
+  const recover: WorktreeManagerShape["recover"] = (input) =>
+    Effect.gen(function* () {
+      const found = yield* context(input.threadId);
+      const { thread } = found;
+      switch (input.action) {
+        case "cancel":
+          // Settles the switch at once: nothing is left to resolve before the next action.
+          if (Option.isSome(transitions)) yield* transitions.value.cancel(thread.id);
+          return yield* threadState(input);
+        case "restore":
+          yield* restore(thread.id);
+          return yield* threadState(input);
+        case "useProjectFolder":
+          yield* switchTo(found, { intent: "use_project_checkout" });
+          break;
+        case "newWorktree":
+          yield* switchTo(found, { intent: "recreate_from_base" });
+          break;
+        case "attach": {
+          const state = yield* inspectRecorded(found);
+          const plan = state ? planRestore(state) : null;
+          if (plan?.kind !== "branchInUse" || !thread.branch)
+            return yield* Effect.fail(
+              new Error("No other checkout holds this thread's branch any more. Try again."),
+            );
+          // Choosing this on the card is the confirmation that the folder is shared.
+          yield* switchTo(found, {
+            intent: "attach_existing",
+            targetPath: plan.at,
+            branch: thread.branch,
+            sharedFilesystemConfirmed: true,
+          });
+          break;
+        }
+      }
+      yield* resume(thread.id);
       return yield* threadState(input);
     });
+  yield* dispatcher.setWorkspaceRestorer((threadId) =>
+    restore(threadId).pipe(
+      Effect.mapError((error) => (error instanceof Error ? error : new Error(String(error)))),
+    ),
+  );
   const list: WorktreeManagerShape["list"] = (input) =>
     engine
       .getReadModel()

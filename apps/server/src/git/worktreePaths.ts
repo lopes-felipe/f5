@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import * as Path from "node:path";
 import { defaultF5BaseDir } from "@t3tools/shared/appStatePaths";
 
@@ -38,6 +38,20 @@ export async function canonicalWorktreePath(value: string): Promise<string> {
       ancestor = parent;
     }
   }
+}
+
+/**
+ * True for a folder that is there but is no checkout: its worktree was
+ * deleted, and something (a dev server, a build cache) wrote the folder back.
+ * A missing folder is not one, since its volume may only be unmounted.
+ */
+export async function isLeftoverWorktreeFolder(value: string): Promise<boolean> {
+  const missing = (error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  };
+  if (await lstat(value).then(() => false, missing)) return false;
+  return lstat(Path.join(value, ".git")).then(() => false, missing);
 }
 
 export { isTemporaryWorktreeBranch } from "@t3tools/shared/worktree";
