@@ -10,7 +10,7 @@ import {
   getModelSelectionStringOptionValue,
   getProviderOptionBooleanSelectionValue,
 } from "@t3tools/shared/model";
-import type { Effect, ServiceMap } from "effect";
+import type { ServiceMap } from "effect";
 
 import type { CodexAppServerManager } from "../../codexAppServerManager.ts";
 import type { ComputerAutomationBrokerRuntime } from "../../computer/ComputerAutomationBroker";
@@ -101,8 +101,6 @@ export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   /** F5's MCP hub; configured servers reach Codex through its endpoints. */
   readonly mcpHub?: McpHubShape;
-  /** True when Codex should get configured servers directly (`mcpNativePassthrough`). */
-  readonly mcpNativePassthrough?: Effect.Effect<boolean>;
 }
 
 export function mergeCodexProviderOptions(

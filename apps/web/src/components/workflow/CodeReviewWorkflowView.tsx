@@ -241,6 +241,7 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
   return (
     <>
       <WorkflowPageLayout
+        workflowId={workflow.id}
         projectId={workflow.projectId}
         workflowType="codeReview"
         typeLabel={WORKFLOW_TYPE_DIALOG_LABEL.codeReview}

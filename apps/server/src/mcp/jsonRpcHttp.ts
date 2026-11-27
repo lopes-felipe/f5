@@ -1,6 +1,7 @@
 /**
- * Hand-rolled JSON-RPC over HTTP helpers shared by F5's loopback MCP servers
- * (the preview/computer server and the Agent Bridge listeners).
+ * JSON-RPC over HTTP helpers for F5's loopback listeners: request checks shared by
+ * every MCP endpoint, and the hand-rolled protocol of the Agent Bridge listeners.
+ * The MCP endpoints themselves serve through the SDK (`McpHttpConnections`).
  *
  * @module mcp/jsonRpcHttp
  */

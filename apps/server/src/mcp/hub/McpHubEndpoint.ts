@@ -4,11 +4,9 @@
  * provider opens on it gets its own SDK `Server`, which forwards to the shared
  * or session upstream.
  */
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   CallToolRequestSchema,
   CompleteRequestSchema,
@@ -53,16 +51,12 @@ import {
   type McpToolApprovalReason,
 } from "./McpHubGovernance.ts";
 import type { McpHubUpstream } from "./McpHubUpstream.ts";
+import { McpHttpConnections, writeMcpHttpError } from "../McpHttpConnections.ts";
 
 /** A provider rarely holds more than one connection per endpoint; reconnects replace it. */
 const MAX_CONNECTIONS_PER_SLOT = 4;
 /** How long a provider's initialize waits for the upstream, to forward its instructions. */
 const INSTRUCTIONS_WAIT_MS = 5_000;
-
-interface DownstreamConnection {
-  readonly transport: StreamableHTTPServerTransport;
-  readonly server: Server;
-}
 
 export interface McpHubSlotOptions {
   readonly id: string;
@@ -88,8 +82,10 @@ export class McpHubSlot {
   private identity: McpServerIdentity;
   private readonly governance: McpHubGovernance | undefined;
   private readonly token: Buffer;
-  private readonly connections = new Map<string, DownstreamConnection>();
-  private readonly pending = new Set<DownstreamConnection>();
+  private readonly connections = new McpHttpConnections({
+    createServer: () => this.createServer(),
+    maxConnections: MAX_CONNECTIONS_PER_SLOT,
+  });
   private unsubscribe: () => void = () => undefined;
   private readonly unsubscribeThread: () => void;
   private closed = false;
@@ -286,7 +282,7 @@ export class McpHubSlot {
   }
 
   private notify(change: "tools" | "resources" | "prompts"): void {
-    for (const { server } of this.connections.values()) {
+    for (const server of this.connections.servers()) {
       const send =
         change === "tools"
           ? server.sendToolListChanged()
@@ -458,67 +454,16 @@ export class McpHubSlot {
   }
 
   async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (this.closed) return writeError(response, 404, "This MCP endpoint is closed.");
-    // Clients that only accept JSON (`t3 mcp-session-stdio`, some agents) get plain JSON
-    // replies. The SDK insists on both media types, so the header is completed for it.
-    const accept = String(request.headers.accept ?? "");
-    const streams = accept.includes("text/event-stream");
-    if (!streams || !accept.includes("application/json"))
-      request.headers.accept = "application/json, text/event-stream";
-    const header = request.headers["mcp-session-id"];
-    const sessionId = Array.isArray(header) ? header[0] : header;
-    if (sessionId) {
-      const connection = this.connections.get(sessionId);
-      if (!connection) return writeError(response, 404, "Unknown or expired MCP session.");
-      await connection.transport.handleRequest(request, response);
-      return;
-    }
-    if (request.method !== "POST")
-      return writeError(response, 400, "Initialize an MCP session with POST first.");
+    if (this.closed) return writeMcpHttpError(response, 404, "This MCP endpoint is closed.");
     // The server's instructions arrive with the upstream's own initialize. Wait briefly
-    // so the provider's first connection carries them; a slow server never stalls it long.
+    // so a provider's new connection carries them; a slow server never stalls it long.
     // An unbound slot has no instructions to wait for.
-    await Promise.race([
-      (this.upstream?.ensureConnected() ?? Promise.resolve()).catch(() => undefined),
-      new Promise((resolve) => setTimeout(resolve, INSTRUCTIONS_WAIT_MS).unref()),
-    ]);
-    // Oldest connections give way to new ones, so reconnects never exhaust the slot.
-    while (this.connections.size >= MAX_CONNECTIONS_PER_SLOT) {
-      const [oldest, connection] = this.connections.entries().next().value!;
-      this.connections.delete(oldest);
-      void connection.server.close().catch(() => undefined);
-    }
-    const server = this.createServer();
-    let connection: DownstreamConnection;
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      enableJsonResponse: !streams,
-      onsessioninitialized: (id) => {
-        this.pending.delete(connection);
-        if (this.closed) {
-          void server.close().catch(() => undefined);
-          return;
-        }
-        this.connections.set(id, connection);
-      },
-      onsessionclosed: (id) => {
-        this.connections.delete(id);
-      },
-    });
-    connection = { transport, server };
-    this.pending.add(connection);
-    server.onclose = () => {
-      this.pending.delete(connection);
-      if (transport.sessionId && this.connections.get(transport.sessionId) === connection)
-        this.connections.delete(transport.sessionId);
-    };
-    await server.connect(transport as Transport);
-    await transport.handleRequest(request, response);
-    // Anything but a successful initialize leaves no session behind.
-    if (!transport.sessionId) {
-      this.pending.delete(connection);
-      await server.close().catch(() => undefined);
-    }
+    if (request.method === "POST" && !request.headers["mcp-session-id"])
+      await Promise.race([
+        (this.upstream?.ensureConnected() ?? Promise.resolve()).catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, INSTRUCTIONS_WAIT_MS).unref()),
+      ]);
+    await this.connections.handle(request, response);
   }
 
   async close(): Promise<void> {
@@ -526,10 +471,7 @@ export class McpHubSlot {
     this.closed = true;
     this.unsubscribe();
     this.unsubscribeThread();
-    const connections = [...this.connections.values(), ...this.pending];
-    this.connections.clear();
-    this.pending.clear();
-    await Promise.allSettled(connections.map(({ server }) => server.close()));
+    await this.connections.close();
   }
 
   private createServer(): Server {
@@ -790,10 +732,4 @@ function toolErrorText(result: CallToolResult): string {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : "The MCP server request failed.";
-}
-
-function writeError(response: ServerResponse, status: number, message: string): void {
-  if (response.headersSent) return;
-  response.writeHead(status, { "content-type": "application/json" });
-  response.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message }, id: null }));
 }
