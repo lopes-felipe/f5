@@ -8,6 +8,11 @@ export interface WorkflowTimelineStep {
   label: string;
   /** null when the step has not yet been created (placeholder) */
   threadId: ThreadId | null;
+  /**
+   * Turn id produced by this step when known. Used to attribute turn timings
+   * accurately when multiple steps share a thread (e.g. Authoring + Revision).
+   */
+  turnId?: string | null | undefined;
   state: WorkflowTimelineStepState;
   /**
    * The model the workflow configured for this step, shown until the step's
@@ -20,6 +25,8 @@ export interface WorkflowTimelinePhase {
   id: string;
   label: string;
   state: WorkflowTimelinePhaseState;
+  /** True when the phase's steps execute in parallel (eligible for bottleneck comparison). */
+  parallel?: boolean | undefined;
   steps: WorkflowTimelineStep[];
 }
 
