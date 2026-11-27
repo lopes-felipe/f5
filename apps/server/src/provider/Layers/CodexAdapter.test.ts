@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import * as NodeFs from "node:fs";
+import * as NodeOs from "node:os";
+import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
   EventId,
@@ -3210,6 +3213,31 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("corrects the recorded enforcement when requirements leave a stage sandboxed", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const next = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("enforcement-changed"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "f5/readOnly/enforcementChanged",
+        payload: { enforcement: "sandbox" },
+      } satisfies ProviderEvent);
+      const event = yield* Fiber.join(next);
+      assert.equal(event._tag, "Some");
+      if (event._tag !== "Some" || event.value.type !== "session.configured") {
+        assert.fail(`expected session.configured, got ${JSON.stringify(event)}`);
+      }
+      assert.deepEqual(event.value.payload.config, {
+        f5ReadOnlyEnforcement: "sandbox",
+        f5ReadOnlyEnforcementSummary: "Read-only stage: sandboxed (Codex native sandbox)",
+      });
+    }),
+  );
+
   it.effect("lists at most twenty patch approval paths with an overflow count", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -5188,6 +5216,7 @@ it.effect(
       manager.startSessionImpl.mock.calls.at(-1)?.[0] as {
         mcpServers?: Record<string, unknown>;
         disablePlugins?: boolean;
+        readOnlyHomePath?: string;
       };
     // A server from the user's Codex settings and the project's provider options.
     const providerOptions = {
@@ -5203,6 +5232,8 @@ it.effect(
       });
       assert.deepEqual(Object.keys(lastStart().mcpServers ?? {}), ["f5_thread"]);
       assert.equal(lastStart().disablePlugins, true);
+      // The stage runs in the instance's rules-free home (CodexReadOnlyHome.ts).
+      assert.match(lastStart().readOnlyHomePath ?? "", /[\\/]codex-readonly[\\/]codex$/);
 
       yield* adapter.startSession({
         threadId: asThreadId("normal"),
@@ -5215,6 +5246,61 @@ it.effect(
         "github",
       ]);
       assert.equal(lastStart().disablePlugins, undefined);
+      assert.equal(lastStart().readOnlyHomePath, undefined);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
+it.effect(
+  "refuses a read-only stage whose workspace has its own Codex rules, at start and before a turn",
+  () => {
+    const manager = new FakeCodexManager();
+    const layer = makeCodexAdapterLive({ manager }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "codex-readonly-rules-" }),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const workspace = NodeFs.mkdtempSync(NodePath.join(NodeOs.tmpdir(), "codex-rules-ws-"));
+      NodeFs.mkdirSync(NodePath.join(workspace, ".git"));
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        threadId: asThreadId("clean-stage"),
+        cwd: workspace,
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+
+      NodeFs.mkdirSync(NodePath.join(workspace, ".codex", "rules"), { recursive: true });
+      NodeFs.writeFileSync(
+        NodePath.join(workspace, ".codex", "rules", "default.rules"),
+        'prefix_rule(pattern=["touch"], decision="allow")\n',
+      );
+      const startFailure = yield* adapter
+        .startSession({
+          threadId: asThreadId("rules-stage"),
+          cwd: workspace,
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.flip);
+      assert.match(String(startFailure.message), /default\.rules has Codex rules/);
+      // A normal session is unaffected.
+      yield* adapter.startSession({
+        threadId: asThreadId("normal-session"),
+        cwd: workspace,
+        runtimeMode: "full-access",
+      });
+
+      manager.readOnlyStageCwd = () => workspace;
+      const sendsBefore = manager.sendTurnImpl.mock.calls.length;
+      const turnFailure = yield* adapter
+        .sendTurn({ threadId: asThreadId("clean-stage"), input: "review" })
+        .pipe(Effect.flip);
+      assert.match(String(turnFailure.message), /default\.rules has Codex rules/);
+      assert.equal(manager.sendTurnImpl.mock.calls.length, sendsBefore);
     }).pipe(Effect.provide(layer), Effect.scoped);
   },
 );

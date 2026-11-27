@@ -45,6 +45,11 @@ For every id the recipe writes:
 - the same three files with the development badge under
   apps/desktop/resources/app-icons/<id>/.
 
+On macOS the Dock draws a pinned icon itself while F5 is quit, so the app also ships a
+Dock tile plug-in (apps/desktop/native/dock-tile, built by scripts/build-dock-tile.ts)
+that carries a copy of every macos.png except the default's. The app writes the chosen
+id to its preferences and the plug-in shows the matching image.
+
 To add or change a choice, edit VARIANTS, add the id to APP_ICON_IDS in
 packages/contracts/src/appIcon.ts and its label in apps/web/src/appIcon.ts, then
 regenerate. scripts/brand-assets.test.ts fails when the two lists disagree.

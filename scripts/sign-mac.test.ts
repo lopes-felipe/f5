@@ -110,3 +110,45 @@ it.each([
   expect(sign.mock.calls).toEqual([[options], [options]]);
   expect(delay).toHaveBeenCalledExactlyOnceWith(5000);
 });
+
+const { signingIgnore } = require("./sign-mac.cjs") as {
+  signingIgnore(options: { ignore?: unknown }): (file: string) => boolean;
+};
+const app = "/out/mac-arm64/F5.app";
+const dockTile = `${app}/Contents/PlugIns/F5DockTile.docktileplugin`;
+// electron-builder 26's default rule (MacTargetHelper.js): skip all of Contents/PlugIns.
+const electronBuilderIgnore = (file: string) =>
+  file.endsWith(".kext") || file.startsWith("/Contents/PlugIns", app.length);
+
+it("signs the Dock tile plug-in's executable despite electron-builder skipping PlugIns", () => {
+  const ignore = signingIgnore({ ignore: electronBuilderIgnore });
+  expect(ignore(`${dockTile}/Contents/MacOS/F5DockTile`)).toBe(false);
+  // The bundle signature seals the plug-in's images; other plug-ins stay skipped.
+  expect(ignore(`${dockTile}/Contents/Resources/classic.png`)).toBe(true);
+  expect(ignore(`${app}/Contents/PlugIns/Other.appex/Contents/MacOS/Other`)).toBe(true);
+  expect(ignore(`${app}/Contents/Resources/driver.kext`)).toBe(true);
+  expect(ignore(`${app}/Contents/MacOS/F5`)).toBe(false);
+  expect(
+    ignore(
+      `${app}/Contents/Resources/app.asar.unpacked/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex`,
+    ),
+  ).toBe(true);
+});
+
+it("keeps applying an ignore list given as patterns", () => {
+  const ignore = signingIgnore({ ignore: [/\.kext$/, (file: string) => file.includes("/skip/")] });
+  expect(ignore(`${app}/Contents/Resources/driver.kext`)).toBe(true);
+  expect(ignore(`${app}/Contents/skip/tool`)).toBe(true);
+  expect(ignore(`${app}/Contents/MacOS/F5`)).toBe(false);
+  expect(signingIgnore({})(`${app}/Contents/MacOS/F5`)).toBe(false);
+});
+
+it("signs the Dock tile plug-in with hardened runtime and no entitlements", () => {
+  const options = { optionsForFile: () => ({ entitlements: "electron-jit.plist" }) };
+  const plugIn = perFileOptions(options, `${dockTile}/Contents/MacOS/F5DockTile`) as {
+    entitlements: string;
+    hardenedRuntime?: boolean;
+  };
+  expect(plugIn.hardenedRuntime).toBe(true);
+  expect(readFileSync(plugIn.entitlements, "utf8")).not.toContain("<key>");
+});

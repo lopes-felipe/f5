@@ -1,3 +1,5 @@
+import * as NodeOS from "node:os";
+
 import { ServerShutdown } from "../../shutdown.ts";
 import type { ProviderAdapterSessionStartInput } from "../Services/ProviderAdapter.ts";
 import {
@@ -102,8 +104,23 @@ import {
   isOpenCodePasswordUnavailable,
   OPENCODE_PASSWORD_UNAVAILABLE,
 } from "../../serverSettingsSecrets.ts";
+import {
+  assertReadOnlyProjectConfig,
+  findOpenCodeProjectPluginConflict,
+} from "../readOnlyProjectConfig.ts";
 
 const PROVIDER: ProviderKind = "opencode";
+
+/**
+ * The environment of a read-only stage's own OpenCode server: OpenCode then skips the
+ * repository's `opencode.json`, `.opencode` folders (plugins, agents, commands) and `AGENTS.md`,
+ * since project plugins run code when the server starts.
+ */
+export function readOnlyOpenCodeEnvironment(
+  environment: NodeJS.ProcessEnv | undefined,
+): NodeJS.ProcessEnv {
+  return { ...(environment ?? process.env), OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
+}
 
 interface OpenCodeTurnSnapshot {
   readonly id: TurnId;
@@ -137,6 +154,8 @@ interface OpenCodeSessionContext {
   readonly resolvedRequestIds: Set<string>;
   readonly autoRepliedRequestIds: Set<string>;
   workflowExecutionProfile: WorkflowTurnExecutionProfile | undefined;
+  /** F5 started this session's server with `OPENCODE_DISABLE_PROJECT_CONFIG`. */
+  readonly projectConfigDisabled: boolean;
   readonly pendingPermissions: Map<string, PermissionRequest>;
   readonly pendingQuestions: Map<string, QuestionRequest>;
   readonly messageRoleById: Map<string, "user" | "assistant">;
@@ -1487,6 +1506,20 @@ export function makeOpenCodeAdapter(
      * spawned for this session. An external server is shared with other clients, so
      * it never receives them.
      */
+    const assertOpenCodeReadOnlyWorkspace = (
+      directory: string,
+      operation: "startSession" | "sendTurn",
+    ) => {
+      const environment = options?.environment ?? process.env;
+      const homeDir = environment.HOME?.trim() || NodeOS.homedir();
+      return assertReadOnlyProjectConfig({
+        provider: PROVIDER,
+        providerName: "OpenCode",
+        operation,
+        find: () => findOpenCodeProjectPluginConflict(directory, { homeDir }),
+      });
+    };
+
     const attachHubServers = (
       input: ProviderAdapterSessionStartInput,
       server: OpenCodeServerConnection,
@@ -1567,6 +1600,11 @@ export function makeOpenCodeAdapter(
           });
         }
         const directory = input.cwd ?? serverConfig.cwd;
+        // A read-only stage's own server ignores the repository's OpenCode config. An external
+        // server loaded it already, so the workspace is checked for plugins instead.
+        const readOnlyServer = input.workflowExecutionProfile !== undefined && !serverUrl?.trim();
+        if (input.workflowExecutionProfile && !readOnlyServer)
+          yield* assertOpenCodeReadOnlyWorkspace(directory, "startSession");
         const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
         const existing = sessions.get(input.threadId);
         if (existing) {
@@ -1587,7 +1625,11 @@ export function makeOpenCodeAdapter(
                 binaryPath,
                 serverUrl,
                 ...(serverPassword ? { serverPassword } : {}),
-                ...(options?.environment ? { environment: options.environment } : {}),
+                ...(readOnlyServer
+                  ? { environment: readOnlyOpenCodeEnvironment(options?.environment) }
+                  : options?.environment
+                    ? { environment: options.environment }
+                    : {}),
               });
               const requests = new AbortController();
               yield* Effect.addFinalizer(() =>
@@ -1767,6 +1809,7 @@ export function makeOpenCodeAdapter(
           resolvedRequestIds: new Set(),
           autoRepliedRequestIds: new Set(),
           workflowExecutionProfile: input.workflowExecutionProfile,
+          projectConfigDisabled: readOnlyServer,
           pendingPermissions: new Map(),
           pendingQuestions: new Map(),
           textPartsByMessageId: new Map(),
@@ -1896,6 +1939,10 @@ export function makeOpenCodeAdapter(
       const agent = getModelSelectionStringOptionValue(modelSelection, "agent");
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
+      // A server that loaded the repository's config (external, or started for a normal turn)
+      // is checked again before every read-only turn.
+      if (input.workflowExecutionProfile && !context.projectConfigDisabled)
+        yield* assertOpenCodeReadOnlyWorkspace(context.directory, "sendTurn");
       context.workflowExecutionProfile = input.workflowExecutionProfile;
       context.activeTurnId = turnId;
       delete context.reconcilingTodoTurnId;
