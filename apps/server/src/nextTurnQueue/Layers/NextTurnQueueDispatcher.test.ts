@@ -1026,7 +1026,7 @@ for (const scenario of [
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
       const written = dispatched.map((commandId) =>
-        commandId.startsWith("server:workspace-branch-note:")
+        commandId.startsWith("server:workspace-note:")
           ? "note"
           : commandId.startsWith("server:workspace-branch:")
             ? "branch"
