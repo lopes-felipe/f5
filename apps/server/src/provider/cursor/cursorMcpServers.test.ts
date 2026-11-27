@@ -35,7 +35,7 @@ const project = {
 } as unknown as McpProjectServersConfig;
 
 describe("resolveCursorMcpServers", () => {
-  it("keeps F5 servers first and reports every omitted project server", () => {
+  it("passes no project server without F5's hub, and reports every one", () => {
     const resolved = resolveCursorMcpServers({
       automationServers: [
         { type: "http", name: "f5_thread_abc", url: "http://127.0.0.1/x", headers: [] },
@@ -43,52 +43,39 @@ describe("resolveCursorMcpServers", () => {
       projectServers: project,
       cursorConfigNames: new Set(["shared"]),
       capabilities: { http: true, sse: false },
-      environment: { TOKEN_VAR: "secret" },
     });
-    expect(resolved.servers.map((server) => server.name)).toEqual([
-      "f5_thread_abc",
-      "docs",
-      "token",
-    ]);
-    expect(resolved.ownedNames).toEqual(["docs", "token"]);
-    expect(resolved.servers[1]).toEqual({
-      type: "http",
-      name: "docs",
-      url: "https://docs.example/mcp",
-      headers: [{ name: "X-Team", value: "a" }],
-    });
-    expect(resolved.servers[2]).toMatchObject({
-      headers: [{ name: "Authorization", value: "Bearer secret" }],
-    });
+    expect(resolved.servers.map((server) => server.name)).toEqual(["f5_thread_abc"]);
+    expect(resolved.ownedNames).toEqual([]);
     expect(resolved.omitted.map((entry) => entry.name).toSorted()).toEqual([
+      "docs",
       "events",
       "f5_preview",
       "local",
       "shared",
+      "token",
     ]);
+    expect(resolved.omitted.find((entry) => entry.name === "docs")?.reason).toContain(
+      "F5's MCP hub",
+    );
     expect(describeCursorMcpOmissions(resolved.omitted)?.summary).toBe(
-      "F5 did not pass 4 MCP servers to Cursor.",
+      "F5 did not pass 6 MCP servers to Cursor.",
     );
   });
 
   it("lists every forwarded credential for the diagnostics scrubber", () => {
-    const resolved = resolveCursorMcpServers({
-      automationServers: [
-        { type: "http", name: "f5_thread", url: "http://127.0.0.1/x", headers: [] },
-      ],
-      projectServers: {
-        keyed: {
-          type: "http",
-          url: "https://user:pass1234@keyed.example/mcp?api_key=k1&session=long-session-value#frag",
-          headers: { "X-Custom": "custom-header-value" },
-        },
-        token: { type: "http", url: "https://token.example", bearerTokenEnvVar: "TOKEN_VAR" },
-      } as unknown as McpProjectServersConfig,
-      cursorConfigNames: new Set(),
-      capabilities: { http: true, sse: true },
-      environment: { TOKEN_VAR: "secret-token-value" },
-    });
-    const secrets = cursorMcpServerSecrets(resolved.servers, resolved.ownedNames);
+    const servers = [
+      { type: "http" as const, name: "f5_thread", url: "http://127.0.0.1/x", headers: [] },
+      {
+        type: "http" as const,
+        name: "keyed",
+        url: "https://user:pass1234@keyed.example/mcp?api_key=k1&session=long-session-value#frag",
+        headers: [
+          { name: "X-Custom", value: "custom-header-value" },
+          { name: "Authorization", value: "Bearer secret-token-value" },
+        ],
+      },
+    ];
+    const secrets = cursorMcpServerSecrets(servers, ["keyed"]);
     expect(secrets).toEqual(
       expect.arrayContaining([
         "custom-header-value",
@@ -107,16 +94,15 @@ describe("resolveCursorMcpServers", () => {
   });
 
   it("registers a short bearer token, since it is an explicit credential", () => {
-    const resolved = resolveCursorMcpServers({
-      automationServers: [],
-      projectServers: {
-        token: { type: "http", url: "https://token.example", bearerTokenEnvVar: "TOKEN_VAR" },
-      } as unknown as McpProjectServersConfig,
-      cursorConfigNames: new Set(),
-      capabilities: { http: true, sse: true },
-      environment: { TOKEN_VAR: "secret" },
-    });
-    expect(cursorMcpServerSecrets(resolved.servers, resolved.ownedNames)).toEqual(
+    const servers = [
+      {
+        type: "http" as const,
+        name: "token",
+        url: "http://127.0.0.1:9/mcp/user/token",
+        headers: [{ name: "Authorization", value: "Bearer secret" }],
+      },
+    ];
+    expect(cursorMcpServerSecrets(servers, ["token"])).toEqual(
       expect.arrayContaining(["Bearer secret", "secret"]),
     );
   });

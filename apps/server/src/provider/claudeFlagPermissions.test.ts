@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   CLAUDE_HOOK_ON_FAILURE_MIN_VERSION,
   claudeHookOnFailureSupported,
+  claudeReadOnlyStageRuntimeConflict,
 } from "./claudeExecutableVersion.ts";
 import { buildClaudeFlagPermissions } from "./claudeFlagPermissions.ts";
 
@@ -49,5 +50,16 @@ describe("claudeHookOnFailureSupported", () => {
     ["/opt/claude", "2.2.0", true],
   ] as const)("binary=%s version=%s → %s", (binary, version, expected) => {
     expect(claudeHookOnFailureSupported(binary, version)).toBe(expected);
+    // A read-only stage runs exactly where a failing hook blocks the tool.
+    expect(claudeReadOnlyStageRuntimeConflict(binary, version) === undefined).toBe(expected);
+  });
+
+  it("says which executable and version a read-only stage can't use", () => {
+    expect(claudeReadOnlyStageRuntimeConflict("/opt/claude", "2.1.316")).toContain(
+      "the custom executable `/opt/claude`: it reports version 2.1.316, and a stage needs Claude Code 2.1.317 or later",
+    );
+    expect(claudeReadOnlyStageRuntimeConflict("/opt/claude", undefined)).toContain(
+      "F5 couldn't read its version",
+    );
   });
 });

@@ -1046,7 +1046,6 @@ export function makeCursorAdapter(
                 http: init.agentCapabilities?.mcpCapabilities?.http === true,
                 sse: init.agentCapabilities?.mcpCapabilities?.sse === true,
               },
-              environment: cursorEnvironment,
               ...(options?.mcpHub?.available
                 ? {
                     attachHub: (servers: McpProjectServersConfig) =>

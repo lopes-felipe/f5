@@ -8,11 +8,11 @@ import {
 } from "@t3tools/contracts";
 import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
-import { READ_ONLY_SHELL_GUIDE } from "./readOnlyShellGuide.ts";
+import { READ_ONLY_SHELL_GUIDE, READ_ONLY_SHELL_GUIDE_WITH_REASONS } from "./readOnlyShellGuide.ts";
 
 export const SHARED_ASSISTANT_CONTRACT_VERSION = "v8";
 export const CODEX_SUPPLEMENT_VERSION = "v4";
-export const CLAUDE_SUPPLEMENT_VERSION = "v14";
+export const CLAUDE_SUPPLEMENT_VERSION = "v15";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
 const PROJECT_MEMORY_MAX_LINES = 200;
 const PROJECT_MEMORY_MAX_BYTES = 25_000;
@@ -929,6 +929,8 @@ export function buildClaudeAssistantInstructions(input: SharedInstructionInput):
     CLAUDE_SUPPLEMENT,
     CLAUDE_DEFAULT_MODE_INSTRUCTIONS,
     buildWorkflowHostContract(input.workflowExecutionProfile),
+    // Claude has no sandbox for a read-only stage: F5's classifier decides every shell command.
+    input.workflowExecutionProfile ? READ_ONLY_SHELL_GUIDE_WITH_REASONS : undefined,
   ]
     .filter((section): section is string => section !== undefined)
     .join("\n\n");

@@ -16,17 +16,13 @@ export function McpProviderMatrix(props: {
   readonly serverName: string;
   readonly server: McpServerDefinition;
   readonly disabled?: boolean;
-  /** Codex and Claude reach the server through F5's hub (no native passthrough). */
-  readonly nativeProvidersOnHub?: boolean;
   readonly onToggle?: ((provider: ProviderKind, enabled: boolean) => void) | undefined;
 }) {
   return (
     <section aria-label="Providers" className="space-y-2 text-xs">
       <p className="font-medium text-foreground">Providers</p>
       <ul className="divide-y divide-border rounded-md border border-border">
-        {mcpProviderMatrix(props.server, {
-          nativeProvidersOnHub: props.nativeProvidersOnHub ?? false,
-        }).map((entry) => {
+        {mcpProviderMatrix(props.server).map((entry) => {
           const name = PROVIDER_DISPLAY_NAMES[entry.provider];
           return (
             <li key={entry.provider} className="flex items-start gap-2 px-2 py-1.5">

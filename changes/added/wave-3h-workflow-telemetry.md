@@ -1,0 +1,1 @@
+- Added live execution telemetry to workflow pages, including a run telemetry bar (step progress, live elapsed timer, deduplicated context tokens, cost, and slowest step callout) plus per-step duration, token, and parallel bottleneck badges on workflow board cards.

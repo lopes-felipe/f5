@@ -15,7 +15,6 @@ import * as nodePath from "node:path";
 import { Effect } from "effect";
 
 import { ProviderAdapterValidationError } from "./Errors.ts";
-import { classifyReadOnlyShellCommand, isPlainReadProgram } from "./readOnlyWorkflowShell.ts";
 
 export interface ReadOnlyProjectConfigConflict {
   readonly file: string;
@@ -219,29 +218,6 @@ export const assertReadOnlyProjectConfig = (input: {
 
 // ── Claude ──────────────────────────────────────────────────────────────────
 
-const CLAUDE_WRITE_TOOLS = /^(?:Edit|Write|MultiEdit|NotebookEdit)(?:\(|$)/;
-
-/**
- * Whether a Claude `permissions.allow` rule would let a read-only stage write or run a command
- * F5's read-only allowlist wouldn't. An exact Bash rule is checked with that allowlist. A rule
- * ending in `*` or `:*` matches the prefix followed by any arguments, so it passes only when the
- * prefix is a single program F5 accepts with any arguments (`cat:*`, not `git log:*` or
- * `find:*`, whose arguments can write or run commands). Any other wildcard can't be proven
- * read-only.
- */
-export function claudeAllowRuleBypassesReadOnly(rule: string): boolean {
-  const trimmed = rule.trim();
-  if (CLAUDE_WRITE_TOOLS.test(trimmed) || trimmed.startsWith("mcp__")) return true;
-  if (trimmed === "Bash") return true;
-  const bash = /^Bash\((.*)\)$/s.exec(trimmed);
-  if (!bash) return false;
-  const body = bash[1]!.trim();
-  const prefix = /^(.*?)(?::\*|\s*\*)$/s.exec(body)?.[1]?.trim();
-  if (prefix !== undefined) return !/^[\w.[-]+$/.test(prefix) || !isPlainReadProgram(prefix);
-  if (body === "" || body.includes("*")) return true;
-  return !classifyReadOnlyShellCommand(body).readOnly;
-}
-
 /**
  * Settings that make Claude Code run a command of the file's choosing, outside its tool
  * permissions and hooks: credential and telemetry helpers, and the status line.
@@ -278,13 +254,20 @@ const CLAUDE_PERMISSIVE_MODES = new Set(["acceptEdits", "bypassPermissions", "do
 
 /**
  * Why committed Claude settings would let a read-only stage run something F5 doesn't check, or
- * undefined. Command settings, environment and the default mode count in every folder; allow rules
- * only where Claude Code trusts the folder (`trusted`), since it ignores them elsewhere (gate L1).
+ * undefined: a command setting, an environment variable or a permissive default mode.
+ *
+ * `permissions.allow` is not one of them. Claude Code applies an allow rule before it asks F5,
+ * but F5's mandatory `PreToolUse` hook runs before that and denies everything the stage's policy
+ * denies: shell commands, MCP tools, file edits and built-in tools that act outside the stage
+ * (`claudeMandatoryPolicy.ts`, gate L5). A rule can only approve one of the tools the hook leaves
+ * to Plan mode (CLAUDE_READ_ONLY_NATIVE_TOOLS), which read or delegate. Refusing the stage over a
+ * rule only stopped people with ordinary approvals of their own, such as `Bash(python3:*)` in a
+ * `settings.local.json`.
+ *
+ * This rests on the hook answering. A stage therefore needs an executable that blocks a tool
+ * when the hook fails (`claudeReadOnlyStageRuntimeConflict`).
  */
-export function claudeProjectSettingsConflict(
-  config: unknown,
-  trusted: boolean,
-): string | undefined {
+export function claudeProjectSettingsConflict(config: unknown): string | undefined {
   if (!isRecord(config)) return undefined;
   const command = CLAUDE_COMMAND_SETTINGS.find((key) => config[key] !== undefined);
   if (command) return `sets \`${command}\`, a command Claude Code runs without asking F5`;
@@ -300,71 +283,7 @@ export function claudeProjectSettingsConflict(
     CLAUDE_PERMISSIVE_MODES.has(permissions.defaultMode)
   )
     return `sets \`permissions.defaultMode\` to \`${permissions.defaultMode}\`, which lets Claude act without asking F5`;
-  if (!trusted || !Array.isArray(permissions?.allow)) return undefined;
-  const rule = permissions.allow.find(
-    (entry): entry is string => typeof entry === "string" && claudeAllowRuleBypassesReadOnly(entry),
-  );
-  return rule === undefined
-    ? undefined
-    : `allows \`${rule}\`, which Claude would run without asking F5 in this trusted folder`;
-}
-
-/**
- * Whether Claude Code trusts `cwd`: its global config (`$CLAUDE_CONFIG_DIR/.claude.json`, else
- * `~/.claude.json`) accepted the trust dialog for it or a parent. Claude Code ignores a project's
- * allow rules in a folder it doesn't trust. A missing config means nothing is trusted; one that
- * exists but can't be read or parsed rejects, so the check fails closed. The folder is looked up
- * as given and by its real path, with native and forward-slash separators.
- */
-export async function claudeWorkspaceTrusted(
-  cwd: string,
-  options: { readonly configFile: string },
-): Promise<boolean> {
-  let text: string;
-  try {
-    text = await nodeFs.readFile(options.configFile, "utf8");
-  } catch (error) {
-    if (isAbsent(error)) return false;
-    throw error;
-  }
-  let projects: unknown;
-  try {
-    projects = (JSON.parse(text) as { projects?: unknown } | null)?.projects;
-  } catch {
-    throw new Error(
-      `${options.configFile} isn't valid JSON, so F5 can't tell which folders Claude trusts`,
-    );
-  }
-  if (!isRecord(projects)) return false;
-  const starts = new Set([nodePath.resolve(cwd)]);
-  starts.add(await nodeFs.realpath(cwd).catch(() => nodePath.resolve(cwd)));
-  for (const start of starts) {
-    for (let directory = start; ; ) {
-      for (const key of new Set([directory, directory.replaceAll("\\", "/")])) {
-        const entry = projects[key];
-        if (isRecord(entry) && entry.hasTrustDialogAccepted === true) return true;
-      }
-      const parent = nodePath.dirname(directory);
-      if (parent === directory) break;
-      directory = parent;
-    }
-  }
-  return false;
-}
-
-/**
- * Claude Code's global config for a stage in `cwd`: `$CLAUDE_CONFIG_DIR/.claude.json`, resolved
- * against `cwd` as the child resolves it (`resolveClaudeConfigDir`), else `~/.claude.json`.
- */
-export function claudeGlobalConfigFile(
-  environment: NodeJS.ProcessEnv,
-  homeDir: string,
-  cwd: string,
-): string {
-  const configDir = environment.CLAUDE_CONFIG_DIR;
-  return configDir
-    ? nodePath.join(nodePath.resolve(cwd, configDir.normalize("NFC")), ".claude.json")
-    : nodePath.join(homeDir, ".claude.json");
+  return undefined;
 }
 
 /**
@@ -376,18 +295,15 @@ export function claudeGlobalConfigFile(
  */
 export async function findClaudeProjectConfigConflict(
   cwd: string,
-  options: { readonly homeDir: string; readonly configFile: string },
+  options: { readonly homeDir: string },
 ): Promise<ReadOnlyProjectConfigConflict | undefined> {
-  const trusted = await claudeWorkspaceTrusted(cwd, { configFile: options.configFile });
   const { project, repositoryRoot } = await projectDirectories(cwd, { homeDir: options.homeDir });
   for (const directory of project) {
     for (const name of ["settings.json", "settings.local.json"]) {
       const file = nodePath.join(directory, ".claude", name);
       if (!(await pathExists(file))) continue;
       if (repositoryRoot && !(await isGitTracked(repositoryRoot, file))) continue;
-      const conflict = await checkProjectJson(file, "Claude", (config) =>
-        claudeProjectSettingsConflict(config, trusted),
-      );
+      const conflict = await checkProjectJson(file, "Claude", claudeProjectSettingsConflict);
       if (conflict) return conflict;
     }
   }

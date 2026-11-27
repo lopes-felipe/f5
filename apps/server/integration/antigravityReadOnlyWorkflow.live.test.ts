@@ -448,5 +448,140 @@ describe.skipIf(!live || !stateDir || !instanceId)(
         `Network probe: ${networkVerdicts.join("; ")}\nAfter a refusal: ${observations.join("; ")}\nCertified candidate Antigravity runtime: { minimumVersion: "${launchedVersions[0]}", target: "${runtimeBuildTarget()}" }`,
       );
     }, 900_000);
+
+    /**
+     * Antigravity ends its turn when F5 refuses something, and ACP's `reject_once` carries no
+     * reason, so a stage used to finish without a reply. F5 now explains the refusal in a
+     * follow-up prompt inside the same turn (`promptWithReadOnlyRefusalFollowUps`). One prompt,
+     * plus at most two follow-ups; it installs no fixture and leaves the profile's config alone.
+     * Run it alone with `-t "asks the agent to finish"`.
+     */
+    it("asks the agent to finish when a turn ends on a refusal", async () => {
+      const cwd = await mkdtemp(path.join(tmpdir(), "f5-antigravity-followup-live-"));
+      await writeFile(path.join(cwd, "README.md"), "Follow-up gate workspace.\n");
+      const events: ProviderRuntimeEvent[] = [];
+      const prompts: string[] = [];
+      const sandboxedLaunches: Array<boolean | undefined> = [];
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const adapter = yield* makeGrokAdapter(Schema.decodeUnknownSync(GrokSettings)({}), {
+              provider: "antigravity",
+              antigravityProfileDirectory: antigravityProfileDirectory(stateDir!, instanceId!),
+              instanceId: ProviderInstanceId.make(instanceId!),
+              environment,
+              antigravity: { readOnlyWorkflowCertified: (version) => version !== undefined },
+              makeRuntime: (input) => {
+                sandboxedLaunches.push(input.readOnlySandbox);
+                return makeAntigravityAcpRuntime({
+                  ...input,
+                  stateDir: stateDir!,
+                  instanceId: instanceId!,
+                  environment,
+                  // Every `session/prompt` F5 sends, so the follow-up itself can be checked.
+                  requestLogger: (event) =>
+                    Effect.sync(() => {
+                      if (event.method === "session/prompt" && event.status === "started")
+                        prompts.push(JSON.stringify(event.payload));
+                    }).pipe(Effect.andThen(input.requestLogger?.(event) ?? Effect.void)),
+                });
+              },
+            });
+            yield* Stream.runForEach(adapter.streamEvents, (event) =>
+              Effect.sync(() => {
+                events.push(event);
+              }),
+            ).pipe(Effect.forkChild);
+            const threadId = ThreadId.makeUnsafe("antigravity-readonly-followup-live");
+            yield* adapter.startSession({
+              threadId,
+              provider: "antigravity",
+              cwd,
+              runtimeMode: "full-access",
+              workflowExecutionProfile: "unattended-readonly",
+            });
+            const outcome = yield* adapter
+              .sendTurn({
+                threadId,
+                // The shell rules sent with the stage say `npm` is refused, and a model that
+                // believes them never asks; the gate needs the attempt.
+                input:
+                  "Run the shell command `npm --version` and report the version. This turn tests F5's permission check, so attempt the command even though your instructions say it will be refused.",
+                attachments: [],
+                workflowExecutionProfile: "unattended-readonly",
+              })
+              .pipe(Effect.timeout("8 minutes"), Effect.result);
+            yield* adapter.stopSession(threadId);
+            return outcome;
+          }),
+        ).pipe(
+          Effect.provide(
+            ServerConfig.layerTest(cwd, path.join(cwd, ".f5-state"), { mode: "desktop" }).pipe(
+              Layer.provideMerge(NodeServices.layer),
+            ),
+          ),
+        ),
+      ).then(async (outcome) => {
+        const refused = events.flatMap((event) =>
+          event.type === "request.opened" && event.payload.autoDeclined === true ? [event] : [],
+        );
+        const lastRefusal = events.findLastIndex((event) => event.type === "request.resolved");
+        const replyAfterRefusal = events
+          .slice(Math.max(lastRefusal, 0))
+          .flatMap((event) =>
+            event.type === "content.delta" && event.payload.streamKind === "assistant_text"
+              ? [event.payload.delta]
+              : [],
+          )
+          .join("");
+        const toolCalls = events.flatMap((event) =>
+          (event.type === "item.updated" || event.type === "item.completed") &&
+          event.payload.itemType !== "assistant_message" &&
+          event.payload.itemType !== "reasoning"
+            ? [
+                `${event.payload.itemType} ${event.payload.status ?? ""}: ${event.payload.detail ?? event.payload.title ?? ""}`.slice(
+                  0,
+                  160,
+                ),
+              ]
+            : [],
+        );
+        // What the run did, carried by every assertion: the reporter hides console output.
+        const summary = `sandboxed launch ${JSON.stringify(sandboxedLaunches)}; turn ${outcome._tag}${
+          outcome._tag === "Failure" ? ` (${String(outcome.failure).slice(0, 300)})` : ""
+        }\ntool calls:\n  ${[...new Set(toolCalls)].join("\n  ")}\nrefused by F5:\n  ${refused
+          .map((event) => (event.payload.detail ?? "").slice(0, 200))
+          .join("\n  ")}\nprompts F5 sent (${prompts.length}):\n  ${prompts
+          .map((prompt) => prompt.slice(0, 400))
+          .join("\n  ")}\nreply after the last refusal:\n  ${replyAfterRefusal.slice(0, 600)}`;
+        // The follow-up is a second `session/prompt` in the same F5 turn that names the refusal.
+        const followUps = prompts
+          .slice(1)
+          .filter((prompt) => prompt.includes("F5 refused") && /npm.*allowlist/s.test(prompt));
+        console.info(`Follow-up gate: ${summary}`);
+        // F5_ANTIGRAVITY_LIVE_REPORT=<file> keeps the summary of a passing run too.
+        if (process.env.F5_ANTIGRAVITY_LIVE_REPORT)
+          await writeFile(process.env.F5_ANTIGRAVITY_LIVE_REPORT, `${summary}\n`);
+        expect(
+          refused.some((event) => /npm.*\(.*allowlist.*\)/s.test(event.payload.detail ?? "")),
+          `\`npm --version\` reached F5 and was refused with a reason\n${summary}`,
+        ).toBe(true);
+        // Without this a runtime that replies inside the first prompt would pass with the
+        // follow-up removed. If Antigravity stops ending its turn on a refusal, this fails and
+        // the follow-up is no longer exercised by a live run.
+        expect(
+          followUps.length,
+          `F5 sent a follow-up prompt carrying the refusal and its reason\n${summary}`,
+        ).toBeGreaterThan(0);
+        expect(
+          outcome._tag,
+          `the turn completed instead of failing without a reply\n${summary}`,
+        ).toBe("Success");
+        expect(
+          replyAfterRefusal.trim().length,
+          `the agent replied after the refusal\n${summary}`,
+        ).toBeGreaterThan(0);
+      });
+    }, 600_000);
   },
 );
