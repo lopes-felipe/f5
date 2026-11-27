@@ -118,6 +118,46 @@ describe("syncObservedBranch", () => {
     expect([idle.branch, ending.branch]).toEqual(["agent-branch", "agent-branch"]);
   });
 
+  it("leaves a worktree group's thread on its recorded branch while a turn is ending, then moves both together", async () => {
+    // A group records its own branch. Re-recording only the thread would leave
+    // the two apart, so the group check refuses it until the turn is over.
+    const owner = thread("owner", {
+      worktreePath: "/wt/group",
+      branch: "recorded",
+      latestTurn: { state: "running" },
+    });
+    const w = world([owner]);
+    w.heads.set("/wt/group", "agent-branch");
+    let groupBranch = "recorded";
+    const deps = {
+      ...w.deps,
+      git: {
+        ...w.deps.git,
+        inspectWorktreeGroup: (input: { branch: string | null }) =>
+          Effect.succeed({ ready: input.branch === groupBranch, recoverable: false }),
+        prepareObservedWorktreeBranch: (input: { path: string; branch: string }) =>
+          Effect.sync(() => {
+            w.prepared.push(input.path);
+            return {
+              verifyBranch: Effect.void,
+              commit: Effect.sync(() => {
+                groupBranch = input.branch;
+              }),
+            };
+          }),
+      },
+    } as unknown as ObservedBranchDeps;
+    expect(await Effect.runPromise(syncObservedBranch(deps, owner.id))).toBe(false);
+    expect([owner.branch, groupBranch]).toEqual(["recorded", "recorded"]);
+    expect(w.notes()).toEqual([]);
+
+    owner.latestTurn = null;
+    expect(await Effect.runPromise(syncObservedBranch(deps, owner.id))).toBe(true);
+    expect(w.prepared).toEqual(["/wt/group"]);
+    expect(owner.branch).toBe("agent-branch");
+    expect(w.notes()).toEqual(["owner: Now on agent-branch (was recorded)"]);
+  });
+
   it("never fails when the folder cannot be read", async () => {
     const local = thread("local");
     const w = world([local]);
