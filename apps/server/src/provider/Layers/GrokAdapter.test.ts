@@ -1,5 +1,5 @@
 import { writeAcpWrapper } from "../../testUtils/cli.ts";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -461,6 +461,55 @@ it.layer(AntigravityAdapterTestLayer)("Antigravity native questions", (it) => {
         assert.equal(resolved.length, 1);
         yield* adapter.stopSession(threadId);
       }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
+  );
+  rootIt.live("refuses read-only workflow sessions in a workspace with Antigravity hooks", () =>
+    Effect.gen(function* () {
+      const dir = yield* Effect.promise(() =>
+        mkdtemp(path.join(os.tmpdir(), "antigravity-hooks-")),
+      );
+      const workspace = path.join(dir, "workspace");
+      const hooks = path.join(workspace, ".agents", "hooks.json");
+      mkdirSync(path.dirname(hooks), { recursive: true });
+      const wrapperPath = writeAcpWrapper(path.join(dir, "agent"), mockAgentPath, {
+        env: { F5_ACP_ANTIGRAVITY_PROFILE: "1" },
+      });
+      const adapter = yield* makeGrokAdapter(
+        Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath }),
+        {
+          provider: "antigravity",
+          instanceId: ProviderInstanceId.make("antigravity"),
+          antigravity: { readOnlyWorkflowCertified: () => true },
+        },
+      );
+      const threadId = ThreadId.make("antigravity-hooks");
+      const start = {
+        threadId,
+        provider: "antigravity" as const,
+        cwd: workspace,
+        runtimeMode: "full-access" as const,
+        workflowExecutionProfile: "unattended-readonly" as const,
+      };
+      yield* adapter.startSession(start);
+      writeFileSync(hooks, JSON.stringify({ hooks: { PreToolUse: [{ command: "id" }] } }));
+      const turnError = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Review",
+          attachments: [],
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.flip);
+      assert.include(
+        turnError.message,
+        `Antigravity can't run read-only workflow stages here: ${hooks} defines hooks`,
+      );
+      yield* adapter.stopSession(threadId);
+      const startError = yield* adapter.startSession(start).pipe(Effect.flip);
+      assert.include(startError.message, "defines hooks, which run shell commands");
+      // Ordinary sessions keep the workspace's hooks.
+      yield* adapter.startSession({ ...start, workflowExecutionProfile: undefined });
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.provide(AntigravityAdapterTestLayer), Effect.scoped),
   );
   rootIt.live("launches only read-only workflow sessions in Antigravity's sandbox", () =>
     Effect.gen(function* () {

@@ -1,10 +1,18 @@
 import { pathToFileURL } from "node:url";
 import { runGh, type Gh } from "./lib/github-cli.ts";
 import { acceptanceOnlyFiles } from "./lib/release-source.ts";
-import { protectsReleaseIntent, trustedMainCiRun, type CommitPage } from "./lib/main-ci-runs.ts";
+import {
+  protectsReleaseIntent,
+  trustedMainCiRun,
+  trustedMainPushRun,
+  type CommitPage,
+} from "./lib/main-ci-runs.ts";
 import type { WorkflowRun } from "./release/release-github.ts";
 
-/** Supersede older main CI runs only while they are still observed queued. */
+/**
+ * Supersede older main CI runs only while they are still observed queued, together
+ * with the release candidates of the same commits.
+ */
 export async function supersedeQueuedCi(repository: string, gh: Gh = runGh): Promise<number[]> {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error("Invalid repository");
   const root = "repos/" + repository + "/";
@@ -59,6 +67,32 @@ export async function supersedeQueuedCi(repository: string, gh: Gh = runGh): Pro
     }
     return undefined;
   };
+  // Publication needs a green main CI run for the exact commit. Once that run is
+  // cancelled the commit's candidate cannot publish, so its packaging jobs (three of
+  // them on macOS) only take runners from newer commits. The caller has already
+  // established that the commit carries no release intent and has a newer replacement.
+  const cancelCandidates = async (sha: string): Promise<void> => {
+    const candidates = await read<{ workflow_runs: WorkflowRun[] }>(
+      "actions/workflows/release.yml/runs?branch=main&event=push&head_sha=" + sha + "&per_page=100",
+    );
+    for (const candidate of candidates.workflow_runs) {
+      if (
+        !trustedMainPushRun(candidate, repository, "release.yml") ||
+        candidate.head_sha !== sha ||
+        candidate.status === "completed"
+      )
+        continue;
+      try {
+        await gh(["api", "--method", "POST", root + "actions/runs/" + candidate.id + "/cancel"]);
+      } catch (error) {
+        // Completion racing cancellation is success; other failures stay visible.
+        if ((await read<WorkflowRun>("actions/runs/" + candidate.id)).status !== "completed")
+          throw error;
+        continue;
+      }
+      console.log("Cancelled release candidate run", candidate.id, "of superseded source", sha);
+    }
+  };
   for (const run of new Map(
     queued.flatMap((page) => page.workflow_runs).map((run) => [run.id, run]),
   ).values()) {
@@ -109,6 +143,7 @@ export async function supersedeQueuedCi(repository: string, gh: Gh = runGh): Pro
     }
     cancelled.push(run.id);
     console.log("Superseded queued main CI run", run.id, "with", replacement.id);
+    await cancelCandidates(run.head_sha);
   }
   return cancelled;
 }

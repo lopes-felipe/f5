@@ -3,7 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import { normalizeProviderRuntimeInfo } from "@t3tools/shared/runtimeInfo";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,8 +33,11 @@ import {
   buildCodexThreadForkParams,
   buildCodexThreadOpenRequestParams,
   buildCodexTurnStartParams,
+  codexReadOnlyModeEnforcement,
+  codexReadOnlyModeUnderRequirements,
   codexReadOnlyPolicyDecision,
   codexReadOnlyThreadPolicyViolation,
+  readCodexRequirements,
   CODEX_ELICITATION_OPENED_METHOD,
   CODEX_ELICITATION_SETTLED_METHOD,
   CODEX_ONE_OFF_WORKER_IDLE_MS,
@@ -804,7 +816,88 @@ describe("codexReadOnlyThreadPolicyViolation", () => {
       "reported approval policy never",
     ],
   ])("requires Codex to ask under policy enforcement: %j", (response, expected) => {
-    expect(codexReadOnlyThreadPolicyViolation(response, "policy")).toBe(expected);
+    expect(codexReadOnlyThreadPolicyViolation(response, "ask-every-command")).toBe(expected);
+  });
+
+  it.each([
+    [
+      { sandbox: { type: "readOnly", networkAccess: false }, approvalPolicy: "on-request" },
+      undefined,
+    ],
+    [
+      { sandbox: { type: "dangerFullAccess" }, approvalPolicy: "on-request" },
+      "reported sandbox dangerFullAccess",
+    ],
+    [
+      { sandbox: { type: "readOnly", networkAccess: true }, approvalPolicy: "on-request" },
+      "reported sandbox readOnly with network access",
+    ],
+    [
+      { sandbox: { type: "readOnly", networkAccess: false }, approvalPolicy: "never" },
+      "reported approval policy never",
+    ],
+  ])("requires the sandbox and on-request when asking on escalation: %j", (response, expected) => {
+    expect(codexReadOnlyThreadPolicyViolation(response, "ask-on-escalation")).toBe(expected);
+  });
+});
+
+describe("Codex requirements for read-only stages", () => {
+  it("reads the allowed approval policies and sandbox modes, ignoring granular entries", () => {
+    expect(
+      readCodexRequirements({
+        requirements: {
+          allowedApprovalPolicies: ["on-request", { granular: {} }, "never"],
+          allowedSandboxModes: ["read-only"],
+        },
+      }),
+    ).toEqual({
+      allowedApprovalPolicies: new Set(["on-request", "never"]),
+      allowedSandboxModes: new Set(["read-only"]),
+    });
+    expect(readCodexRequirements({ requirements: null })).toBeUndefined();
+    expect(
+      readCodexRequirements({
+        requirements: { allowedApprovalPolicies: null, allowedSandboxModes: null },
+      }),
+    ).toEqual({});
+    expect(readCodexRequirements(undefined)).toBeUndefined();
+  });
+
+  const allFullAccess = ["workspace-write", "read-only", "danger-full-access"];
+  it.each([
+    [null, allFullAccess, "ask-every-command"],
+    [["untrusted", "on-request", "never"], allFullAccess, "ask-every-command"],
+    [["on-request", "never"], allFullAccess, "ask-on-escalation"],
+    [["on-request"], allFullAccess, "ask-on-escalation"],
+    [["never"], allFullAccess, "sandbox"],
+    [[], allFullAccess, "ask-every-command"],
+    // Without danger-full-access, asking before every command would run unsandboxed anyway.
+    [null, ["workspace-write", "read-only"], "ask-on-escalation"],
+    [["untrusted", "on-request", "never"], ["read-only"], "ask-on-escalation"],
+    [["untrusted", "never"], ["read-only"], "sandbox"],
+    [["untrusted"], ["read-only"], "ask-every-command"],
+  ] as const)(
+    "picks a policy stage's mode for approval policies %j and sandbox modes %j: %s",
+    (approvals, sandboxes, expected) => {
+      expect(
+        codexReadOnlyModeUnderRequirements("policy", {
+          ...(approvals ? { allowedApprovalPolicies: new Set<string>(approvals) } : {}),
+          allowedSandboxModes: new Set<string>(sandboxes),
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it("keeps a sandboxed stage sandboxed and asks when nothing is known", () => {
+    expect(
+      codexReadOnlyModeUnderRequirements("sandbox", {
+        allowedApprovalPolicies: new Set(["on-request"]),
+      }),
+    ).toBe("sandbox");
+    expect(codexReadOnlyModeUnderRequirements("policy", undefined)).toBe("ask-every-command");
+    expect(codexReadOnlyModeEnforcement("ask-on-escalation")).toBe("policy");
+    expect(codexReadOnlyModeEnforcement("ask-every-command")).toBe("policy");
+    expect(codexReadOnlyModeEnforcement("sandbox")).toBe("sandbox");
   });
 });
 
@@ -828,6 +921,28 @@ describe("codexReadOnlyPolicyDecision", () => {
     expect(
       codexReadOnlyPolicyDecision("execCommandApproval", { command: ["git", "diff", "HEAD~1"] }),
     ).toEqual({ decision: "accept" });
+  });
+
+  it("refuses terminal input, managed checkpoints and network amendments", () => {
+    expect(command("git status", { kind: "writeStdin" })).toEqual({
+      decision: "decline",
+      reason: "writeStdin requests are not allowed",
+    });
+    expect(command("git status", { kind: "humanCommand" })).toMatchObject({ decision: "decline" });
+    expect(command("git status", { kind: "command" })).toEqual({ decision: "accept" });
+    expect(
+      command("git status", {
+        proposedNetworkPolicyAmendments: [{ host: "example.com", action: "allow" }],
+      }),
+    ).toEqual({ decision: "decline", reason: "more permissions are not allowed" });
+    // Codex sends empty lists on ordinary requests.
+    expect(command("git status", { proposedNetworkPolicyAmendments: [] })).toEqual({
+      decision: "accept",
+    });
+    // The amendment Codex proposes for a rerun outside the sandbox is ignored.
+    expect(command("/bin/zsh -lc ls", { proposedExecpolicyAmendment: ["ls"] })).toEqual({
+      decision: "accept",
+    });
   });
 
   it("refuses writes, unknown programs and escalations", () => {
@@ -914,19 +1029,19 @@ describe("Codex runtime-mode thread configuration", () => {
     },
   );
 
-  it("opens a policy-enforced stage without a sandbox and with every command asking", () => {
+  it.each([
+    ["ask-every-command", { approvalPolicy: "untrusted", sandbox: "danger-full-access" }],
+    ["ask-on-escalation", { approvalPolicy: "on-request", sandbox: "read-only" }],
+    ["sandbox", { approvalPolicy: "never", sandbox: "read-only" }],
+  ] as const)("opens a %s stage with its own policy", (readOnlyMode, policy) => {
     const input = {
       runtimeMode: "full-access",
       workflowExecutionProfile: "unattended-readonly",
-      readOnlyEnforcement: "policy",
+      readOnlyMode,
       resumeThreadId: "provider-thread-1",
     } as const;
     const params = buildCodexThreadOpenRequestParams(input);
-    const expected = {
-      approvalPolicy: "untrusted",
-      sandbox: "danger-full-access",
-      approvalsReviewer: "user",
-    };
+    const expected = { ...policy, approvalsReviewer: "user" };
     expect(params.start).toMatchObject(expected);
     expect(params.resume).toMatchObject(expected);
     expect(buildCodexThreadForkParams(input, "provider-thread-1")).toMatchObject(expected);
@@ -1183,6 +1298,228 @@ describe("startSession", () => {
           sandbox: "read-only",
           approvalPolicy: "never",
         });
+      } finally {
+        send.mockRestore();
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
+
+  it.each([true, false])(
+    "runs a read-only stage in the rules-free home and leaves other sessions in the instance home (read-only: %s)",
+    async (readOnly) => {
+      const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "codex-readonly-home-")));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(
+        binaryPath,
+        "#!/usr/bin/env node\nconst fs = require('fs');\nfs.writeFileSync(process.argv[1] + '.argv', JSON.stringify(process.argv.slice(2)));\nfs.writeFileSync(process.argv[1] + '.home', process.env.CODEX_HOME ?? '');\nprocess.stdin.resume();\n",
+        { mode: 0o755 },
+      );
+      const instanceHome = path.join(directory, "instance-home");
+      mkdirSync(path.join(instanceHome, "rules"), { recursive: true });
+      writeFileSync(path.join(instanceHome, "rules", "default.rules"), "allow");
+      writeFileSync(path.join(instanceHome, "auth.json"), "{}");
+      const readOnlyHome = path.join(directory, "codex-readonly", "codex");
+      const manager = new CodexAppServerManager();
+      const version = vi
+        .spyOn(
+          manager as unknown as { assertSupportedCodexCliVersion: () => string },
+          "assertSupportedCodexCliVersion",
+        )
+        .mockReturnValue("0.166.0");
+      const send = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method) =>
+          method === "thread/start"
+            ? {
+                thread: { id: "native-thread" },
+                sandbox: { type: "readOnly", networkAccess: false },
+                approvalPolicy: "never",
+              }
+            : method === "config/read"
+              ? { config: {}, origins: {}, layers: [] }
+              : {},
+        );
+      try {
+        await manager.startSession({
+          threadId: asThreadId("readonly-home"),
+          cwd: directory,
+          runtimeMode: "full-access",
+          ...(readOnly ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+          readOnlyHomePath: readOnlyHome,
+          providerOptions: { codex: { binaryPath, homePath: instanceHome } },
+        });
+        const expectedHome = readOnly ? readOnlyHome : instanceHome;
+        expect((version.mock.calls[0] as unknown[] | undefined)?.[0]).toMatchObject({
+          homePath: expectedHome,
+        });
+        await vi.waitFor(() =>
+          expect(readFileSync(`${binaryPath}.home`, "utf8")).toBe(expectedHome),
+        );
+        // File credentials and pinned project markers only for the read-only stage.
+        const argv = (JSON.parse(readFileSync(`${binaryPath}.argv`, "utf8")) as string[]).join(" ");
+        expect(argv.includes('-c project_root_markers=[".git"]')).toBe(readOnly);
+        expect(argv.includes('-c cli_auth_credentials_store="file"')).toBe(readOnly);
+        // Only the read-only stage asks Codex which project layers it loads.
+        expect(
+          send.mock.calls.filter(([, method]) => method === "config/read").map(([, , p]) => p),
+        ).toEqual(readOnly ? [{ cwd: directory, includeLayers: true }] : []);
+        if (readOnly) {
+          expect(readdirSync(readOnlyHome)).toContain("auth.json");
+          expect(readdirSync(readOnlyHome)).not.toContain("rules");
+        } else {
+          expect(existsSync(readOnlyHome)).toBe(false);
+        }
+      } finally {
+        send.mockRestore();
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
+
+  it.each(["rules", "unlisted", "failed"] as const)(
+    "refuses a read-only stage when Codex's own project layers can't be cleared (%s)",
+    async (scenario) => {
+      const directory = realpathSync(mkdtempSync(path.join(os.tmpdir(), "codex-readonly-layers-")));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", { mode: 0o755 });
+      const instanceHome = path.join(directory, "instance-home");
+      mkdirSync(instanceHome, { recursive: true });
+      writeFileSync(path.join(instanceHome, "auth.json"), "{}");
+      // A layer managed `project_root_markers` would reach: above any `.git`, so F5's own walk
+      // doesn't see it.
+      const managedLayer = path.join(directory, "outer", ".codex");
+      mkdirSync(path.join(managedLayer, "rules"), { recursive: true });
+      writeFileSync(path.join(managedLayer, "rules", "default.rules"), "allow");
+      const manager = new CodexAppServerManager();
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => string },
+        "assertSupportedCodexCliVersion",
+      ).mockReturnValue("0.170.0");
+      const send = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method) => {
+          if (method === "config/read") {
+            if (scenario === "failed") throw new Error("unknown method");
+            return {
+              config: {},
+              origins: {},
+              layers:
+                scenario === "rules"
+                  ? [
+                      { name: { type: "user", file: path.join(instanceHome, "config.toml") } },
+                      { name: { type: "project", dotCodexFolder: managedLayer } },
+                    ]
+                  : null,
+            };
+          }
+          return method === "thread/start"
+            ? {
+                thread: { id: "native-thread" },
+                sandbox: { type: "readOnly", networkAccess: false },
+                approvalPolicy: "never",
+              }
+            : {};
+        });
+      try {
+        await expect(
+          manager.startSession({
+            threadId: asThreadId(`readonly-layers-${scenario}`),
+            cwd: directory,
+            runtimeMode: "full-access",
+            workflowExecutionProfile: "unattended-readonly",
+            readOnlyHomePath: path.join(directory, "codex-readonly", "codex"),
+            providerOptions: { codex: { binaryPath, homePath: instanceHome } },
+          }),
+        ).rejects.toThrow(
+          scenario === "rules"
+            ? path.join(managedLayer, "rules", "default.rules")
+            : "project config it loads",
+        );
+        expect(send.mock.calls.some(([, method]) => method === "thread/start")).toBe(false);
+      } finally {
+        send.mockRestore();
+        await cleanupCodexFixture(manager, directory);
+      }
+    },
+  );
+
+  it.each([
+    // An organisation that forbids `untrusted` (MDM requirements.toml).
+    [["on-request", "never"], "ask-on-escalation"],
+    [["never"], "sandbox"],
+    [["untrusted", "on-request", "never"], "ask-every-command"],
+    [null, "ask-every-command"],
+  ] as const)(
+    "runs a policy-enforced stage under Codex requirements allowing %j as %s",
+    async (allowedApprovalPolicies, expected) => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "codex-readonly-requirements-"));
+      const binaryPath = path.join(directory, "codex.cjs");
+      writeFileSync(binaryPath, "#!/usr/bin/env node\nprocess.stdin.resume();\n", {
+        mode: 0o755,
+      });
+      const manager = new CodexAppServerManager();
+      vi.spyOn(
+        manager as unknown as { assertSupportedCodexCliVersion: () => string },
+        "assertSupportedCodexCliVersion",
+      ).mockReturnValue("0.170.0");
+      const events: Array<Record<string, unknown>> = [];
+      manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+      const sent: Array<[string, unknown]> = [];
+      const sandboxed = expected === "sandbox";
+      const policy = {
+        "ask-every-command": { sandbox: "danger-full-access", approvalPolicy: "untrusted" },
+        "ask-on-escalation": { sandbox: "read-only", approvalPolicy: "on-request" },
+        sandbox: { sandbox: "read-only", approvalPolicy: "never" },
+      }[expected];
+      const send = vi
+        .spyOn(
+          manager as unknown as {
+            sendRequest: (context: unknown, method: string, params: unknown) => Promise<unknown>;
+          },
+          "sendRequest",
+        )
+        .mockImplementation(async (_context, method, params) => {
+          sent.push([method, params]);
+          if (method === "configRequirements/read")
+            return {
+              requirements: allowedApprovalPolicies === null ? null : { allowedApprovalPolicies },
+            };
+          if (method === "thread/start")
+            return {
+              thread: { id: "native-thread" },
+              sandbox: { type: policy.sandbox === "read-only" ? "readOnly" : "dangerFullAccess" },
+              approvalPolicy: policy.approvalPolicy,
+            };
+          return {};
+        });
+      try {
+        await manager.startSession({
+          threadId: asThreadId("readonly-requirements"),
+          cwd: directory,
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          readOnlyEnforcement: "policy",
+          providerOptions: { codex: { binaryPath } },
+        });
+        expect(sent.find(([method]) => method === "thread/start")?.[1]).toMatchObject(policy);
+        // Only the forge-only fallback differs from the policy enforcement F5 recorded at start.
+        expect(events.some((event) => event.method === "configWarning")).toBe(sandboxed);
+        expect(
+          events
+            .filter((event) => event.method === "f5/readOnly/enforcementChanged")
+            .map((event) => event.payload),
+        ).toEqual(sandboxed ? [{ enforcement: "sandbox" }] : []);
       } finally {
         send.mockRestore();
         await cleanupCodexFixture(manager, directory);
@@ -1869,7 +2206,7 @@ describe("sendTurn", () => {
       expect(
         build(
           {},
-          { workflowExecutionProfile: "unattended-readonly", readOnlyEnforcement: "policy" },
+          { workflowExecutionProfile: "unattended-readonly", readOnlyMode: "ask-every-command" },
         ),
       ).toMatchObject({
         approvalPolicy: "untrusted",
@@ -4083,7 +4420,7 @@ describe("Codex server requests", () => {
     const manager = new CodexAppServerManager();
     const context = Object.assign(requestContext(manager), {
       workflowExecutionProfile: "unattended-readonly",
-      readOnlyEnforcement: "policy",
+      readOnlyMode: "ask-every-command",
     });
     const internals = manager as unknown as {
       handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
@@ -4130,11 +4467,93 @@ describe("Codex server requests", () => {
     });
   });
 
+  it("never answers a read-only stage with a rule that would outlive the request", async () => {
+    const manager = new CodexAppServerManager();
+    const context = Object.assign(requestContext(manager), {
+      workflowExecutionProfile: "unattended-readonly",
+      readOnlyMode: "ask-on-escalation",
+    });
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      writeMessage: (...args: unknown[]) => Promise<void>;
+    };
+    const writeMessage = vi.spyOn(internals, "writeMessage").mockResolvedValue();
+    // The shape Codex 0.170 sends after its sandbox failed to start (gate G3).
+    internals.handleServerRequest(context, {
+      id: 7,
+      method: "item/commandExecution/requestApproval",
+      params: {
+        kind: "command",
+        threadId: "thread_1",
+        turnId: "turn_1",
+        itemId: "item-7",
+        reason: "Allow running ls outside the sandbox after the sandbox failed to start?",
+        command: "/bin/zsh -lc ls",
+        proposedExecpolicyAmendment: ["ls"],
+        availableDecisions: [
+          "accept",
+          { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["ls"] } },
+          "cancel",
+        ],
+      },
+    });
+    await vi.waitFor(() => expect(writeMessage).toHaveBeenCalledTimes(1));
+    // An execpolicy amendment or a session allowance would be written as a rule.
+    expect(writeMessage.mock.calls[0]?.[1]).toEqual({ id: 7, result: { decision: "accept" } });
+  });
+
+  it("answers an escalation request after a sandbox failure, declining it plainly", async () => {
+    const manager = new CodexAppServerManager();
+    const context = Object.assign(requestContext(manager), {
+      workflowExecutionProfile: "unattended-readonly",
+      readOnlyMode: "ask-on-escalation",
+    });
+    const internals = manager as unknown as {
+      handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      writeMessage: (...args: unknown[]) => Promise<void>;
+    };
+    const writeMessage = vi.spyOn(internals, "writeMessage").mockResolvedValue();
+    const events: Array<Record<string, unknown>> = [];
+    manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+    // The shape Codex 0.170 sends to rerun a command outside its sandbox (gates G3, G3b): it
+    // offers no `decline`, and `cancel` would end the turn.
+    const ask = (id: number, command: string) =>
+      internals.handleServerRequest(context, {
+        id,
+        method: "item/commandExecution/requestApproval",
+        params: {
+          kind: "command",
+          threadId: "thread_1",
+          turnId: "turn_1",
+          itemId: `item-${id}`,
+          reason: "Allow running it outside the sandbox after the sandbox failed to start?",
+          command,
+          proposedExecpolicyAmendment: command.split(" ").slice(2),
+          availableDecisions: [
+            "accept",
+            { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["x"] } },
+            "cancel",
+          ],
+        },
+      });
+    ask(1, "/bin/zsh -lc 'stat notes.txt'");
+    ask(2, "/bin/zsh -lc 'touch marker'");
+    await vi.waitFor(() => expect(writeMessage).toHaveBeenCalledTimes(2));
+    expect(writeMessage.mock.calls.map(([, response]) => response)).toEqual([
+      { id: 1, result: { decision: "accept" } },
+      { id: 2, result: { decision: "decline" } },
+    ]);
+    expect(context.pendingApprovals.size).toBe(0);
+    expect(events.map((event) => [event.method, event.itemId])).toEqual([
+      ["f5/readOnly/refused", "item-2"],
+    ]);
+  });
+
   it("leaves a sandboxed read-only stage's requests to the normal flow", () => {
     const manager = new CodexAppServerManager();
     const context = Object.assign(requestContext(manager), {
       workflowExecutionProfile: "unattended-readonly",
-      readOnlyEnforcement: "sandbox",
+      readOnlyMode: "sandbox",
     });
     (
       manager as unknown as {

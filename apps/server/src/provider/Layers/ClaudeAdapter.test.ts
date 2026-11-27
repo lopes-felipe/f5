@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +32,7 @@ import { ComputerControlError } from "@t3tools/shared/computerControl";
 import * as claudeAgentBrowser from "./claudeAgentBrowser";
 import { beginClaudeTranscriptMaintenance } from "../claudeTranscript.ts";
 import { CLAUDE_AUTO_UNAVAILABLE_WARNING } from "../claudeAutoMode.ts";
+import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -2662,6 +2664,102 @@ describe("ClaudeAdapterLive", () => {
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect("turns off hooks and project MCP servers only in read-only stages", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const readOnly = harness.getLastCreateQueryInput()!.options;
+      assert.equal(
+        (readOnly.settings as { disableAllHooks?: boolean } | undefined)?.disableAllHooks,
+        true,
+      );
+      assert.equal(readOnly.strictMcpConfig, hasClaudeManagedMcpConfig() ? undefined : true);
+      yield* adapter.stopSession(THREAD_ID);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const normal = harness.getLastCreateQueryInput()!.options;
+      assert.equal(
+        (normal.settings as { disableAllHooks?: boolean } | undefined)?.disableAllHooks,
+        undefined,
+      );
+      assert.equal(normal.strictMcpConfig, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "refuses read-only stages where a trusted folder's committed settings allow writes",
+    () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "f5-claude-ro-config-"));
+      const repo = path.join(root, "repo");
+      const configDir = path.join(root, "claude-config");
+      mkdirSync(path.join(repo, ".claude"), { recursive: true });
+      mkdirSync(configDir, { recursive: true });
+      execFileSync("git", ["init", "-q", repo]);
+      writeFileSync(
+        path.join(configDir, ".claude.json"),
+        JSON.stringify({ projects: { [repo]: { hasTrustDialogAccepted: true } } }),
+      );
+      const settingsFile = path.join(repo, ".claude", "settings.json");
+      const harness = makeHarness({
+        processEnvironment: { ...process.env, CLAUDE_CONFIG_DIR: configDir, HOME: root },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          cwd: repo,
+          workflowExecutionProfile: "unattended-readonly",
+        });
+        writeFileSync(settingsFile, JSON.stringify({ permissions: { allow: ["Write"] } }));
+        execFileSync("git", ["-C", repo, "add", ".claude/settings.json"]);
+
+        const turnError = yield* adapter
+          .sendTurn({ threadId: session.threadId, input: "Review", attachments: [] })
+          .pipe(Effect.flip);
+        assert.ok(Schema.is(ProviderAdapterValidationError)(turnError));
+        assert.include(turnError.message, `${settingsFile} allows \`Write\``);
+        yield* adapter.stopSession(THREAD_ID);
+
+        const startError = yield* adapter
+          .startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            cwd: repo,
+            workflowExecutionProfile: "unattended-readonly",
+          })
+          .pipe(Effect.flip);
+        assert.include(startError.message, "Claude can't run read-only workflow stages here");
+        // Normal sessions keep the folder's own settings.
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          cwd: repo,
+        });
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(root, { recursive: true, force: true }))),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("warns once per reported credential expiry in a session", () => {
     const harness = makeHarness();
