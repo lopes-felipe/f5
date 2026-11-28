@@ -1403,14 +1403,14 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       });
 
       expect(result.branch.status).toBe("created");
-      expect(result.branch.name).toBe("feature/implement-stacked-git-actions");
+      expect(result.branch.name).toBe("f5/feat/implement-stacked-git-actions");
       expect(result.commit.status).toBe("created");
       expect(result.push.status).toBe("pushed");
       expect(
         yield* runGit(repoDir, ["rev-parse", "--abbrev-ref", "HEAD"]).pipe(
           Effect.map((result) => result.stdout.trim()),
         ),
-      ).toBe("feature/implement-stacked-git-actions");
+      ).toBe("f5/feat/implement-stacked-git-actions");
 
       const mainSha = yield* runGit(repoDir, ["rev-parse", "main"]).pipe(
         Effect.map((r) => r.stdout.trim()),
@@ -1451,7 +1451,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       });
 
       expect(result.branch.status).toBe("created");
-      expect(result.branch.name).toBe("feature/feat-custom-summary-line");
+      expect(result.branch.name).toBe("f5/feat/custom-summary-line");
       expect(result.commit.status).toBe("created");
       expect(result.commit.subject).toBe("feat: custom summary line");
       expect(generatedCount).toBe(0);
@@ -2459,7 +2459,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           mode: "worktree",
         });
 
-        expect(result.branch).toBe("t3code/pr-91/main");
+        expect(result.branch).toBe("f5/pr-91/main");
         expect(result.worktreePath).not.toBeNull();
         expect((yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim()).toBe("main");
         expect((yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim()).toBe(mainBefore);
@@ -2468,7 +2468,20 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
             "branch",
             "--show-current",
           ])).stdout.trim(),
-        ).toBe("t3code/pr-91/main");
+        ).toBe("f5/pr-91/main");
+
+        // A push from the prefixed alias lands on the PR head, not a new remote branch.
+        const worktreePath = result.worktreePath as string;
+        fs.writeFileSync(path.join(worktreePath, "fork-fix.txt"), "fork fix\n");
+        const pushed = yield* runStackedAction(manager, {
+          cwd: worktreePath,
+          action: "commit_push",
+        });
+        expect(pushed.push.status).toBe("pushed");
+        const head = (yield* runGit(worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
+        const forkHeads = (yield* runGit(worktreePath, ["ls-remote", "--heads", forkDir])).stdout;
+        expect(forkHeads).toContain(`${head}\trefs/heads/main`);
+        expect(forkHeads).not.toContain("refs/heads/f5/");
       }),
   );
 
@@ -2520,7 +2533,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           mode: "worktree",
         });
 
-        expect(result.branch).toBe("t3code/pr-92/main");
+        expect(result.branch).toBe("f5/pr-92/main");
         expect((yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim()).toBe(localMainBefore);
         expect(
           (yield* runGit(result.worktreePath as string, [
@@ -2590,6 +2603,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(result.worktreePath && fs.realpathSync.native(result.worktreePath)).toBe(
         fs.realpathSync.native(worktreePath),
       );
+      // A fork branch an older build checked out keeps its legacy name.
+      expect(result.branch).toBe("t3code/pr-83/feature/pr-reused-fork");
       expect(
         (yield* runGit(worktreePath, ["rev-parse", "--abbrev-ref", "@{upstream}"])).stdout.trim(),
       ).toBe("fork-seed/feature/pr-reused-fork");
@@ -2658,7 +2673,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           "@{upstream}",
         ])).stdout.trim(),
       ).toBe("origin/main");
-      expect(result.branch).toBe("t3code/pr-94/main");
+      expect(result.branch).toBe("f5/pr-94/main");
       expect((yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim()).toBe(localMainBefore);
       expect(yield* trackingRefs()).toBe(trackingRefsBefore);
       expect((yield* runGit(mainWorktreePath, ["branch", "--show-current"])).stdout.trim()).toBe(

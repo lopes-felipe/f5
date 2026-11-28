@@ -12,7 +12,6 @@ import {
   type ProviderInteractionMode,
 } from "@t3tools/contracts";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 
 /** A turn for an existing conversation, without bootstrap. Settings are the thread's admitted ones. */
 export function buildExistingThreadSubmission(input: {
@@ -93,7 +92,8 @@ export function buildNewThreadSubmission(input: {
             prepareWorktree: {
               projectCwd: input.project.workspaceRoot,
               baseBranch: input.branch,
-              branch: input.worktreeBranch ?? buildTemporaryWorktreeBranchName(),
+              // Without a chosen name the server names a placeholder from the prompt.
+              ...(input.worktreeBranch ? { branch: input.worktreeBranch } : {}),
               ...(input.requireWorktree ? { requireWorktree: true } : {}),
             },
             ...(setupProjectScript(input.project.scripts) ? { runSetupScript: true } : {}),

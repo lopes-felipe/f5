@@ -66,10 +66,10 @@ import {
   validateProposedPlanOutput,
 } from "@t3tools/shared/proposedPlan";
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
-import {
-  buildTemporaryWorktreeBranchName,
-  isTemporaryWorktreeBranch,
-} from "@t3tools/shared/worktree";
+import { buildPlaceholderBranchName, isPlaceholderBranch } from "@t3tools/shared/branchNaming";
+import { resolvePlaceholderBranch } from "../../git/placeholderBranch.ts";
+import { readBranchNamePrefix } from "../../project/branchNamePrefix.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { CheckpointDiffQuery } from "../../checkpointing/Services/CheckpointDiffQuery.ts";
@@ -283,6 +283,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   const withWorkflowGate = makeOperationGate<PlanningWorkflowId>();
   const withWorkflowRetryGate = makeOperationGate<PlanningWorkflowId>();
   const compactionService = yield* Effect.serviceOption(CompactionService);
+  const serverSettings = yield* Effect.serviceOption(ServerSettingsService);
   const activeRevisionCompactions = new Set<CommandId>();
 
   const getWorkflowProviders =
@@ -3577,7 +3578,17 @@ export const makeWorkflowService = Effect.gen(function* () {
             implementation.worktreePath != null &&
             implementation.worktreePath === thread.worktreePath &&
             implementation.branch != null &&
-            isTemporaryWorktreeBranch(implementation.branch) &&
+            isPlaceholderBranch(
+              implementation.branch,
+              Option.isSome(serverSettings)
+                ? yield* readBranchNamePrefix(
+                    serverSettings.value.getSettings,
+                    (yield* orchestrationEngine.getReadModel()).projects.find(
+                      (project) => project.id === thread.projectId && project.deletedAt === null,
+                    ) ?? null,
+                  )
+                : "",
+            ) &&
             thread.branch != null &&
             (yield* orchestrationEngine
               .readEvents(0, { threadId, eventTypes: ["thread.meta-updated"] })
@@ -5849,11 +5860,12 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (implementationPromptError) return yield* implementationPromptError;
 
       const envMode = input.envMode ?? "local";
-      const workspaceRoot =
+      const workflowProject =
         snapshot.projects.find(
           (project) =>
             project.id === implementationWorkflow.projectId && project.deletedAt === null,
-        )?.workspaceRoot ?? null;
+        ) ?? null;
+      const workspaceRoot = workflowProject?.workspaceRoot ?? null;
 
       let branch: string | null = null;
       let worktreePath: string | null = null;
@@ -5868,7 +5880,16 @@ export const makeWorkflowService = Effect.gen(function* () {
             new Error("Project workspace root is unavailable; cannot create worktree."),
           );
         }
-        const newBranch = buildTemporaryWorktreeBranchName();
+        const newBranch = yield* resolvePlaceholderBranch(
+          gitCore,
+          workspaceRoot,
+          buildPlaceholderBranchName({
+            prefix: Option.isSome(serverSettings)
+              ? yield* readBranchNamePrefix(serverSettings.value.getSettings, workflowProject)
+              : "",
+            sourceText: implementationWorkflow.title,
+          }),
+        );
         const preparationScript = setupProjectScript(
           snapshot.projects.find((project) => project.id === implementationWorkflow.projectId)
             ?.scripts ?? [],
@@ -5883,6 +5904,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             cwd: workspaceRoot,
             branch: input.baseBranch,
             newBranch,
+            resolveAvailableNewBranch: true,
             path: yield* gitCore.allocateWorktreePath({ cwd: workspaceRoot, branch: newBranch }),
           })
           .pipe(

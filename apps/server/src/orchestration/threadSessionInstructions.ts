@@ -27,6 +27,7 @@ export function buildThreadInstructionContext(input: {
   readonly project?: OrchestrationProject | undefined;
   readonly cwd?: string | undefined;
   readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile | undefined;
+  readonly branchNamePrefix?: string | undefined;
 }): Partial<SharedInstructionInput> {
   const project = isScratchProject(input.project) ? undefined : input.project;
   const projectMemories = project?.memories.filter((memory) => memory.deletedAt === null);
@@ -34,6 +35,7 @@ export function buildThreadInstructionContext(input: {
     ...(project?.title ? { projectTitle: project.title } : {}),
     ...(projectMemories?.length ? { projectMemories } : {}),
     threadTitle: input.thread.title,
+    ...(input.branchNamePrefix ? { branchNamePrefix: input.branchNamePrefix } : {}),
     turnCount: deriveThreadTurnCount(input.thread),
     ...(input.cwd ? { cwd: input.cwd } : {}),
     runtimeMode: input.thread.runtimeMode,

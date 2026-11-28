@@ -12,6 +12,7 @@ import { ServerConfig } from "../../config.ts";
 import { appendWorkspaceNote } from "../../project/workspaceNotes.ts";
 import { assertWorktreeReady, WorktreeInspectionError } from "../../project/worktreeReadiness.ts";
 import { syncObservedBranch } from "../../project/observedBranch.ts";
+import { makeBranchNamePrefixReader } from "../../project/branchNamePrefix.ts";
 import { readProjectSettings } from "../../project/projectSettings.ts";
 import { hasNativeOperationReservation } from "../../provider/nativeOperations.ts";
 import { ServerSecretStore } from "../../auth/Services/ServerSecretStore.ts";
@@ -410,7 +411,20 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       // is already running there, and that turn's end records the branch.
       const followFolder =
         recreate && expectedTurnId === undefined
-          ? syncObservedBranch({ engine, git }, item.threadId)
+          ? syncObservedBranch(
+              {
+                engine,
+                git,
+                ...(Option.isSome(worktreeSettings)
+                  ? {
+                      readBranchNamePrefix: makeBranchNamePrefixReader(
+                        worktreeSettings.value.getSettings,
+                      ),
+                    }
+                  : {}),
+              },
+              item.threadId,
+            )
           : Effect.succeed(false);
       if (gate.kind !== "ready") return gate;
       if (!thread?.worktreePath) {

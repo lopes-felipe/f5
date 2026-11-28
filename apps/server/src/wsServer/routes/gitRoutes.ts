@@ -1,3 +1,5 @@
+import { buildCheckoutConflictBranchName } from "@t3tools/shared/branchNaming";
+import type { PreparedWorktreeInput } from "../../project/worktreePreparation.ts";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -15,6 +17,10 @@ import type { WebSocket } from "ws";
 import type { GitCoreShape } from "../../git/Services/GitCore.ts";
 import type { GitManagerShape } from "../../git/Services/GitManager.ts";
 import { GitWorkspaceSwitch, type GitWorkspaceSwitchHandler } from "../../git/workspaceSwitch.ts";
+import {
+  GitPlaceholderRename,
+  type GitPlaceholderRenameHandler,
+} from "../../git/placeholderRename.ts";
 import { canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import type { WorktreeManagerShape } from "../../project/Services/WorktreeManager.ts";
 import { RouteRequestError } from "../../turnSubmissionErrors.ts";
@@ -51,6 +57,8 @@ export interface GitRouteDependencies {
     threadId?: ThreadId,
     operationId?: string,
   ) => GitWorkspaceSwitchHandler;
+  /** Renames an F5 placeholder branch before its first push, under lifecycle locks. */
+  readonly renamePlaceholder?: GitPlaceholderRenameHandler;
   /** Sends one progress event of a stacked action to the client that asked for it. */
   readonly publishActionProgress: (
     ws: WebSocket,
@@ -61,8 +69,12 @@ export interface GitRouteDependencies {
   readonly createWorktree: GitCoreShape["createWorktree"];
   /** Creates a thread's worktree once per operation and runs the project's setup script. */
   readonly prepareWorktree: (
-    input: GitPrepareWorktreeInput,
+    input: PreparedWorktreeInput,
   ) => Effect.Effect<GitCreateWorktreeResult, Error>;
+  /** A project's effective Branch prefix, for branches the server names itself. */
+  readonly readBranchNamePrefix?: (
+    project: Pick<OrchestrationProject, "id" | "workspaceRoot">,
+  ) => Effect.Effect<string>;
   /**
    * What only exists once the server has started: the projects that are not
    * deleted, and the worktree manager. Fails with the server's starting or
@@ -92,6 +104,8 @@ export const gitRoutes = ({
   git,
   gitManager,
   switchWorkspace,
+  renamePlaceholder,
+  readBranchNamePrefix,
   publishActionProgress,
   observeStatus,
   createWorktree,
@@ -123,6 +137,7 @@ export const gitRoutes = ({
             GitWorkspaceSwitch,
             switchWorkspace(body.threadId, `git-action:${actionId}`),
           ),
+          Effect.provideService(GitPlaceholderRename, renamePlaceholder ?? null),
           Effect.tap((result) =>
             publishActionProgress(ws, { ...progress, kind: "action_finished", result }),
           ),
@@ -164,17 +179,27 @@ export const gitRoutes = ({
       const canonicalProject = yield* Effect.promise(() => canonicalWorktreePath(body.projectCwd));
       // The project's setup script decides the default, and identifies the setup that ran.
       let script: ReturnType<typeof setupProjectScript> = null;
+      let owner: Pick<OrchestrationProject, "id" | "workspaceRoot"> | null = null;
       for (const project of yield* liveProjects) {
         if (
           (yield* Effect.promise(() => canonicalWorktreePath(project.workspaceRoot))) ===
           canonicalProject
         ) {
           script = setupProjectScript(project.scripts);
+          owner = project;
           break;
         }
       }
+      const newBranch =
+        body.newBranch ??
+        buildCheckoutConflictBranchName({
+          prefix: owner && readBranchNamePrefix ? yield* readBranchNamePrefix(owner) : "",
+          branch: body.branch,
+          threadId: body.threadId,
+        });
       return yield* prepareWorktree({
         ...body,
+        newBranch,
         runSetupScript: body.runSetupScript ?? script !== null,
         setupIdentity: script?.command ?? null,
       });

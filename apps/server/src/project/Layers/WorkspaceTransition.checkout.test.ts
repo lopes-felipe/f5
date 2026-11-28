@@ -284,25 +284,44 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     expect(result.result?.branch).toBe("changed-outside");
   });
 
-  it("moves to a flat temporary branch when the t3code namespace is occupied", async () => {
+  it("moves to a placeholder branch named from the thread", async () => {
     const f = await fixture();
-    git(f.repo.root, "branch", "t3code");
     const request = await f.request("move_to_new_worktree");
     const result = await f.runtime.runPromise(f.transition.switchWorkspace(request));
     expect(result.phase).toBe("completed");
     const thread = (await f.runtime.runPromise(f.engine.getReadModel())).threads[0]!;
-    expect(thread.branch).toMatch(/^t3code-[0-9a-f]{8}$/);
+    expect(thread.branch).toMatch(/^f5\/wip\/[a-z0-9][a-z0-9-]*$/);
     expect(git(thread.worktreePath!, "branch", "--show-current").trim()).toBe(thread.branch);
   });
 
-  it.each(["t3code/abcdef12", "t3code-abcdef12", "t3code/12345678-1234-4234-8234-123456789abc"])(
-    "reserves temporary branch %s for managed worktrees",
-    async (branch) => {
-      const f = await fixture();
-      const request = await f.request("move_to_new_worktree", { branch });
-      await expect(f.runtime.runPromise(f.transition.switchWorkspace(request))).rejects.toThrow(
-        "Invalid branch name",
-      );
-    },
-  );
+  it("takes the next free placeholder name when one is taken", async () => {
+    const first = await fixture();
+    const request = await first.request("move_to_new_worktree");
+    const model = await first.runtime.runPromise(first.engine.getReadModel());
+    const thread = model.threads[0]!;
+    const taken = `f5/wip/${(thread.title || "new thread")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")}`;
+    git(first.repo.root, "branch", taken);
+    const result = await first.runtime.runPromise(first.transition.switchWorkspace(request));
+    expect(result.phase).toBe("completed");
+    const moved = (await first.runtime.runPromise(first.engine.getReadModel())).threads[0]!;
+    expect(moved.branch).not.toBe(taken);
+    expect(moved.branch).toMatch(/^f5\/wip\/.+-1$/);
+  });
+
+  it.each([
+    "t3code/abcdef12",
+    "t3code-abcdef12",
+    "t3code/12345678-1234-4234-8234-123456789abc",
+    "f5/wip/foo",
+    "F5/wip/foo-2",
+  ])("reserves placeholder branch %s for managed worktrees", async (branch) => {
+    const f = await fixture();
+    const request = await f.request("move_to_new_worktree", { branch });
+    await expect(f.runtime.runPromise(f.transition.switchWorkspace(request))).rejects.toThrow(
+      "wip/ is reserved for F5 placeholder branches",
+    );
+  });
 });

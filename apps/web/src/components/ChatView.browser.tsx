@@ -6266,7 +6266,8 @@ describe("ChatView timeline (full app)", () => {
             projectCwd: "/repo/project",
             baseBranch: "main",
           });
-          expect(bootstrap?.prepareWorktree?.branch).toMatch(/^t3code\/[0-9a-f]{8}$/);
+          // The server names the placeholder branch from the first message.
+          expect(bootstrap?.prepareWorktree?.branch).toBeUndefined();
           expect(bootstrap?.runSetupScript).toBe(true);
 
           expect(

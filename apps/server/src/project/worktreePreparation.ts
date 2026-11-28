@@ -1,5 +1,8 @@
 import { lstat } from "node:fs/promises";
 import type { GitCreateWorktreeResult, GitPrepareWorktreeInput } from "@t3tools/contracts";
+
+/** A preparation request once the server has named its new branch. */
+export type PreparedWorktreeInput = GitPrepareWorktreeInput & { readonly newBranch: string };
 import { Deferred, Effect, Scope, Semaphore } from "effect";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
 import { canonicalWorktreePath } from "../git/worktreePaths.ts";
@@ -18,7 +21,7 @@ export const makeWorktreePreparation = <E extends Error>(deps: {
   >;
   receipts: WorktreePreparationsShape;
   createWorktree: (
-    input: GitPrepareWorktreeInput & { baseRefName: string; path: string; operationId: string },
+    input: PreparedWorktreeInput & { baseRefName: string; path: string; operationId: string },
   ) => Effect.Effect<GitCreateWorktreeResult, E>;
   runSetup: ProjectSetupScriptRunnerShape["runForThread"];
 }) =>
@@ -28,7 +31,7 @@ export const makeWorktreePreparation = <E extends Error>(deps: {
       string,
       { fingerprint: string; done: Deferred.Deferred<GitCreateWorktreeResult, Error> }
     >();
-    return (input: GitPrepareWorktreeInput): Effect.Effect<GitCreateWorktreeResult, Error> =>
+    return (input: PreparedWorktreeInput): Effect.Effect<GitCreateWorktreeResult, Error> =>
       Effect.gen(function* () {
         // Canonicalization and Git inspection are independent and outside the map semaphore.
         const common = yield* deps.git

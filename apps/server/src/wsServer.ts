@@ -1,3 +1,4 @@
+import type { GitPlaceholderRenameHandler } from "./git/placeholderRename.ts";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { AgentSessionScanner } from "./project/AgentSessionScanner";
 import {
@@ -8,7 +9,9 @@ import { startKeepAwake } from "./background/KeepAwake";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
-import { resolveTemporaryWorktreeBranch } from "./git/temporaryWorktreeBranch.ts";
+import { placeholderBranchFor, resolvePlaceholderBranch } from "./git/placeholderBranch.ts";
+import { makeBranchNamePrefixReader, readBranchNamePrefix } from "./project/branchNamePrefix.ts";
+import { buildPlaceholderBranchName, stableShortHash } from "@t3tools/shared/branchNaming";
 import { parseNaturalLanguageSchedule } from "./scheduledTasks/naturalLanguage.ts";
 import { TURN_SUBMISSION_FAILURES } from "./TurnSubmissionError.ts";
 import { makeTurnSubmissionService } from "./TurnSubmissionService.ts";
@@ -1909,6 +1912,22 @@ export const createServer = Effect.fn(function* (
         dispatch: (command) => dispatchWithCreationAttachment(input.orchestrationEngine, command),
       },
       git: { ...git, createWorktree: createConfiguredWorktree },
+      resolveNewWorktreeBranch: ({ projectCwd, requested, sourceText }) =>
+        Effect.gen(function* () {
+          const model = yield* input.orchestrationEngine.getReadModel();
+          const project =
+            model.projects.find(
+              (entry) => entry.workspaceRoot === projectCwd && entry.deletedAt === null,
+            ) ?? null;
+          const named = placeholderBranchFor({
+            requested,
+            prefix: yield* readBranchNamePrefix(serverSettings.getSettings, project),
+            sourceText,
+          });
+          return named.automatic
+            ? { ...named, branch: yield* resolvePlaceholderBranch(git, projectCwd, named.branch) }
+            : named;
+        }),
       prepareNestedWorktrees: (worktree) =>
         Effect.gen(function* () {
           const model = yield* input.orchestrationEngine.getReadModel();
@@ -2394,7 +2413,17 @@ export const createServer = Effect.fn(function* (
     cwd: string,
     branch: string | null,
   ): Effect.Effect<void, Error> =>
-    branch ? syncObservedCheckout({ engine, git }, NodePath.resolve(cwd), branch) : Effect.void;
+    branch
+      ? syncObservedCheckout(
+          {
+            engine,
+            git,
+            readBranchNamePrefix: makeBranchNamePrefixReader(serverSettings.getSettings),
+          },
+          NodePath.resolve(cwd),
+          branch,
+        )
+      : Effect.void;
   const pendingBranchObservations = new Map<string, { branch: string | null }>();
   const failedBranchObservations = new Map<string, { branch: string; retryAfter: number }>();
   const observeWorktreeBranch = (
@@ -3702,6 +3731,36 @@ export const createServer = Effect.fn(function* (
   });
 
   const reviewRepositoryCache = makeWorkspaceRepositoryReadCache();
+  /** Gives an F5 placeholder its final name before its first push, under the same locks as the other renamers. */
+  const renameGitPlaceholder: GitPlaceholderRenameHandler = (input) =>
+    Effect.gen(function* () {
+      const common = yield* git.resolveCommonDir(input.cwd);
+      const renamed = yield* withWorktreeLifecycleLock(
+        input.cwd,
+        withRepositoryLifecycleLock(
+          serverConfig.baseDir,
+          common,
+          Effect.gen(function* () {
+            const current = yield* git.statusDetails(input.cwd, { refreshUpstream: false });
+            if (current.branch !== input.oldBranch) return null;
+            const result = yield* git.renameBranch(input);
+            const receipt = yield* git.readWorktreePreparation(input.cwd);
+            if (receipt?.branch === input.oldBranch)
+              yield* preparationReceipts.update(receipt, { branch: result.branch });
+            return result;
+          }),
+        ),
+      );
+      if (renamed && runtimeReadiness.state === "ready") {
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        yield* observeWorktreeBranch(orchestrationEngine, input.cwd, renamed.branch).pipe(
+          Effect.ignore,
+        );
+      }
+      return renamed;
+    }).pipe(
+      Effect.mapError((error) => (error instanceof Error ? error : new Error(String(error)))),
+    );
   const switchGitWorkspace =
     (threadId?: ThreadId, operationId?: string): GitWorkspaceSwitchHandler =>
     (input) =>
@@ -3906,6 +3965,8 @@ export const createServer = Effect.fn(function* (
               )
             : Effect.void,
         switchWorkspace: switchGitWorkspace,
+        renamePlaceholder: renameGitPlaceholder,
+        readBranchNamePrefix: makeBranchNamePrefixReader(serverSettings.getSettings),
         publishActionProgress: (ws, event) =>
           pushBus.publishClient(ws, WS_CHANNELS.gitActionProgress, event).pipe(Effect.asVoid),
         createWorktree: createConfiguredWorktree,
@@ -4312,12 +4373,29 @@ export const createServer = Effect.fn(function* (
           return yield* new RouteRequestError({
             message: "Native forks are unavailable for this provider.",
           });
-        const branch = yield* resolveTemporaryWorktreeBranch(
-          git,
-          project.workspaceRoot,
-          `t3code/${input.operationId.slice(0, 8)}`,
+        // A retried operation must send the same command, so it reuses the checkout
+        // its first attempt recorded: a renamed source thread or a changed prefix
+        // cannot move it. A first attempt's name carries a hash of the operation id
+        // instead of taking the next free suffix.
+        const previous = (yield* providerService.nativeOperations
+          .list(input.threadId)
+          .pipe(Effect.orElseSucceed(() => []))).find(
+          (record) => record.operationId === input.operationId,
         );
-        const cwd = yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch });
+        const previousCwd = previous?.command.kind === "fork" ? previous.command.cwd : undefined;
+        const freshBranch = `${buildPlaceholderBranchName({
+          prefix: yield* readBranchNamePrefix(serverSettings.getSettings, project),
+          sourceText: source.title,
+        })}-${stableShortHash(input.operationId)}`;
+        const branch =
+          (previousCwd
+            ? yield* git.statusDetails(previousCwd, { refreshUpstream: false }).pipe(
+                Effect.map((status) => status.branch),
+                Effect.orElseSucceed(() => null),
+              )
+            : null) ?? freshBranch;
+        const cwd =
+          previousCwd ?? (yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch }));
         const binding = yield* providerSessionDirectory
           .getBinding(input.threadId)
           .pipe(Effect.mapError((cause) => new RouteRequestError({ message: String(cause) })));

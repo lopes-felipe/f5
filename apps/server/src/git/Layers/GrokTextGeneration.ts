@@ -4,7 +4,7 @@ import {
   type GrokSettings,
   type ModelSelection,
 } from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { createModelSelection } from "@t3tools/shared/model";
 import { Effect, Option, Ref, Schema } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -17,6 +17,7 @@ import {
 } from "../Services/TextGeneration.ts";
 import {
   buildBranchNamePrompt,
+  toBranchNameGenerationResult,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
@@ -320,9 +321,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       modelSelection: resolveSelection(input.modelSelection, input.model),
     });
 
-    return {
-      branch: sanitizeBranchFragment(generated.branch),
-    };
+    return toBranchNameGenerationResult(generated);
   });
 
   const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(

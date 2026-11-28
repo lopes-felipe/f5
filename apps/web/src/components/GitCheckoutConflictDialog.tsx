@@ -1,5 +1,4 @@
 import type { GitCheckoutConflict, ThreadId } from "@t3tools/contracts";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
@@ -42,7 +41,6 @@ export function GitCheckoutConflictDialog({
   const queryClient = useQueryClient();
   const pendingRef = useRef(false);
   const mounted = useRef(false);
-  const [newBranch] = useState(buildTemporaryWorktreeBranchName);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,10 +64,10 @@ export function GitCheckoutConflictDialog({
     setError(null);
     try {
       // A fresh branch also works for remote refs and branches claimed by another checkout.
+      // The server names it under the project's Branch prefix, the same for every retry.
       const result = await api.git.prepareWorktree({
         cwd: conflict.cwd,
         branch: conflict.branch,
-        newBranch,
         threadId,
         projectCwd,
       });

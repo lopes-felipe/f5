@@ -9,7 +9,8 @@ import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { Effect } from "effect";
 import * as NodePath from "node:path";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
-import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../git/worktreePaths.ts";
+import { isLegacyPlaceholderBranch } from "@t3tools/shared/branchNaming";
+import { canonicalWorktreePath, isPlaceholderBranch } from "../git/worktreePaths.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { pathContains } from "./Layers/WorktreeLifecycleCoordinator.ts";
@@ -36,6 +37,11 @@ export interface ObservedBranchDeps {
     | "prepareObservedWorktreeBranch"
     | "readWorktreeGroup"
   >;
+  /**
+   * The project's effective Branch prefix, so only F5's own `<prefix>/wip/…`
+   * placeholders are skipped. Without it the default `f5` prefix applies.
+   */
+  readonly readBranchNamePrefix?: (project: ReadModelProject) => Effect.Effect<string>;
 }
 
 type ReadModel = Effect.Success<ReturnType<OrchestrationEngineShape["getReadModel"]>>;
@@ -74,7 +80,9 @@ const recordObservedBranch = (
   branch: string,
 ) =>
   Effect.gen(function* () {
-    if (thread.branch === branch || isTemporaryWorktreeBranch(branch)) return false;
+    if (thread.branch === branch) return false;
+    const prefix = deps.readBranchNamePrefix ? yield* deps.readBranchNamePrefix(project) : "";
+    if (isPlaceholderBranch(branch, prefix)) return false;
     const previousBranch = thread.branch;
     const command = {
       type: "thread.meta.update" as const,
@@ -182,7 +190,8 @@ export const observedCheckoutCandidates = <
  */
 export const syncObservedCheckout = (deps: ObservedBranchDeps, cwd: string, branch: string) =>
   Effect.gen(function* () {
-    if (isTemporaryWorktreeBranch(branch)) return;
+    // Each thread's own project decides which placeholders are skipped.
+    if (isLegacyPlaceholderBranch(branch)) return;
     const model = yield* deps.engine.getReadModel();
     if (!model.threads.some((thread) => thread.deletedAt === null && thread.worktreePath !== null))
       return;
