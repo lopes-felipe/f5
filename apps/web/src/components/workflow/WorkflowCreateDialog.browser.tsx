@@ -39,6 +39,7 @@ import {
   useModelPreferencesStore,
 } from "../../modelPreferencesStore";
 import { useStore } from "../../store";
+import { useWorkflowCreatePreferencesStore } from "../../workflowCreatePreferencesStore";
 import { workspaceIdentityForRoot, writeFileTreeDragMention } from "../fileTreeDragMention";
 
 const nativeApiMocks = vi.hoisted(() => ({
@@ -454,6 +455,22 @@ async function typeRequirementPrompt(text: string): Promise<void> {
   await userEvent.keyboard(text);
 }
 
+function addActorButton(label: string): HTMLButtonElement {
+  const button = Array.from(document.querySelectorAll("button")).find(
+    (element) => element.textContent?.trim() === label,
+  );
+  if (!(button instanceof HTMLButtonElement)) throw new Error(`${label} button not found.`);
+  return button;
+}
+
+/** "Reviewer A", "Reviewer B", ... for the rows currently shown. */
+function actorRowLabels(noun: string): string[] {
+  const pattern = new RegExp(`^${noun} [A-F]$`);
+  return Array.from(document.querySelectorAll("label"))
+    .map((element) => element.textContent?.trim() ?? "")
+    .filter((text) => pattern.test(text));
+}
+
 function createWorkflowButton(): HTMLButtonElement {
   const button = Array.from(document.querySelectorAll("button")).find((element) =>
     element.textContent?.trim().startsWith("Start workflow"),
@@ -552,6 +569,8 @@ describe("WorkflowCreateDialog", () => {
       lastModelOptions: null,
       lastWorkflowProviderBySlot: {},
     });
+    // A submit in an earlier test would otherwise open the next one on its type.
+    useWorkflowCreatePreferencesStore.setState({ lastWorkflowType: null, setupsByType: {} });
   });
 
   afterEach(() => {
@@ -1157,6 +1176,215 @@ describe("WorkflowCreateDialog", () => {
       await vi.waitFor(() => {
         expect(findProviderFieldButton("Merge").textContent ?? "").toContain("Sonnet 4.6");
       });
+    } finally {
+      await secondScreen.unmount();
+      secondHost.remove();
+    }
+  });
+
+  it("reopens on the last submitted code review with its reviewers and auto-post", async () => {
+    const autoPost = () =>
+      page.getByRole("checkbox", { name: /Post merged review to the PR when it finishes/ });
+    const firstHost = document.createElement("div");
+    document.body.append(firstHost);
+    const firstScreen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: firstHost, providers: defaultTestProviders() },
+    );
+    try {
+      await page.getByRole("button", { name: "Code Review", exact: true }).click();
+      addActorButton("Add reviewer").click();
+      await vi.waitFor(() => expect(actorRowLabels("Reviewer")).toHaveLength(3));
+      await typeRequirementPrompt("Review https://github.com/acme/app/pull/42");
+      await expect.element(autoPost()).toBeEnabled();
+      await autoPost().click();
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
+      createWorkflowButton().click();
+      await vi.waitFor(() =>
+        expect(nativeApiMocks.createCodeReviewWorkflow).toHaveBeenCalledTimes(1),
+      );
+      await vi.waitFor(() => {
+        const state = useWorkflowCreatePreferencesStore.getState();
+        expect(state.lastWorkflowType).toBe("codeReview");
+        expect(state.setupsByType.codeReview?.actors).toHaveLength(3);
+        expect(state.setupsByType.codeReview?.autoPost).toBe(true);
+      });
+    } finally {
+      await firstScreen.unmount();
+      firstHost.remove();
+    }
+    const submitted = nativeApiMocks.createCodeReviewWorkflow.mock.calls[0]![0];
+
+    const secondHost = document.createElement("div");
+    document.body.append(secondHost);
+    const secondScreen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: secondHost, providers: defaultTestProviders() },
+    );
+    try {
+      expect(
+        page
+          .getByRole("button", { name: "Code Review", exact: true })
+          .element()
+          .getAttribute("aria-pressed"),
+      ).toBe("true");
+      expect(actorRowLabels("Reviewer")).toEqual(["Reviewer A", "Reviewer B", "Reviewer C"]);
+      // The brief is per-run, so the dialog cannot start until one is typed.
+      expect(getRequirementEditorSurface().textContent).not.toContain("pull/42");
+      expect(createWorkflowButton().disabled).toBe(true);
+      await expect.element(autoPost()).toBeDisabled();
+      await typeRequirementPrompt("Review https://github.com/acme/app/pull/43");
+      await expect.element(autoPost()).toBeChecked();
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
+      createWorkflowButton().click();
+      await vi.waitFor(() =>
+        expect(nativeApiMocks.createCodeReviewWorkflow).toHaveBeenCalledTimes(2),
+      );
+      const resubmitted = nativeApiMocks.createCodeReviewWorkflow.mock.calls[1]![0];
+      expect(resubmitted).toMatchObject({
+        autoPost: true,
+        reviewerA: submitted.reviewerA,
+        reviewerB: submitted.reviewerB,
+        additionalReviewers: submitted.additionalReviewers,
+        consolidation: submitted.consolidation,
+      });
+    } finally {
+      await secondScreen.unmount();
+      secondHost.remove();
+    }
+  });
+
+  it("loads each type's saved setup on a type switch and keeps unsaved edits", async () => {
+    const codex = { provider: "codex" as const, model: "gpt-5.4" };
+    const claude = { provider: "claudeAgent" as const, model: "claude-sonnet-4-6" };
+    useWorkflowCreatePreferencesStore.setState({
+      lastWorkflowType: "codeReview",
+      setupsByType: {
+        planning: { actors: [codex, claude], merge: codex, selfReviewEnabled: false },
+        codeReview: { actors: [codex, claude, claude], merge: claude, autoPost: true },
+      },
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host, providers: defaultTestProviders() },
+    );
+    const optionsSummary = () =>
+      page.getByRole("button", { name: /^Options/ }).element().textContent ?? "";
+    try {
+      expect(actorRowLabels("Reviewer")).toEqual(["Reviewer A", "Reviewer B", "Reviewer C"]);
+
+      await page.getByRole("button", { name: "Feature", exact: true }).click();
+      await vi.waitFor(() => expect(actorRowLabels("Author")).toEqual(["Author A", "Author B"]));
+      expect(optionsSummary()).not.toContain("Own-model review");
+
+      addActorButton("Add author").click();
+      await vi.waitFor(() => expect(actorRowLabels("Author")).toHaveLength(3));
+
+      await page.getByRole("button", { name: "Code Review", exact: true }).click();
+      await vi.waitFor(() => expect(actorRowLabels("Reviewer")).toHaveLength(3));
+
+      await page.getByRole("button", { name: "Feature", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(actorRowLabels("Author")).toEqual(["Author A", "Author B", "Author C"]),
+      );
+
+      // Investigation was never submitted, so the rows on screen carry over.
+      await page.getByRole("button", { name: "Investigation", exact: true }).click();
+      await vi.waitFor(() =>
+        expect(actorRowLabels("Investigator")).toEqual([
+          "Investigator A",
+          "Investigator B",
+          "Investigator C",
+        ]),
+      );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("saves nothing when the dialog is cancelled or the workflow fails to start", async () => {
+    const onOpenChange = vi.fn();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog
+        open
+        projectId={"project-1" as ProjectId}
+        onOpenChange={onOpenChange}
+      />,
+      { container: host, providers: defaultTestProviders() },
+    );
+    try {
+      await page.getByRole("button", { name: "Code Review", exact: true }).click();
+      addActorButton("Add reviewer").click();
+      await typeRequirementPrompt("Review the branch");
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+      expect(useWorkflowCreatePreferencesStore.getState()).toMatchObject({
+        lastWorkflowType: null,
+        setupsByType: {},
+      });
+
+      nativeApiMocks.createCodeReviewWorkflow.mockRejectedValueOnce(new Error("Server offline"));
+      await vi.waitFor(() => expect(createWorkflowButton().disabled).toBe(false));
+      createWorkflowButton().click();
+      await expect.element(page.getByText("Server offline")).toBeVisible();
+      expect(useWorkflowCreatePreferencesStore.getState()).toMatchObject({
+        lastWorkflowType: null,
+        setupsByType: {},
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("restores a submitted document's type and reader review choice", async () => {
+    const readerReview = () =>
+      page.getByRole("checkbox", { name: /Reader review of the final document/ });
+    const firstHost = document.createElement("div");
+    document.body.append(firstHost);
+    const firstScreen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: firstHost, providers: defaultTestProviders() },
+    );
+    try {
+      await page.getByRole("button", { name: "Document", exact: true }).click();
+      await page.getByRole("combobox", { name: "Document type" }).click();
+      await page.getByRole("option", { name: "ADR", exact: true }).click();
+      await readerReview().click();
+      await expect.element(readerReview()).not.toBeChecked();
+      await typeRequirementPrompt("Record why we chose queues");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createRun).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() =>
+        expect(useWorkflowCreatePreferencesStore.getState().lastWorkflowType).toBe("document"),
+      );
+    } finally {
+      await firstScreen.unmount();
+      firstHost.remove();
+    }
+
+    const secondHost = document.createElement("div");
+    document.body.append(secondHost);
+    const secondScreen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: secondHost, providers: defaultTestProviders() },
+    );
+    try {
+      expect(
+        page
+          .getByRole("button", { name: "Document", exact: true })
+          .element()
+          .getAttribute("aria-pressed"),
+      ).toBe("true");
+      await expect
+        .element(page.getByRole("combobox", { name: "Document type" }))
+        .toHaveTextContent("ADR");
+      await expect.element(readerReview()).not.toBeChecked();
     } finally {
       await secondScreen.unmount();
       secondHost.remove();
