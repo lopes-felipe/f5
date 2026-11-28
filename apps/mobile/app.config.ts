@@ -32,6 +32,8 @@ const config: ExpoConfig = {
         NSAllowsLocalNetworking: true,
         NSExceptionDomains: {
           "ts.net": { NSIncludesSubdomains: true, NSExceptionAllowsInsecureHTTPLoads: true },
+          "100.64.0.0/10": { NSExceptionAllowsInsecureHTTPLoads: true },
+          "fd7a:115c:a1e0::/48": { NSExceptionAllowsInsecureHTTPLoads: true },
         },
       },
     },
