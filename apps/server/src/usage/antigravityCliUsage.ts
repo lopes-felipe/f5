@@ -528,11 +528,15 @@ export function makeAntigravityLimits(
         lastSpawnAt = Number.NEGATIVE_INFINITY;
         throw new AccountUsageReadError("temporary-failure");
       }
-      const report = result.timedOut
-        ? SIGNED_OUT.test(result.stderr)
-          ? failed("authentication-required")
-          : failed("timeout")
-        : parseAntigravityUsageReport(result.stdout, result.stderr, result.code);
+      // Output a timed-out run did print still counts: evidence of a spent turn wins over the
+      // timeout, so a verified version that starts spending turns is refused all the same.
+      const parsed = parseAntigravityUsageReport(result.stdout, result.stderr, result.code);
+      const report =
+        result.timedOut && !(parsed.kind === "failed" && parsed.spentTurn)
+          ? SIGNED_OUT.test(result.stderr)
+            ? failed("authentication-required")
+            : failed("timeout")
+          : parsed;
       if (report.kind === "failed") {
         // Until a version has answered once with a recognised report, a timeout or an
         // unrecognised answer may be a model turn in progress: stop asking that version.

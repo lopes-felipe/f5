@@ -55,8 +55,9 @@ function AccountTile(props: {
   const lead = glanceQuotaWindow(windows, nowMs);
   // Retained bars stay usable-looking, so say when they are last-known.
   const staleNotice = lead ? accountStaleLimitsNotice(account) : null;
-  // A turn that stopped on the quota outranks an older reading that still shows room.
-  const exhaustedNotice = lead
+  // A turn that stopped on the quota outranks an older reading that still shows room, and an
+  // expired retained window: it is shown whether or not a live window leads the tile.
+  const exhaustedNotice = account.enabled
     ? (account.sections.map(quotaExhaustedText).find((text) => text !== null) ?? null)
     : null;
   const others = lead
@@ -160,11 +161,13 @@ function AccountTile(props: {
         </>
       ) : (
         <p className="flex-1 text-xs text-muted-foreground">
-          {windows.length === 0
-            ? accountStatusText(account)
-            : windows.some((window) => window.usedPercent !== null)
-              ? "Reset time passed; awaiting updated usage."
-              : "Usage for these limits isn't reported yet."}
+          {exhaustedNotice
+            ? exhaustedNotice
+            : windows.length === 0
+              ? accountStatusText(account)
+              : windows.some((window) => window.usedPercent !== null)
+                ? "Reset time passed; awaiting updated usage."
+                : "Usage for these limits isn't reported yet."}
         </p>
       )}
       {accountNeedsAuthentication(account) ? (

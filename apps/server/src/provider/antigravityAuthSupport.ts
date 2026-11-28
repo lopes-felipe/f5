@@ -552,14 +552,18 @@ export function reconcileAntigravityAuthState(
 /**
  * A secret-free key for the account behind a profile: the stored sign-in's identity (a hash of
  * its OAuth client and subject) when the token names one, else the last known account, else the
- * account revision. Usage history and quota signals are bound to it, so a sign-in to another
- * account on the same instance never inherits the previous account's data.
+ * profile and its account revision. Usage history and quota signals are bound to it, so a sign-in
+ * to another account on the same instance never inherits the previous account's data. Only a real
+ * account identity is shared across profiles; the revision fallback names its profile, since two
+ * unidentified sign-ins at the same revision are not the same account.
  */
 export async function antigravityAccountKey(profileDirectory: string): Promise<string> {
   const identity = await readOAuthAccountFingerprint(profileDirectory).catch(() => undefined);
   if (identity) return identity;
   const state = await readAntigravityAuthState(profileDirectory);
-  return state.accountFingerprint ?? `revision:${state.revision}`;
+  if (state.accountFingerprint) return state.accountFingerprint;
+  // The profile directory is named by a hash of the instance id, so it carries no secret.
+  return `profile:${path.basename(profileDirectory)}:revision:${state.revision}`;
 }
 
 export async function hasAntigravityOAuthToken(profileDirectory: string): Promise<boolean> {

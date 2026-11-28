@@ -199,7 +199,12 @@ describe("Antigravity /usage state", () => {
 
   it("keys the account by the sign-in's identity, falling back to the revision", async () => {
     const directory = await profile();
-    expect(await antigravityAccountKey(directory)).toBe("revision:0");
+    // Unidentified sign-ins at the same revision stay apart per profile.
+    const other = await profile();
+    expect(await antigravityAccountKey(directory)).toBe(
+      `profile:${path.basename(directory)}:revision:0`,
+    );
+    expect(await antigravityAccountKey(other)).not.toBe(await antigravityAccountKey(directory));
     const idToken = (sub: string) =>
       `h.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.s`;
     await writeToken(directory, { client_id: "c", refresh_token: "r1", id_token: idToken("u1") });

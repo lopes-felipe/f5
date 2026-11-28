@@ -1281,6 +1281,58 @@ describe("query-connected usage dashboard", () => {
     }
   });
 
+  it("keeps the quota stop on the glance when the retained window has expired", async () => {
+    const fetchedAt = new Date(Date.now() - 6 * 60 * 60_000).toISOString();
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue([
+      {
+        key: "antigravity:stopped-expired",
+        provider: "antigravity",
+        providerInstanceId: null,
+        displayName: "Antigravity",
+        enabled: true,
+        refreshState: "idle",
+        sections: [
+          {
+            kind: "provider-limits",
+            outcome: "unavailable",
+            errorCode: "timeout",
+            accountFingerprint: "account-a",
+            lastAttemptAt: new Date().toISOString(),
+            quotaExhausted: { observedAt: new Date().toISOString(), resetsAt: null },
+            snapshot: {
+              fetchedAt,
+              data: {
+                accountFingerprint: "account-a",
+                windows: [
+                  {
+                    id: "gemini-5h",
+                    label: "Gemini · 5-hour",
+                    usedPercent: 40,
+                    resetsAt: new Date(Date.now() - 60_000).toISOString(),
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      const tile = page
+        .getByRole("region", { name: "Limits at a glance" })
+        .getByTestId("limits-glance-tile")
+        .first();
+      await expect.element(tile).toHaveTextContent("Quota reached during a turn.");
+      await expect.element(tile).not.toHaveTextContent(/awaiting updated usage/);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
   it("shows an unsupported message for a project filter on an older server", async () => {
     api.getSummary.mockResolvedValue(summary({ projectScope: null }));
     api.getAccounts.mockResolvedValue(accounts());

@@ -462,6 +462,12 @@ describe("makeAntigravityLimits", () => {
         ],
         [ran("plain text answer"), undefined, { unsupportedReason: "cli-unrecognized" }],
         [ran("", { code: null, timedOut: true }), "1.5.15", { errorCode: "timeout" }],
+        // A verified version that timed out after printing spend evidence is refused anyway.
+        [
+          ran(report({ num_turns: 1, status: "ERROR" }), { code: null, timedOut: true }),
+          "1.5.15",
+          { unsupportedReason: "cli-spends-turn" },
+        ],
         [
           ran("", {
             code: null,

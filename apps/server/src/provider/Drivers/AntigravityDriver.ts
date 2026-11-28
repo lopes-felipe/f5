@@ -506,15 +506,22 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       // expires at its reset. Another account signed in on this instance never sees it.
       let quotaSignal: AntigravityQuotaSignal | undefined;
       const onQuotaExhausted = (resetsAt: string | null) =>
-        Effect.promise(() => antigravityAccountKey(profileDirectory).catch(() => undefined)).pipe(
-          Effect.map((account) => {
-            quotaSignal = {
-              observedAt: new Date().toISOString(),
-              resetsAt,
-              ...(account !== undefined ? { account } : {}),
-            };
-          }),
-        );
+        Effect.suspend(() => {
+          // Stamped when the turn reports the stop, before the account lookup: a limits reading
+          // that finishes during the lookup is newer than the stop and must still clear it.
+          const observedAt = new Date().toISOString();
+          return Effect.promise(() =>
+            antigravityAccountKey(profileDirectory).catch(() => undefined),
+          ).pipe(
+            Effect.map((account) => {
+              quotaSignal = {
+                observedAt,
+                resetsAt,
+                ...(account !== undefined ? { account } : {}),
+              };
+            }),
+          );
+        });
       // Turning limit reads off and on again is how a user retries a refused CLI version.
       if (!config.readLimitsWithCli && before.usageCommandRefused)
         yield* Effect.promise(() =>
