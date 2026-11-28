@@ -1,4 +1,5 @@
 import type { TextGeneratorConfig } from "@t3tools/contracts";
+import { textGeneratorRequestUrl } from "@t3tools/shared/serverSettings";
 import { Effect, Schema } from "effect";
 import { TextGenerationError } from "../Errors.ts";
 import { makePromptTextGeneration, type StructuredTextRunner } from "../promptTextGeneration.ts";
@@ -19,32 +20,29 @@ export async function generateApiText(
   if (config.apiKeyRedacted && !config.apiKey)
     throw new Error("The stored API key is unavailable. Re-enter it in Settings.");
   const anthropic = config.kind === "anthropic";
-  const response = await fetcher(
-    config.baseUrl.replace(/\/+$/, "") + (anthropic ? "/messages" : "/chat/completions"),
-    {
-      method: "POST",
-      redirect: "error",
-      signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
-        : AbortSignal.timeout(120_000),
-      headers: {
-        "Content-Type": "application/json",
-        ...(anthropic
-          ? {
-              "x-api-key": config.apiKey,
-              "anthropic-version": "2023-06-01",
-            }
-          : config.apiKey
-            ? { Authorization: "Bearer " + config.apiKey }
-            : {}),
-      },
-      body: JSON.stringify({
-        model,
-        ...(anthropic ? { max_tokens: 8192 } : {}),
-        messages: [{ role: "user", content: prompt }],
-      }),
+  const response = await fetcher(textGeneratorRequestUrl(config), {
+    method: "POST",
+    redirect: "error",
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+      : AbortSignal.timeout(120_000),
+    headers: {
+      "Content-Type": "application/json",
+      ...(anthropic
+        ? {
+            "x-api-key": config.apiKey,
+            "anthropic-version": "2023-06-01",
+          }
+        : config.apiKey
+          ? { Authorization: "Bearer " + config.apiKey }
+          : {}),
     },
-  );
+    body: JSON.stringify({
+      model,
+      ...(anthropic ? { max_tokens: 8192 } : {}),
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
   if (!response.ok) {
     await response.body?.cancel();
     throw new Error("The model API returned HTTP " + response.status + ".");

@@ -5,6 +5,7 @@ import {
   ProviderInstanceId,
   type TextGeneratorConfig,
 } from "@t3tools/contracts";
+import { textGeneratorRequestUrl } from "@t3tools/shared/serverSettings";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -223,6 +224,8 @@ function TextGeneratorForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const models = parseModels(modelInput);
+  const clearsStoredKey =
+    draft.apiKeyRedacted && textGeneratorRequestUrl(initial) !== textGeneratorRequestUrl(draft);
   const patch = (value: Partial<TextGeneratorConfig>) =>
     setDraft((current) => ({ ...current, ...value }));
   const canSave =
@@ -303,10 +306,17 @@ function TextGeneratorForm({
             type="password"
             autoComplete="off"
             aria-label="Text generator API key"
-            placeholder={draft.apiKeyRedacted ? "Stored key, leave blank to keep" : ""}
+            placeholder={
+              draft.apiKeyRedacted && !clearsStoredKey ? "Stored key, leave blank to keep" : ""
+            }
             value={draft.apiKey}
             onChange={(event) => patch({ apiKey: event.target.value })}
           />
+          {clearsStoredKey && (
+            <span className="text-xs text-muted-foreground">
+              Saving this address with a blank API key clears the stored key.
+            </span>
+          )}
         </label>
         <label className="grid gap-1.5">
           <span className="text-xs font-medium text-foreground">Model IDs</span>

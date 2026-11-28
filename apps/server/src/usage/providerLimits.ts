@@ -13,6 +13,7 @@ import type {
 import { makeAccountUsageCapability, emptyAccountSection } from "./Layers/AccountUsageService.ts";
 import { accountUsageIdentity, type AccountUsageCapability } from "./accountUsage.ts";
 import { asRecord, asNonNegativeNumber, asTrimmedString, resetDate } from "./accountUsageJson.ts";
+import { cliProxyHubBasePath } from "./cliProxyHubUrl.ts";
 
 const DEFAULT_CURSOR_API_ENDPOINT = "https://api2.cursor.sh";
 export const GROK_USAGE_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
@@ -183,8 +184,7 @@ async function readGrokHubUsage(env: NodeJS.ProcessEnv, signal: AbortSignal) {
     !(hub.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(hub.hostname))
   )
     throw new Error("Invalid hub URL.");
-  // Users often paste the hub's web panel URL, which ends in management.html.
-  hub.pathname = hub.pathname.replace(/(\/management\.html)?\/?$/i, "/");
+  hub.pathname = cliProxyHubBasePath(hub.pathname);
   const files = asRecord(
     await fetchJsonWithTimeout(
       new URL("v0/management/auth-files", hub).toString(),
@@ -236,8 +236,6 @@ export function makeProviderLimits(input: {
   environment: NodeJS.ProcessEnv;
   serverUrl?: string;
   apiEndpoint?: string;
-  /** Gemini API key instances display their billing mode in Usage. */
-  antigravityBilledPerToken?: boolean;
 }): Effect.Effect<AccountUsageCapability, never, Scope> {
   const initial = {
     key: `${input.provider}:${input.instanceId}`,
@@ -249,33 +247,7 @@ export function makeProviderLimits(input: {
     sections: [emptyAccountSection("provider-limits")],
   };
   const identity = providerLimitsIdentity(input);
-  if (input.provider === "antigravity") {
-    // Publish no subscription snapshot, even when history holds one from an older F5 release.
-    return Effect.sync(() => {
-      const fetchedAt = new Date().toISOString();
-      const section: AccountUsageSection = input.antigravityBilledPerToken
-        ? {
-            ...emptyAccountSection("provider-limits"),
-            kind: "provider-limits",
-            outcome: "available",
-            lastAttemptAt: fetchedAt,
-            snapshot: {
-              fetchedAt,
-              data: { windows: [], plan: "Billed per token" },
-            },
-          }
-        : {
-            ...emptyAccountSection("provider-limits"),
-            outcome: "unsupported",
-            errorCode: "unsupported",
-          };
-      return {
-        identity,
-        getSnapshot: Effect.succeed({ ...initial, sections: [section] }),
-        refresh: () => Effect.void,
-      };
-    });
-  }
+  // Antigravity limits come only from `makeAntigravityLimits` (the CLI's own `/usage`, opt-in).
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;

@@ -326,7 +326,7 @@ describe.concurrent("real Git smoke", () => {
       title: "Generated pull request",
       url: "https://github.com/t3tools/f5/pull/91",
       baseRefName: "main",
-      headRefName: "feature/generated-commit",
+      headRefName: "f5/feat/generated-commit",
       state: "open" as const,
     };
     const github = makeFakeGitHubCli({ pullRequestSequence: [[], [createdPr]] });
@@ -346,7 +346,7 @@ describe.concurrent("real Git smoke", () => {
     );
 
     expect(result).toMatchObject({
-      branch: { status: "created", name: "feature/generated-commit" },
+      branch: { status: "created", name: "f5/feat/generated-commit" },
       commit: { status: "created" },
       push: { status: "pushed" },
       pr: { status: "created", number: 91 },
@@ -355,7 +355,7 @@ describe.concurrent("real Git smoke", () => {
       await git(service, remote, [
         "--git-dir=.",
         "rev-parse",
-        "refs/heads/feature/generated-commit",
+        "refs/heads/f5/feat/generated-commit",
       ]),
     ).toMatch(/^[0-9a-f]{40}$/u);
   });

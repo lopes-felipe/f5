@@ -382,6 +382,7 @@ function toInstructionContextFromSessionStartInput(
   return {
     ...(input.projectTitle !== undefined ? { projectTitle: input.projectTitle } : {}),
     ...(input.threadTitle !== undefined ? { threadTitle: input.threadTitle } : {}),
+    ...(input.branchNamePrefix !== undefined ? { branchNamePrefix: input.branchNamePrefix } : {}),
     ...(input.turnCount !== undefined ? { turnCount: input.turnCount } : {}),
     ...(input.priorWorkSummary !== undefined ? { priorWorkSummary: input.priorWorkSummary } : {}),
     ...(input.preservedTranscriptBefore !== undefined

@@ -1604,8 +1604,6 @@ describe("buildFirstSendBootstrap", () => {
   });
 
   it("builds create-thread and worktree bootstrap for local worktree drafts", () => {
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("1234abcd-0000-0000-0000-000000000000");
-
     expect(
       buildFirstSendBootstrap({
         isLocalDraftThread: true,
@@ -1646,14 +1644,13 @@ describe("buildFirstSendBootstrap", () => {
         requireWorktree: true,
         projectCwd: "/repo/project",
         baseBranch: "main",
-        branch: "t3code/1234abcd",
       },
       runSetupScript: true,
     });
   });
 
   it("builds worktree bootstrap for existing server threads", () => {
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("abcddcba-0000-0000-0000-000000000000");
+    // The server names the placeholder branch from the first message.
 
     expect(
       buildFirstSendBootstrap({
@@ -1677,7 +1674,6 @@ describe("buildFirstSendBootstrap", () => {
         requireWorktree: true,
         projectCwd: "/repo/project",
         baseBranch: "main",
-        branch: "t3code/abcddcba",
       },
     });
   });

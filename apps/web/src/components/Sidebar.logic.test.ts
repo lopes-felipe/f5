@@ -1,4 +1,10 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  type CodeReviewWorkflowSummary as CodeReviewWorkflow,
+  type InvestigationWorkflowSummary as InvestigationWorkflow,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
+import { createPlanningWorkflow } from "../test/workflowFixtures";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,6 +15,7 @@ import {
   isTrailingDoubleClick,
   partitionAgedSidebarItems,
   polledSidebarGitStatusCwds,
+  sharedFolderWorkflowThreadIds,
   sidebarPullRequestLinkTargets,
   reconcileFrozenOrder,
   resolveSidebarComposerDraftPreview,
@@ -755,5 +762,88 @@ describe("sidebarPullRequestLinkTargets", () => {
     expect(sidebarPullRequestLinkTargets([thread("scratch", false, null)], null)).toEqual([
       { cwd: null, url: "https://github.com/o/r/pull/7", enabled: false },
     ]);
+  });
+});
+
+describe("sharedFolderWorkflowThreadIds", () => {
+  const id = (value: string) => ThreadId.makeUnsafe(value);
+  const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+  const stage = (threadId: string) => ({
+    slot,
+    threadId: id(threadId),
+    status: "completed" as const,
+    pinnedTurnId: null,
+    pinnedAssistantMessageId: null,
+    error: null,
+    updatedAt: "2026-03-11T12:00:00.000Z",
+  });
+
+  it("covers review and investigation threads, and a feature's threads before implementation", () => {
+    const planning = createPlanningWorkflow({
+      branchAThreadId: id("author-a"),
+      branchBThreadId: id("author-b"),
+      merge: { status: "merged", threadId: id("plan-merge") },
+      implementation: {
+        implementationSlot: slot,
+        threadId: id("implementation"),
+        implementationTurnId: null,
+        revisionTurnId: null,
+        codeReviewEnabled: true,
+        codeReviews: [
+          {
+            reviewerLabel: "Reviewer",
+            reviewerSlot: slot,
+            threadId: id("implementation-review"),
+            status: "completed",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: "2026-03-11T12:00:00.000Z",
+          },
+        ],
+        status: "completed",
+        error: null,
+        retryCount: 0,
+        lastRetryAt: null,
+        updatedAt: "2026-03-11T12:00:00.000Z",
+      },
+    });
+    const review = {
+      reviewerA: { label: "Reviewer A", ...stage("reviewer-a") },
+      reviewerB: { label: "Reviewer B", ...stage("reviewer-b") },
+      consolidation: stage("review-merge"),
+    } as unknown as CodeReviewWorkflow;
+    const investigator = (threadId: string) => ({
+      investigationThreadId: id(threadId),
+      selfReviewThreadId: null,
+      crossReviewThreadId: null,
+    });
+    const investigation = {
+      investigatorA: investigator("investigator-a"),
+      investigatorB: investigator("investigator-b"),
+      synthesis: { threadId: id("synthesis") },
+    } as unknown as InvestigationWorkflow;
+
+    const ids = sharedFolderWorkflowThreadIds({
+      planningWorkflows: [planning],
+      codeReviewWorkflows: [review],
+      investigationWorkflows: [investigation],
+    });
+
+    expect([...ids].toSorted()).toEqual(
+      [
+        "author-a",
+        "author-b",
+        "investigator-a",
+        "investigator-b",
+        "plan-merge",
+        "review-merge",
+        "reviewer-a",
+        "reviewer-b",
+        "synthesis",
+      ].toSorted(),
+    );
+    expect(ids.has(id("implementation"))).toBe(false);
+    expect(ids.has(id("implementation-review"))).toBe(false);
   });
 });

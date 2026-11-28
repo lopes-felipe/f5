@@ -258,7 +258,11 @@ Gemini 4 Neon.
   F5's compaction.
 - Attachments are limited to 50 MiB per turn.
 - With an API key, **Usage → Limits** shows "Billed per token" instead of subscription quota.
-- F5 no longer reads Antigravity subscription quotas from Google's internal APIs or CLIProxyAPI.
+- F5 never reads Antigravity subscription quotas from Google's internal APIs or CLIProxyAPI. To
+  see them, turn on **Read limits with the Antigravity CLI** (off by default): F5 then runs the
+  CLI's own `/usage` command with the instance's sign-in, at most once a minute. See
+  [Usage and limits](../user/usage-limits.md). A turn that stops on an exhausted quota shows its
+  reset time on the Limits card either way.
 - The provider card shows the runtime version and whether it is bundled with F5 or an installed
   update, when models were last discovered, and the kind of the last discovery failure (never its
   message).

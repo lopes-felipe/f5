@@ -66,8 +66,10 @@ export function extractBranchNameFromRemoteRef(
   return normalized.slice(firstSlash + 1).trim();
 }
 
-// PR worktree branches intentionally retain the checked-out PR's remote head.
+// PR worktree branches intentionally retain the checked-out PR's remote head. Fork
+// checkouts are `<prefix>/pr-<n>/<head>` under any Branch prefix, or the legacy
+// `t3code/pr-<n>/<head>`.
 export function isPullRequestTrackingAlias(localBranch: string, upstreamBranch: string): boolean {
-  const match = /^t3code\/pr-[1-9][0-9]*\/(.+)$/.exec(localBranch);
+  const match = /^(?:[a-z0-9_-]+\/)+?pr-[1-9][0-9]*\/(.+)$/.exec(localBranch);
   return match?.[1] === upstreamBranch;
 }

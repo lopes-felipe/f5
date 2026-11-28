@@ -14,6 +14,8 @@ import { Button } from "../../ui/button";
 import { Textarea } from "../../ui/textarea";
 import { readErrorMessage } from "./mcpSettingsHelpers";
 
+const NO_CANDIDATES: McpListImportCandidatesResult = { candidates: [], issues: [] };
+
 /**
  * Previews servers from pasted text (`paste`) or from other clients' configuration
  * files (`detected`), and imports the chosen ones into the scope. Conflicts keep the
@@ -31,21 +33,40 @@ export function McpImportPanel(props: {
   onImported: () => void;
 }) {
   const [text, setText] = useState("");
-  const [detected, setDetected] = useState<McpListImportCandidatesResult>({
-    candidates: [],
-    issues: [],
-  });
+  // Null until Detect has finished once, so an empty result can say so.
+  const [detected, setDetected] = useState<McpListImportCandidatesResult | null>(null);
   const [choices, setChoices] = useState<Record<string, boolean>>({});
   const [replace, setReplace] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // In a separate profile, the user's own home folder is read only after they ask.
+  const [includeUserHome, setIncludeUserHome] = useState(false);
+  const detect = (withUserHome: boolean) => {
+    setBusy(true);
+    setError(null);
+    // A failed or running detection never shows the previous result next to it.
+    setDetected(null);
+    void ensureNativeApi()
+      .mcp.listImportCandidates({
+        ...(props.projectId ? { projectId: props.projectId } : {}),
+        instanceId: props.instanceId,
+        ...(withUserHome ? { includeUserHome: true } : {}),
+      })
+      .then((result) => {
+        setChoices({});
+        setReplace({});
+        setDetected(result);
+      })
+      .catch((cause) => setError(readErrorMessage(cause, "Detection failed.")))
+      .finally(() => setBusy(false));
+  };
   const parsed = useMemo(
     () =>
       props.source === "detected"
-        ? detected
+        ? (detected ?? NO_CANDIDATES)
         : text.trim()
           ? parseMcpImport(text)
-          : { candidates: [], issues: [] },
+          : NO_CANDIDATES,
     [props.source, detected, text],
   );
   // A stored entry under the imported name, or under the source's original name (a
@@ -132,28 +153,54 @@ export function McpImportPanel(props: {
       ) : (
         <>
           <p className="text-xs text-muted-foreground">
-            Reads Claude user and project configuration, this project's .mcp.json, the selected
-            account's Codex config, and Cursor, VS Code, Claude Desktop, and OpenCode configuration.
-            Servers from other clients start unselected. Nothing is applied automatically.
+            Reads the selected account's Claude and Codex configuration, whose servers start
+            selected, and this project's .mcp.json and Cursor, VS Code, Claude Desktop, and OpenCode
+            configuration, whose servers start unselected. Nothing is applied automatically.
           </p>
-          <Button
-            size="sm"
-            disabled={busy}
-            onClick={() => {
-              setBusy(true);
-              setError(null);
-              void ensureNativeApi()
-                .mcp.listImportCandidates({
-                  ...(props.projectId ? { projectId: props.projectId } : {}),
-                  instanceId: props.instanceId,
-                })
-                .then(setDetected)
-                .catch((cause) => setError(readErrorMessage(cause, "Detection failed.")))
-                .finally(() => setBusy(false));
-            }}
-          >
+          <Button size="sm" disabled={busy} onClick={() => detect(includeUserHome)}>
             Detect configurations
           </Button>
+          {detected && !detected.candidates.length && !detected.issues.length ? (
+            <div role="status" className="space-y-1 text-xs text-muted-foreground">
+              <p>
+                {detected.readFiles === undefined
+                  ? "No MCP servers found."
+                  : detected.readFiles.length
+                    ? "No MCP servers found. These files were read and list none:"
+                    : "No MCP servers found, and none of the files Detect looks for exist."}
+              </p>
+              {detected.readFiles?.length ? (
+                <ul className="list-disc pl-4">
+                  {detected.readFiles.map((file) => (
+                    <li key={file} className="break-all">
+                      {file}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+          {detected?.userHome && !detected.userHome.included ? (
+            <div className="space-y-2 rounded border p-2 text-xs text-muted-foreground">
+              <p>
+                This profile gives its agents their own home folder, so Detect did not read yours (
+                <span className="break-all">{detected.userHome.path}</span>). Reading it shows the
+                servers there, including any keys in their settings, in this window. They start
+                unselected.
+              </p>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busy}
+                onClick={() => {
+                  setIncludeUserHome(true);
+                  detect(true);
+                }}
+              >
+                Also look in my home folder
+              </Button>
+            </div>
+          ) : null}
         </>
       )}
       <div className="space-y-3">

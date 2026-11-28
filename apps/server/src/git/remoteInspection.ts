@@ -1,3 +1,5 @@
+import { stripRemoteUrlCredentials } from "@t3tools/shared/sourceControl";
+
 export const NONINTERACTIVE_GIT_ENV = {
   GIT_TERMINAL_PROMPT: "0",
   GIT_ASKPASS: "echo",
@@ -5,7 +7,10 @@ export const NONINTERACTIVE_GIT_ENV = {
   GCM_INTERACTIVE: "never",
 } satisfies NodeJS.ProcessEnv;
 
-export function parseRemoteFetchUrls(stdout: string): Map<string, string> {
+export function parseRemoteFetchUrls(
+  stdout: string,
+  options?: { readonly includeCredentials: boolean },
+): Map<string, string> {
   const remotes = new Map<string, string>();
   for (const line of stdout.split("\n")) {
     const trimmed = line.trim();
@@ -17,7 +22,10 @@ export function parseRemoteFetchUrls(stdout: string): Map<string, string> {
     if (direction !== "fetch" || remoteName.length === 0 || remoteUrl.length === 0) {
       continue;
     }
-    remotes.set(remoteName, remoteUrl);
+    remotes.set(
+      remoteName,
+      options?.includeCredentials ? remoteUrl : stripRemoteUrlCredentials(remoteUrl),
+    );
   }
   return remotes;
 }

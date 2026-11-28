@@ -103,8 +103,15 @@ it.each(["checkpoint query", "Git"])(
         yield* git.execute({
           operation: "test.remote",
           cwd,
-          args: ["remote", "add", "origin", "https://github.com/example/fixture.git"],
+          args: ["remote", "add", "fork", "https://alice@github.com/example/fixture.git"],
         });
+        expect(
+          yield* core.ensureRemote({
+            cwd,
+            preferredName: "origin",
+            url: "https://github.com/example/fixture.git",
+          }),
+        ).toBe("origin");
         const fetch = () =>
           core.fetchRemoteBranchCommit({ cwd, branch: "main", allowMissingBranch: true });
         const disconnected = yield* Effect.result(fetch());

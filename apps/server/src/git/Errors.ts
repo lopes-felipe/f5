@@ -26,7 +26,7 @@ export function isMissingGitExecutable(error: GitCommandError): boolean {
 }
 
 /** Git never waits for `.git/config.lock`; a permission error with the same prefix is not this. */
-export function isGitConfigLockedError(error: GitCommandError): boolean {
+export function isGitConfigLockedError(error: Pick<GitCommandError, "detail">): boolean {
   return /could not lock config file .+: File exists/i.test(error.detail);
 }
 

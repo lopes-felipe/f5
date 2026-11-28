@@ -18,6 +18,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ForgeAccounts, type ForgeAccountsShape } from "../../sourceControl/accountRouting.ts";
 import { makeGitManager } from "./GitManager.ts";
 import { GitWorkspaceSwitch } from "../workspaceSwitch.ts";
+import { GitPlaceholderRename } from "../placeholderRename.ts";
+import type { WorktreePreparationReceipt } from "../../persistence/Services/WorktreePreparations.ts";
 import { GitCommandError, GitHubCliError } from "../Errors.ts";
 import { GitCore, type GitCoreShape, type GitStatusDetails } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
@@ -540,7 +542,7 @@ describe("GitManager unit", () => {
         prepareCommitContext: () =>
           Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
         listLocalBranchNames: () =>
-          Effect.succeed(["main", "feature/generated-commit", "feature/generated-commit-1"]),
+          Effect.succeed(["main", "f5/feat/generated-commit", "f5/feat/generated-commit-1"]),
       },
     });
 
@@ -548,11 +550,31 @@ describe("GitManager unit", () => {
       manager.runStackedAction({ cwd, action: "commit_push", featureBranch: true }),
     );
 
-    expect(result.branch).toEqual({ status: "created", name: "feature/generated-commit-2" });
+    expect(result.branch).toEqual({ status: "created", name: "f5/feat/generated-commit-2" });
     expect(git.calls.createBranch).toHaveLength(0);
     expect(git.calls.checkoutBranch).toHaveLength(0);
-    expect(git.calls.commitPrepared[0]?.[4]).toEqual({ newBranch: "feature/generated-commit-2" });
-    expect(git.calls.pushCurrentBranch).toEqual([[cwd, "feature/generated-commit-2"]]);
+    expect(git.calls.commitPrepared[0]?.[4]).toEqual({ newBranch: "f5/feat/generated-commit-2" });
+    expect(git.calls.pushCurrentBranch).toEqual([[cwd, "f5/feat/generated-commit-2"]]);
+  });
+
+  it.each([
+    ["Fix crash in login", "f5/fix/fix-crash-in-login"],
+    ["refactor: extract the session store", "f5/refactor/extract-the-session-store"],
+  ])("types the feature branch for %j from the message", async (commitMessage, expected) => {
+    const { manager, git } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(dirtyStatus),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
+      },
+    });
+
+    const result = await Effect.runPromise(
+      manager.runStackedAction({ cwd, action: "commit", featureBranch: true, commitMessage }),
+    );
+
+    expect(result.branch).toEqual({ status: "created", name: expected });
+    expect(git.calls.commitPrepared[0]?.[4]).toEqual({ newBranch: expected });
   });
 
   it.each(["created", "context_changed"] as const)(
@@ -583,13 +605,131 @@ describe("GitManager unit", () => {
         ),
       );
       expect(order).toEqual(["switch", "commit"]);
-      expect(switched).toEqual([{ cwd, branch: "feature/generated-commit", create: true }]);
+      expect(switched).toEqual([{ cwd, branch: "f5/feat/generated-commit", create: true }]);
       expect(git.calls.commitPrepared[0]?.[4]).toBeUndefined();
       expect(git.calls.createBranch).toHaveLength(0);
-      expect(result.branch).toEqual({ status: "created", name: "feature/generated-commit" });
+      expect(result.branch).toEqual({ status: "created", name: "f5/feat/generated-commit" });
       if (status === "context_changed") expect(git.calls.pushCurrentBranch).toHaveLength(0);
     },
   );
+
+  const placeholderReceipt = (branch: string, namingIntent = "temporary") =>
+    Effect.succeed({ branch, namingIntent } as unknown as WorktreePreparationReceipt);
+
+  it("gives an unpushed placeholder branch its final name before the first push", async () => {
+    const placeholder = { ...dirtyStatus, branch: "f5/wip/foo", upstreamRef: null };
+    const { manager, git } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(placeholder),
+        readWorktreePreparation: () => placeholderReceipt("f5/wip/foo"),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
+      },
+    });
+
+    const result = await Effect.runPromise(
+      manager.runStackedAction({ cwd, action: "commit_push" }),
+    );
+
+    expect(git.calls.renameBranch).toEqual([
+      [{ cwd, oldBranch: "f5/wip/foo", newBranch: "f5/feat/generated-commit" }],
+    ]);
+    expect(result.branch).toEqual({ status: "renamed", name: "f5/feat/generated-commit" });
+    expect(git.calls.pushCurrentBranch).toEqual([[cwd, "f5/feat/generated-commit"]]);
+  });
+
+  it.each(["f5/wip/fix-login-redirect", "t3code-abcd1234"])(
+    "does not publish the placeholder slug of %s when nothing was committed",
+    async (branch) => {
+      const { manager, git } = await makeManager({
+        gitCore: {
+          statusDetails: () => Effect.succeed({ ...cleanStatus, branch, upstreamRef: null }),
+          readWorktreePreparation: () => placeholderReceipt(branch),
+        },
+      });
+
+      await Effect.runPromise(manager.runStackedAction({ cwd, action: "commit_push" }));
+
+      expect(git.calls.renameBranch).toEqual([
+        [{ cwd, oldBranch: branch, newBranch: "f5/feat/update" }],
+      ]);
+    },
+  );
+
+  it("renames through the transport hook and pushes what another rename left", async () => {
+    const renames: unknown[] = [];
+    const { manager, git } = await makeManager({
+      gitCore: {
+        statusDetails: (() => {
+          let calls = 0;
+          return () =>
+            Effect.succeed({
+              ...dirtyStatus,
+              branch: calls++ === 0 ? "f5/wip/foo" : "f5/fix/foo",
+              upstreamRef: null,
+            });
+        })(),
+        readWorktreePreparation: () => placeholderReceipt("f5/wip/foo"),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
+      },
+    });
+
+    const result = await Effect.runPromise(
+      manager.runStackedAction({ cwd, action: "commit_push" }).pipe(
+        Effect.provideService(GitPlaceholderRename, (input) =>
+          Effect.sync(() => {
+            renames.push(input);
+            return null;
+          }),
+        ),
+      ),
+    );
+
+    expect(renames).toEqual([
+      { cwd, oldBranch: "f5/wip/foo", newBranch: "f5/feat/generated-commit" },
+    ]);
+    expect(git.calls.renameBranch).toHaveLength(0);
+    expect(result.branch).toEqual({ status: "renamed", name: "f5/fix/foo" });
+    expect(git.calls.pushCurrentBranch).toEqual([[cwd, "f5/fix/foo"]]);
+  });
+
+  it.each([
+    ["a placeholder that already has an upstream", "f5/wip/foo", "origin/f5/wip/foo", "temporary"],
+    ["a named branch without an upstream", "feature/test", null, "temporary"],
+    ["a look-alike under another prefix", "alice/wip/spike", null, "temporary"],
+    ["a placeholder-shaped branch the user chose", "f5/wip/spike", null, "explicit"],
+  ])("does not rename %s before pushing", async (_label, branch, upstreamRef, namingIntent) => {
+    const { manager, git } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed({ ...dirtyStatus, branch, upstreamRef }),
+        readWorktreePreparation: () => placeholderReceipt(branch, namingIntent),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
+      },
+    });
+
+    await Effect.runPromise(manager.runStackedAction({ cwd, action: "commit_push" }));
+
+    expect(git.calls.renameBranch).toHaveLength(0);
+    expect(git.calls.pushCurrentBranch).toEqual([[cwd, branch]]);
+  });
+
+  it("does not rename a placeholder in a checkout F5 did not prepare", async () => {
+    const { manager, git } = await makeManager({
+      gitCore: {
+        statusDetails: () =>
+          Effect.succeed({ ...dirtyStatus, branch: "f5/wip/foo", upstreamRef: null }),
+        readWorktreePreparation: () => Effect.succeed(null),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
+      },
+    });
+
+    await Effect.runPromise(manager.runStackedAction({ cwd, action: "commit_push" }));
+
+    expect(git.calls.renameBranch).toHaveLength(0);
+  });
 
   it("rejects push actions from detached HEAD before mutating Git", async () => {
     const { manager, git } = await makeManager({

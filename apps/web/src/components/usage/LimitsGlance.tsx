@@ -18,6 +18,7 @@ import {
   accountStaleLimitsNotice,
   accountStatusText,
   accountUpdatedAt,
+  quotaExhaustedText,
 } from "./AccountUsageCards";
 import { glanceQuotaWindow } from "./charts/TightestLimitCallout";
 import { formatQuotaResetTime } from "./charts/QuotaMeter";
@@ -54,6 +55,11 @@ function AccountTile(props: {
   const lead = glanceQuotaWindow(windows, nowMs);
   // Retained bars stay usable-looking, so say when they are last-known.
   const staleNotice = lead ? accountStaleLimitsNotice(account) : null;
+  // A turn that stopped on the quota outranks an older reading that still shows room, and an
+  // expired retained window: it is shown whether or not a live window leads the tile.
+  const exhaustedNotice = account.enabled
+    ? (account.sections.map(quotaExhaustedText).find((text) => text !== null) ?? null)
+    : null;
   const others = lead
     ? windows.filter((window) => window.windowKey !== lead.windowKey && isLive(window, nowMs))
     : [];
@@ -130,6 +136,11 @@ function AccountTile(props: {
           >
             <UsageBar percent={used} tickPercent={pace?.elapsedPercent ?? null} tone={tone} />
           </div>
+          {exhaustedNotice ? (
+            <p role="status" className="text-2xs text-warning-foreground">
+              {exhaustedNotice}
+            </p>
+          ) : null}
           {staleNotice ? (
             <p role="status" className="text-2xs text-warning-foreground">
               {staleNotice}
@@ -150,11 +161,13 @@ function AccountTile(props: {
         </>
       ) : (
         <p className="flex-1 text-xs text-muted-foreground">
-          {windows.length === 0
-            ? accountStatusText(account)
-            : windows.some((window) => window.usedPercent !== null)
-              ? "Reset time passed; awaiting updated usage."
-              : "Usage for these limits isn't reported yet."}
+          {exhaustedNotice
+            ? exhaustedNotice
+            : windows.length === 0
+              ? accountStatusText(account)
+              : windows.some((window) => window.usedPercent !== null)
+                ? "Reset time passed; awaiting updated usage."
+                : "Usage for these limits isn't reported yet."}
         </p>
       )}
       {accountNeedsAuthentication(account) ? (

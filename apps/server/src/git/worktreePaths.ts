@@ -95,4 +95,4 @@ export async function dropLeftoverWorktreeRegistration(
   return false;
 }
 
-export { isTemporaryWorktreeBranch } from "@t3tools/shared/worktree";
+export { isPlaceholderBranch } from "@t3tools/shared/branchNaming";

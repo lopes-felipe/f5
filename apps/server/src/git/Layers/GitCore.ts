@@ -1,4 +1,5 @@
 import { gitConfigArgs, topLiteralGitPathspec } from "@t3tools/shared/git";
+import { stripRemoteUrlCredentials } from "@t3tools/shared/sourceControl";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { Option } from "effect";
 import {
@@ -8,7 +9,7 @@ import {
   allocationWorktreesDirectory,
   isFilesystemRoot,
 } from "../../worktreesDirectory.ts";
-import { resolveTemporaryWorktreeBranch } from "../temporaryWorktreeBranch.ts";
+import { resolveLegacyPlaceholderBranch } from "../placeholderBranch.ts";
 import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
 import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
@@ -413,6 +414,15 @@ const makeGitCore = Effect.gen(function* () {
         Effect.flatMap((result) => {
           if (options.allowNonZeroExit || result.code === 0) {
             return Effect.succeed(result);
+          }
+          if (args[0] === "remote") {
+            // Keep the config-lock retry without reporting potentially credentialed Git output.
+            const detail = isGitConfigLockedError({ detail: result.stderr })
+              ? "could not lock config file (repository config): File exists"
+              : "Git could not inspect or update the repository remotes.";
+            return Effect.fail(
+              createGitCommandError(operation, cwd, args.map(stripRemoteUrlCredentials), detail),
+            );
           }
           if (["fetch", "push", "pull", "ls-remote"].includes(args[0] ?? "")) {
             return Effect.fail(
@@ -1138,14 +1148,17 @@ const makeGitCore = Effect.gen(function* () {
   const ensureRemote: GitCoreShape["ensureRemote"] = (input) =>
     Effect.gen(function* () {
       const preferredName = sanitizeRemoteName(input.preferredName);
-      const normalizedTargetUrl = normalizeRemoteUrl(input.url);
+      const url = stripRemoteUrlCredentials(input.url);
+      const normalizedTargetUrl = normalizeRemoteUrl(url);
       const listRemoteFetchUrls = runGitStdout("GitCore.ensureRemote.listRemoteUrls", input.cwd, [
         "remote",
         "-v",
-      ]).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout)));
+      ]).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout, { includeCredentials: true })));
       const findMatchingRemote = (remoteFetchUrls: Map<string, string>) =>
         [...remoteFetchUrls].find(
-          ([, remoteUrl]) => normalizeRemoteUrl(remoteUrl) === normalizedTargetUrl,
+          ([, remoteUrl]) =>
+            stripRemoteUrlCredentials(remoteUrl) === remoteUrl &&
+            normalizeRemoteUrl(remoteUrl) === normalizedTargetUrl,
         )?.[0];
 
       const remoteFetchUrls = yield* listRemoteFetchUrls;
@@ -1164,7 +1177,7 @@ const makeGitCore = Effect.gen(function* () {
         "add",
         "--",
         remoteName,
-        input.url,
+        url,
       ]).pipe(
         Effect.as(remoteName),
         // A parallel launch for the same fork may have added it since the listing above.
@@ -3310,14 +3323,14 @@ const makeGitCore = Effect.gen(function* () {
       if (input.newBranch) {
         input = {
           ...input,
-          newBranch: yield* resolveTemporaryWorktreeBranch(
+          newBranch: yield* resolveLegacyPlaceholderBranch(
             { branchExists },
             input.cwd,
             input.newBranch,
           ),
         };
       }
-      const targetBranch = input.newBranch ?? input.branch;
+      let targetBranch = input.newBranch ?? input.branch;
       const baseRefName = input.baseRefName ?? input.branch;
       // worktree add can invoke git branch internally; a terminator before
       // the path does not protect the new branch argument passed to that command.
@@ -3333,6 +3346,11 @@ const makeGitCore = Effect.gen(function* () {
         input.path ?? (yield* allocateWorktreePath({ cwd: input.cwd, branch: targetBranch }));
       const operationId = input.preparation?.operationId ?? crypto.randomUUID();
       const create = Effect.gen(function* () {
+        if (input.resolveAvailableNewBranch && input.newBranch) {
+          const available = yield* resolveAvailableBranchName(input.cwd, input.newBranch);
+          input = { ...input, newBranch: available };
+          targetBranch = available;
+        }
         const resolvedBase = yield* runGitStdout(
           "GitCore.createWorktree.verifyBaseRef",
           input.cwd,

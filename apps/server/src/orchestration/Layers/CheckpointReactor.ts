@@ -8,7 +8,9 @@ import {
   checkpointWorkspaceRepositories,
 } from "../../checkpointing/checkpointRepositories.ts";
 import { syncObservedBranch } from "../../project/observedBranch.ts";
+import { makeBranchNamePrefixReader } from "../../project/branchNamePrefix.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeConversationRewind } from "../rewind.ts";
 import { GitService } from "../../git/Services/GitService.ts";
@@ -95,6 +97,7 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
   const git = yield* GitService;
   const workspaceGit = yield* Effect.serviceOption(GitCore);
+  const serverSettings = yield* Effect.serviceOption(ServerSettingsService);
   const receiptBus = yield* RuntimeReceiptBus;
   const turns = yield* ProjectionTurnRepository;
   const sqlOption = yield* Effect.serviceOption(SqlClient.SqlClient);
@@ -543,7 +546,13 @@ const make = Effect.gen(function* () {
     // The turn may have switched branches; the thread follows its folder.
     if (Option.isSome(workspaceGit))
       yield* syncObservedBranch(
-        { engine: orchestrationEngine, git: workspaceGit.value },
+        {
+          engine: orchestrationEngine,
+          git: workspaceGit.value,
+          ...(Option.isSome(serverSettings)
+            ? { readBranchNamePrefix: makeBranchNamePrefixReader(serverSettings.value.getSettings) }
+            : {}),
+        },
         input.threadId,
       );
 

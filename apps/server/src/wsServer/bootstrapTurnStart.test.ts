@@ -541,13 +541,11 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(dispatchedCommands.map((command) => command.type)).toEqual(["thread.turn.start"]);
   });
 
-  it("generates a bootstrap worktree branch when one is omitted", async () => {
-    vi.spyOn(crypto, "randomUUID").mockReturnValue("1234abcd-0000-0000-0000-000000000000");
-
+  it("names a bootstrap worktree placeholder from the first message when the branch is omitted", async () => {
     const createWorktree = vi.fn(() =>
       Effect.succeed({
         worktree: {
-          branch: "t3code/1234abcd",
+          branch: "f5/wip/hello",
           path: "/repo/project/.worktrees/thread-1",
         },
       } satisfies GitCreateWorktreeResult),
@@ -571,10 +569,53 @@ describe("dispatchBootstrapTurnStart", () => {
       cwd: "/repo/project",
       branch: "main",
       baseRefName: "0123456789abcdef0123456789abcdef01234567",
-      newBranch: "t3code/1234abcd",
-      path: "/repo/project/worktrees/t3code/1234abcd",
+      newBranch: "f5/wip/hello",
+      resolveAvailableNewBranch: true,
+      path: "/repo/project/worktrees/f5/wip/hello",
       preparation: { owner: `thread:${THREAD_ID}`, runSetupScript: false, setupIdentity: null },
     });
+  });
+
+  it.each([
+    ["an injected resolver", true, "team/wip/hello-1"],
+    ["a legacy t3code placeholder", false, "f5/wip/hello"],
+  ])("resolves the new worktree branch through %s", async (_label, injected, expected) => {
+    const createWorktree = vi.fn<GitCoreShape["createWorktree"]>((request) =>
+      Effect.succeed({
+        worktree: { branch: request.newBranch!, path: "/repo/project/.worktrees/thread-1" },
+      } satisfies GitCreateWorktreeResult),
+    );
+    const resolveNewWorktreeBranch = vi.fn(
+      (input: { projectCwd: string; requested: string | undefined; sourceText: string }) =>
+        Effect.succeed({ branch: `team/wip/${input.sourceText}-1`, automatic: true }),
+    );
+
+    await Effect.runPromise(
+      dispatchBootstrapTurnStart({
+        ...makeDependencies({ createWorktree }),
+        ...(injected ? { resolveNewWorktreeBranch } : {}),
+        command: makeTurnStartCommand({
+          bootstrap: {
+            prepareWorktree: {
+              projectCwd: "/repo/project",
+              baseBranch: "main",
+              branch: "t3code/1a2b3c4d",
+            },
+          },
+        }),
+      }),
+    );
+
+    // Automatic names take the next free suffix under the repository lock.
+    expect(createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ newBranch: expected, resolveAvailableNewBranch: true }),
+    );
+    if (injected)
+      expect(resolveNewWorktreeBranch).toHaveBeenCalledWith({
+        projectCwd: "/repo/project",
+        requested: "t3code/1a2b3c4d",
+        sourceText: "hello",
+      });
   });
 
   it("runs the setup script after combined create-thread and worktree bootstrap", async () => {

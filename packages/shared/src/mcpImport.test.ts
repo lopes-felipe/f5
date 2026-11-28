@@ -138,6 +138,24 @@ describe("JSONC and other clients' shapes", () => {
     expect(vscode.candidates.map((candidate) => [candidate.name, candidate.server?.type])).toEqual([
       ["docs", "sse"],
     ]);
+    const sandboxed = parseMcpImport(
+      JSON.stringify({
+        servers: {
+          fs: {
+            command: "npx",
+            envFile: "${workspaceFolder}/.env",
+            sandboxEnabled: true,
+            sandbox: { network: { allowedDomains: ["example.com"] } },
+          },
+        },
+      }),
+    );
+    expect(sandboxed.candidates[0]!.server).toMatchObject({ type: "stdio", command: "npx" });
+    expect(sandboxed.candidates[0]!.issues.map((issue) => [issue.field, issue.severity])).toEqual([
+      ["envFile", "warning"],
+      ["sandboxEnabled", "warning"],
+      ["sandbox", "warning"],
+    ]);
     const openCode = parseMcpImport(
       JSON.stringify({
         mcp: {

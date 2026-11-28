@@ -31,7 +31,7 @@ const GitPushStepStatus = Schema.Literals([
   "skipped_not_requested",
   "skipped_up_to_date",
 ]);
-const GitBranchStepStatus = Schema.Literals(["created", "skipped_not_requested"]);
+const GitBranchStepStatus = Schema.Literals(["created", "renamed", "skipped_not_requested"]);
 const GitPrStepStatus = Schema.Literals(["created", "opened_existing", "skipped_not_requested"]);
 const GitPullRequestReference = TrimmedNonEmptyStringSchema;
 const GitPreparePullRequestThreadMode = Schema.Literals(["local", "worktree"]);
@@ -88,7 +88,8 @@ export const GitPrepareWorktreeInput = Schema.Struct({
   retryAcknowledged: Schema.optional(Schema.Boolean),
   cwd: FilesystemPath,
   branch: TrimmedNonEmptyStringSchema,
-  newBranch: TrimmedNonEmptyStringSchema,
+  /** Omitted: the server names a placeholder from `branch` under the project's Branch prefix. */
+  newBranch: Schema.optional(TrimmedNonEmptyStringSchema),
   threadId: ThreadId,
   projectCwd: FilesystemPath,
 });

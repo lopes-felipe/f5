@@ -80,6 +80,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   cwd: Schema.optional(FilesystemPath),
   projectTitle: Schema.optional(TrimmedNonEmptyStringSchema),
   threadTitle: Schema.optional(TrimmedNonEmptyStringSchema),
+  /** The effective Branch prefix, for the branch-naming guidance agents receive. */
+  branchNamePrefix: Schema.optional(Schema.String),
   turnCount: Schema.optional(NonNegativeInt),
   priorWorkSummary: Schema.optional(TrimmedNonEmptyStringSchema),
   preservedTranscriptBefore: Schema.optional(TrimmedNonEmptyStringSchema),
