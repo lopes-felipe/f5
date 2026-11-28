@@ -1,1 +1,1 @@
-- Joining or reconnecting to a terminal transfers at most 512 KiB of recent scrollback.
+- Terminal clients can request a smaller history snapshot. The web terminal restores its full retained scrollback.

@@ -60,6 +60,10 @@ export function makeThreadToolHandler(input: {
         return yield* new ThreadToolError({ message: "This thread is no longer available." });
       if (request.name === "send_to_user") {
         const turn = thread.latestTurn;
+        if (turn?.workflowExecutionProfile || thread.session?.workflowExecutionProfile)
+          return yield* new ThreadToolError({
+            message: "Use the final reply for workflow output.",
+          });
         if (!input.sendMessage || thread.archivedAt || turn?.state !== "running")
           return yield* new ThreadToolError({ message: "There is no active turn to send from." });
         const id = randomUUID();

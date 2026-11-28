@@ -80,7 +80,7 @@ it("keeps html_render loaded in Claude's tool search and leaves html_preview def
   }
 });
 
-it("delivers mid-turn Markdown unchanged to the caller's thread in read-only mode", async () => {
+it("delivers mid-turn Markdown unchanged to the caller's thread", async () => {
   const scope = await Effect.runPromise(Scope.make());
   const broker = await Effect.runPromise(makeThreadMcpBroker);
   const threadId = ThreadId.makeUnsafe("mid-turn-message");
@@ -99,7 +99,6 @@ it("delivers mid-turn Markdown unchanged to the caller's thread in read-only mod
     broker,
     threadId,
     existingServerNames: new Set(),
-    access: "read-only",
   });
   const client = new Client({ name: "mid-turn-message", version: "1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -147,7 +146,6 @@ it("lists only the reading tools on a read-only thread server", async () => {
       "pull_request_read",
       "pull_request_review_guide_read",
       "repository_file_read",
-      "send_to_user",
       "thread_read",
     ]);
     expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);

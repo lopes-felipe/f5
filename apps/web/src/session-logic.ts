@@ -2290,7 +2290,10 @@ export function deriveWorkLogEntries(
       if (toolPayload?.mcpToolName) {
         entry.mcpToolName = toolPayload.mcpToolName;
       }
-      if (toolPayload?.mcpInput) {
+      const inlineMessage =
+        toolPayload?.mcpToolName === "send_to_user" &&
+        /^f5_thread(?:_\d+)?$/.test(toolPayload.mcpServerName ?? "");
+      if (toolPayload?.mcpInput && !inlineMessage) {
         entry.mcpInput = toolPayload.mcpInput;
       }
       if (toolPayload?.mcpResult) {

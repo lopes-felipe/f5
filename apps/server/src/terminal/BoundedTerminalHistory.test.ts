@@ -19,6 +19,11 @@ function reference(text: string, maxLines: number, maxBytes: number): string {
 }
 
 describe("BoundedTerminalHistory", () => {
+  it("starts trimmed history at a complete line when one fits", () => {
+    const history = new BoundedTerminalHistory();
+    history.append("long first line\nsecond\nlast\n");
+    expect(history.snapshot(15)).toEqual({ history: "second\nlast\n" });
+  });
   it("returns a byte-bounded snapshot without trimming retained history", () => {
     const history = new BoundedTerminalHistory();
     history.append("prefix🙂éx");

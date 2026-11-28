@@ -260,7 +260,6 @@ const READ_ONLY_CATALOG = [
   "pull_request_list",
   "ci_logs",
   "repository_file_read",
-  "send_to_user",
   "thread_read",
   "pull_request_review_guide_read",
 ];

@@ -15,7 +15,11 @@ import {
   Trash2,
   XIcon,
 } from "lucide-react";
-import { type TerminalSessionSnapshot, type ThreadId } from "@t3tools/contracts";
+import {
+  TERMINAL_HISTORY_MAX_BYTES,
+  type TerminalSessionSnapshot,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { replayTerminalContinuation } from "@t3tools/shared/terminalReplay";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
@@ -668,7 +672,7 @@ function TerminalViewport({
       historySequenceState = snapshot.historySequenceState ?? 0;
       outputWriter.write(snapshot.history, true);
     };
-    const maxHistoryBytes = 512 * 1024;
+    const maxHistoryBytes = TERMINAL_HISTORY_MAX_BYTES;
     const recovery = new TerminalRecovery(
       terminalSnapshotReader(
         () => api.terminal.snapshot({ threadId, terminalId, maxHistoryBytes }),

@@ -3,13 +3,20 @@ import os from "node:os";
 import path from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ThreadId, type RuntimeMode } from "@t3tools/contracts";
-import { Effect, Fiber, Layer } from "effect";
+import {
+  ThreadId,
+  TurnId,
+  type OrchestrationCommand,
+  type OrchestrationEvent,
+  type RuntimeMode,
+} from "@t3tools/contracts";
+import { Effect, Fiber, Layer, Option } from "effect";
 import { TestClock } from "effect/testing";
 import { makeHtmlRenderRuntime } from "../htmlRender/HtmlRenderRuntime.ts";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 import { callThreadTool, makeThreadMcpBroker, ThreadToolError } from "./threadMcpTools.ts";
 import { makeThreadToolHandler } from "./threadToolRuntime.ts";
+import { decideOrchestrationCommand } from "../orchestration/decider.ts";
 
 const threadId = ThreadId.makeUnsafe("runtime-thread");
 const SECRET = "secret-token-from-a-caught-exception";
@@ -24,6 +31,12 @@ const withCatalog = <A, E>(
     call: (name: string, input: unknown) => Promise<{ text: string; isError?: boolean }>,
   ) => Effect.Effect<A, E>,
   runtimeMode: RuntimeMode = "full-access",
+  turn?: {
+    state: "running" | "completed";
+    archived?: boolean;
+    changed?: boolean;
+    events: Array<Omit<OrchestrationEvent, "sequence">>;
+  },
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -33,7 +46,15 @@ const withCatalog = <A, E>(
       );
       const model = {
         threads: [
-          { id: threadId, projectId: "project", deletedAt: null, archivedAt: null, runtimeMode },
+          {
+            id: threadId,
+            projectId: "project",
+            deletedAt: null,
+            archivedAt: turn?.archived ? "2026-01-01T00:00:00.000Z" : null,
+            runtimeMode,
+            messages: [],
+            latestTurn: turn ? { turnId: TurnId.makeUnsafe("running"), state: turn.state } : null,
+          },
         ],
         projects: [{ id: "project", deletedAt: null, kind: "standard", workspaceRoot: root }],
       };
@@ -47,9 +68,21 @@ const withCatalog = <A, E>(
         preview: { render: () => Effect.die("unused") } as never,
       });
       const broker = yield* makeThreadMcpBroker;
+      let delivered: unknown;
+      const sendMessage = (command: OrchestrationCommand) =>
+        Effect.gen(function* () {
+          if (turn?.changed) model.threads[0]!.latestTurn!.turnId = TurnId.makeUnsafe("next");
+          const result = yield* decideOrchestrationCommand({ command, readModel: model as never });
+          for (const event of Array.isArray(result) ? result : [result]) {
+            turn?.events.push(event);
+            if (event.type === "thread.message-sent") delivered = event.payload;
+          }
+          return { sequence: 1 };
+        });
       yield* broker.register(
         makeThreadToolHandler({
           engine,
+          sendMessage,
           html,
           federation: {
             parseUrl: () => Effect.die(SECRET),
@@ -63,7 +96,9 @@ const withCatalog = <A, E>(
           guides: {} as never,
           links: { getThreadLinks: () => Effect.succeed([]) } as never,
           themes: () => Effect.succeed({ updated: true }),
-          messages: {} as never,
+          messages: {
+            getByMessageId: () => Effect.succeed(Option.fromNullishOr(delivered)),
+          } as never,
           plans: {} as never,
           sql: {} as never,
         }),
@@ -75,6 +110,58 @@ const withCatalog = <A, E>(
       });
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, SqliteClient.layerMemory()))),
   );
+
+it.effect("sends verbatim Markdown as a completed assistant message on the active turn", () => {
+  const events: Array<Omit<OrchestrationEvent, "sequence">> = [];
+  const text = "  The draft\n\n**Markdown**\n";
+  return withCatalog(
+    (call) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() => call("send_to_user", { message: text }));
+        assert.isUndefined(result.isError);
+        assert.lengthOf(events, 1);
+        assert.deepInclude(events[0], { type: "thread.message-sent" });
+        assert.include(events[0]!.payload, {
+          threadId,
+          text,
+          turnId: TurnId.makeUnsafe("running"),
+          role: "assistant",
+          streaming: false,
+        });
+      }),
+    "full-access",
+    { state: "running", events },
+  );
+});
+
+it.effect("rejects missing, completed, archived, and replaced turns", () =>
+  Effect.gen(function* () {
+    for (const scenario of [
+      undefined,
+      { state: "completed" },
+      { state: "running", archived: true },
+      { state: "running", changed: true },
+    ] as const) {
+      const events: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      yield* withCatalog(
+        (call) =>
+          Effect.gen(function* () {
+            const result = yield* Effect.promise(() => call("send_to_user", { message: "draft" }));
+            assert.isTrue(result.isError);
+            assert.include(
+              result.text,
+              scenario && "changed" in scenario
+                ? "The active turn changed before sending."
+                : "There is no active turn to send from.",
+            );
+            assert.isEmpty(events);
+          }),
+        "full-access",
+        scenario ? { ...scenario, events } : undefined,
+      );
+    }
+  }),
+);
 
 it.effect("permits environment theme writes only in full-access mode", () =>
   Effect.gen(function* () {

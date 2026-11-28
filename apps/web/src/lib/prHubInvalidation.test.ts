@@ -36,8 +36,10 @@ it("refreshes cached link-bearing queries when a thread unlinks a PR", () => {
   const queryClient = new QueryClient();
   const list = ["prHub", "list", "account"];
   const linkedThreads = ["prHub", "threadsForPr", "account", key(1)];
+  const unrelated = ["prHub", "threadsForPr", "account", key(2)];
   const checks = ["prHub", "checks", "account", key(1)];
-  for (const queryKey of [list, linkedThreads, checks]) queryClient.setQueryData(queryKey, {});
+  for (const queryKey of [list, linkedThreads, unrelated, checks])
+    queryClient.setQueryData(queryKey, {});
   const threadId = ThreadId.makeUnsafe("linked");
   const now = "2026-04-01T09:00:00.000Z";
   const metadata: OrchestrationEvent = {
@@ -53,7 +55,10 @@ it("refreshes cached link-bearing queries when a thread unlinks a PR", () => {
     metadata: {},
     payload: { threadId, updatedAt: now },
   };
-  invalidatePrHubThreadLinks(queryClient, [metadata]);
+  invalidatePrHubThreadLinks(queryClient, [
+    { ...metadata, payload: { ...metadata.payload, title: "Unlinked thread" } },
+    { ...metadata, type: "thread.deleted", payload: { threadId, deletedAt: now } },
+  ]);
   expect(queryClient.getQueryState(list)?.isInvalidated).toBe(false);
   invalidatePrHubThreadLinks(queryClient, [
     {
@@ -71,6 +76,7 @@ it("refreshes cached link-bearing queries when a thread unlinks a PR", () => {
   ]);
   expect(queryClient.getQueryState(list)?.isInvalidated).toBe(true);
   expect(queryClient.getQueryState(linkedThreads)?.isInvalidated).toBe(true);
+  expect(queryClient.getQueryState(unrelated)?.isInvalidated).toBe(false);
   expect(queryClient.getQueryState(checks)?.isInvalidated).toBe(false);
 });
 

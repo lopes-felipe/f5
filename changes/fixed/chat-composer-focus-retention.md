@@ -1,1 +1,1 @@
-- Keep the chat composer’s focus callbacks from retaining old copies of a thread during long sessions.
+- Keep the composer’s focus callbacks from retaining the chat’s initial render state.

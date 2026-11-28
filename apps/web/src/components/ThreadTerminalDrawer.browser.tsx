@@ -1,6 +1,11 @@
 import "../index.css";
 
-import { ThreadId, type TerminalEvent, type TerminalSessionSnapshot } from "@t3tools/contracts";
+import {
+  TERMINAL_HISTORY_MAX_BYTES,
+  ThreadId,
+  type TerminalEvent,
+  type TerminalSessionSnapshot,
+} from "@t3tools/contracts";
 import { terminalSequenceStateAfter } from "@t3tools/shared/terminalReplay";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -229,7 +234,7 @@ describe("ThreadTerminalDrawer output and selection", () => {
     await vi.waitFor(() =>
       expect(api.terminal.snapshot).toHaveBeenCalledWith(
         expect.objectContaining({
-          maxHistoryBytes: 512 * 1024,
+          maxHistoryBytes: TERMINAL_HISTORY_MAX_BYTES,
         }),
       ),
     );

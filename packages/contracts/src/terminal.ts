@@ -3,6 +3,8 @@ import { Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
 
 export const DEFAULT_TERMINAL_ID = "default";
+/** Maximum retained scrollback. Live output is independent of this budget. */
+export const TERMINAL_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const TerminalColsSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(20)).check(

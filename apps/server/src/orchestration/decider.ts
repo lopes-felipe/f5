@@ -2399,6 +2399,8 @@ const decideCommand = Effect.fn("decideOrchestrationCommand")(function* ({
 
     case "thread.message.assistant.moderate":
     case "thread.message.assistant.reconcile": {
+      // The interactive send_to_user tool also uses reconcile to insert a completed
+      // message only while its captured turn still matches the thread.
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
       const existing = thread.messages.find((message) => message.id === command.messageId);
       if (command.type === "thread.message.assistant.moderate") {

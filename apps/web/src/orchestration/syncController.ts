@@ -411,6 +411,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
   const applyEventToStore = (event: OrchestrationEvent) => {
     // These side effects must remain idempotent because the same event can
     // be observed both live and again during recovery after a transport gap.
+    const threadsBefore = useStore.getState().threads;
     applyDomainEvent(event);
     hydrateUnarchivedThreadPlans(queryClient, [event]);
     switch (event.type) {
@@ -441,10 +442,11 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     }
     void invalidateWorkflowQueries(queryClient, [event]);
     invalidateWorkspaceQueriesForEvents([event]);
-    invalidatePrHubThreadLinks(queryClient, [event]);
+    invalidatePrHubThreadLinks(queryClient, [event], threadsBefore);
   };
 
   const applyBatchToStore = (batch: ReadonlyArray<OrchestrationEvent>) => {
+    const threadsBefore = useStore.getState().threads;
     applyDomainEventBatch(batch);
     hydrateUnarchivedThreadPlans(queryClient, batch);
     // Replicate the side-effects guarded by applyEventToStore, but only run
@@ -490,7 +492,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     if (batch.some(affectsWorktreeInventory))
       void queryClient.invalidateQueries({ queryKey: ["worktrees"] });
     invalidateWorkspaceQueriesForEvents(batch);
-    invalidatePrHubThreadLinks(queryClient, batch);
+    invalidatePrHubThreadLinks(queryClient, batch, threadsBefore);
     if (import.meta.env.DEV && batch.length >= 64) {
       console.info("EventRouter coalesced a large batch", {
         size: batch.length,

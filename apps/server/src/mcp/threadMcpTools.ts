@@ -400,7 +400,6 @@ export const THREAD_TOOL_TIMEOUT_MS = 35_000;
  */
 export type ThreadToolAccess = "full" | "read-only";
 export const READ_ONLY_THREAD_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "send_to_user",
   "thread_read",
   "pull_request_read",
   "pull_request_list",

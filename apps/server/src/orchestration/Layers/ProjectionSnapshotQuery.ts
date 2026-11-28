@@ -432,7 +432,6 @@ export function retainedThreadActivitiesSql(
       tone, kind, summary, payload_json AS "payload", sequence, activities.created_at AS "createdAt"
     FROM projection_pending_approvals pending
     CROSS JOIN projection_thread_activities activities
-      INDEXED BY idx_projection_thread_activities_approval_request
       ON activities.thread_id = pending.thread_id
       AND activities.kind = 'approval.requested'
       AND json_valid(activities.payload_json)
@@ -1435,7 +1434,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: (threadId) => sql`
       SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
         tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
-      FROM projection_thread_activities INDEXED BY idx_projection_thread_activities_approval_request
+      FROM projection_thread_activities
       WHERE thread_id = ${threadId} AND kind = 'approval.requested'
         AND json_valid(payload_json)
         AND json_extract(payload_json, '$.requestId') IN (

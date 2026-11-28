@@ -1860,6 +1860,30 @@ describe("deriveWorkLogEntries", () => {
     expect(deriveWorkLogEntries(activities, TurnId.makeUnsafe("turn-2"))).toEqual([]);
   });
 
+  it("keeps the mid-turn tool receipt compact when its Markdown is in an assistant row", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "send-message",
+          kind: "tool.completed",
+          turnId: "turn-1",
+          payload: {
+            itemType: "mcp_tool_call",
+            status: "completed",
+            mcpServerName: "f5_thread_2",
+            mcpToolName: "send_to_user",
+            mcpInput: '{"message":"The full draft"}',
+            mcpResult: '{"message":"Shown to the user."}',
+          },
+        }),
+      ],
+      TurnId.makeUnsafe("turn-1"),
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.mcpInput).toBeUndefined();
+    expect(entries[0]?.mcpResult).toContain("Shown to the user");
+  });
+
   it("folds an MCP call's completion into its first snapshot", () => {
     const activities = [
       makeActivity({
