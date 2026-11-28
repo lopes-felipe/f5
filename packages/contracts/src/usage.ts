@@ -409,6 +409,8 @@ export const ClaudeAccountUsage = Schema.Struct({
   ),
   /** Absent in snapshots stored before limit resets were read. */
   limitResets: Schema.optional(Schema.NullOr(ClaudeLimitResets)),
+  /** True when Claude answered that it withholds limit resets from F5's client surface. */
+  limitResetsWithheld: Schema.optional(Schema.Boolean),
 });
 export type ClaudeAccountUsage = typeof ClaudeAccountUsage.Type;
 const sectionState = {
@@ -476,6 +478,19 @@ export const AccountUsageSection = Schema.Union([
      * quotas (an expired sign-in). Retained snapshots and history must belong to it.
      */
     accountFingerprint: Schema.optional(TrimmedNonEmptyString),
+    /** Limit reads are off by a provider setting (Antigravity's `/usage` opt-in). */
+    readsDisabled: Schema.optional(Schema.Boolean),
+    /** Why an `unsupported` read did not run, when the reader knows a specific cause. */
+    unsupportedReason: Schema.optional(
+      Schema.Literals(["cli-too-old", "cli-spends-turn", "cli-unrecognized"]),
+    ),
+    /**
+     * A turn on this account recently stopped on an exhausted quota. Observed from the turn
+     * itself, never read from the provider; it expires at `resetsAt`.
+     */
+    quotaExhausted: Schema.optional(
+      Schema.Struct({ observedAt: IsoDateTime, resetsAt: Schema.NullOr(IsoDateTime) }),
+    ),
     snapshot: Schema.NullOr(
       Schema.Struct({
         fetchedAt: IsoDateTime,

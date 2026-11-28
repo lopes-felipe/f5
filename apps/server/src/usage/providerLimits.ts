@@ -236,8 +236,6 @@ export function makeProviderLimits(input: {
   environment: NodeJS.ProcessEnv;
   serverUrl?: string;
   apiEndpoint?: string;
-  /** Gemini API key instances display their billing mode in Usage. */
-  antigravityBilledPerToken?: boolean;
 }): Effect.Effect<AccountUsageCapability, never, Scope> {
   const initial = {
     key: `${input.provider}:${input.instanceId}`,
@@ -249,33 +247,7 @@ export function makeProviderLimits(input: {
     sections: [emptyAccountSection("provider-limits")],
   };
   const identity = providerLimitsIdentity(input);
-  if (input.provider === "antigravity") {
-    // Publish no subscription snapshot, even when history holds one from an older F5 release.
-    return Effect.sync(() => {
-      const fetchedAt = new Date().toISOString();
-      const section: AccountUsageSection = input.antigravityBilledPerToken
-        ? {
-            ...emptyAccountSection("provider-limits"),
-            kind: "provider-limits",
-            outcome: "available",
-            lastAttemptAt: fetchedAt,
-            snapshot: {
-              fetchedAt,
-              data: { windows: [], plan: "Billed per token" },
-            },
-          }
-        : {
-            ...emptyAccountSection("provider-limits"),
-            outcome: "unsupported",
-            errorCode: "unsupported",
-          };
-      return {
-        identity,
-        getSnapshot: Effect.succeed({ ...initial, sections: [section] }),
-        refresh: () => Effect.void,
-      };
-    });
-  }
+  // Antigravity limits come only from `makeAntigravityLimits` (the CLI's own `/usage`, opt-in).
   const read = Effect.tryPromise({
     try: async (signal): Promise<ReadonlyArray<AccountUsageSection>> => {
       const env = input.environment;

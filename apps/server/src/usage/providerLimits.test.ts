@@ -255,12 +255,12 @@ it.each([
     },
     billedPerToken: false,
   },
-  { name: "Gemini API key", environment: {}, billedPerToken: true },
-])("never requests Antigravity quotas with $name", async ({ environment, billedPerToken }) => {
+])("never requests Antigravity quotas with $name", async ({ environment }) => {
+  // Antigravity limits come only from the CLI's own `/usage` (antigravityCliUsage.ts).
   const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   try {
-    const { before, after } = await Effect.runPromise(
+    const after = await Effect.runPromise(
       Effect.gen(function* () {
         const capability = yield* makeProviderLimits({
           provider: "antigravity",
@@ -268,26 +268,15 @@ it.each([
           displayName: "Antigravity",
           enabled: true,
           environment,
-          antigravityBilledPerToken: billedPerToken,
         });
-        const before = yield* capability.getSnapshot;
-        yield* capability.refresh("force", yield* Semaphore.make(1));
-        const after = yield* capability.getSnapshot;
-        return { before, after };
+        const { snapshot } = yield* capability.refreshAccount!(yield* Semaphore.make(1), "force");
+        return snapshot;
       }).pipe(Effect.scoped),
     );
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(after).toEqual(before);
-    if (billedPerToken) {
-      const section = after.sections[0];
-      expect(section?.lastAttemptAt).toEqual(expect.any(String));
-      expect(section?.lastAttemptAt).toBe(section?.snapshot?.fetchedAt);
-    }
-    expect(after.sections).toMatchObject(
-      billedPerToken
-        ? [{ outcome: "available", snapshot: { data: { windows: [], plan: "Billed per token" } } }]
-        : [{ outcome: "unsupported", errorCode: "unsupported", snapshot: null }],
-    );
+    expect(after.sections).toMatchObject([
+      { outcome: "unsupported", errorCode: "unsupported", snapshot: null },
+    ]);
   } finally {
     vi.unstubAllGlobals();
   }

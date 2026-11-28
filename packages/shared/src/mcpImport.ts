@@ -522,6 +522,15 @@ export function parseMcpImport(
         );
       if (raw.bearer_token !== undefined)
         add("bearer_token", "Literal bearer_token is unsupported; use bearerTokenEnvVar.");
+      // VS Code options F5 has no equivalent for; dropping them silently would hide them.
+      if (raw.envFile !== undefined)
+        add("envFile", "VS Code's envFile is not imported; add its variables under Environment.");
+      for (const field of ["sandboxEnabled", "sandbox"])
+        if (raw[field] !== undefined)
+          add(
+            field,
+            "VS Code's sandbox settings are not imported. F5 runs this server without the file and network limits set there.",
+          );
       for (const field of ["auth", "oauth"]) {
         if (
           raw[field] !== undefined &&

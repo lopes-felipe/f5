@@ -352,13 +352,13 @@ describe("GitCore unit", () => {
     ).toBe(1);
   });
 
-  it("lists every configured remote with its fetch URL", async () => {
+  it("lists every remote's fetch URL without embedded HTTP credentials", async () => {
     const scripted = makeScriptedGitService((input) => {
       if (argsEqual(input, ["rev-parse", "--git-common-dir"])) return { stdout: ".git\n" };
       if (argsEqual(input, ["remote", "-v"])) {
         return {
           stdout:
-            "origin\thttps://github.com/octo/repo.git (fetch)\norigin\thttps://github.com/octo/repo.git (push)\nupstream\tgit@gitlab.com:octo/repo.git (fetch)\nupstream\tgit@gitlab.com:octo/repo.git (push)\n",
+            "origin\thttps://user:password@github.com/octo/repo.git?token=fetch-secret (fetch)\norigin\thttps://github.com/octo/repo.git (push)\nupstream\tgit@gitlab.com:octo/repo.git (fetch)\nupstream\tgit@gitlab.com:octo/repo.git (push)\n",
         };
       }
       return {};
@@ -795,7 +795,7 @@ describe("GitCore unit", () => {
     });
   });
 
-  it("reuses a remote whose normalized fetch URL already matches", async () => {
+  it("reuses a clean remote when the requested URL has credentials", async () => {
     const scripted = makeScriptedGitService((input) =>
       argsEqual(input, ["remote", "-v"])
         ? {
@@ -810,7 +810,7 @@ describe("GitCore unit", () => {
       core.ensureRemote({
         cwd: process.cwd(),
         preferredName: "Octo Cat",
-        url: "https://github.com/octocat/f5/",
+        url: "https://user:password@github.com/octocat/f5/?token=fetch-secret",
       }),
     );
 
@@ -818,11 +818,12 @@ describe("GitCore unit", () => {
     expect(scripted.calls.some((call) => call.args[1] === "add")).toBe(false);
   });
 
-  it("sanitizes and suffixes a conflicting preferred remote name", async () => {
+  it.each([
+    ["https://", "https://alice@bitbucket.org/octocat/f5.git"],
+    ["https::https://", "https::https://alice:password@bitbucket.org/octocat/f5.git?token=secret"],
+  ])("adds a clean %s remote rather than reusing a credentialed one", async (prefix, dirtyUrl) => {
     const scripted = makeScriptedGitService((input) =>
-      argsEqual(input, ["remote", "-v"])
-        ? { stdout: "Octo-Cat https://github.com/other/repo (fetch)\n" }
-        : {},
+      argsEqual(input, ["remote", "-v"]) ? { stdout: "Octo-Cat " + dirtyUrl + " (fetch)\n" } : {},
     );
     const core = await makeCore(scripted.service);
 
@@ -830,7 +831,7 @@ describe("GitCore unit", () => {
       core.ensureRemote({
         cwd: process.cwd(),
         preferredName: " Octo Cat ",
-        url: "https://github.com/octocat/f5.git",
+        url: dirtyUrl,
       }),
     );
 
@@ -840,8 +841,21 @@ describe("GitCore unit", () => {
       "add",
       "--",
       "Octo-Cat-1",
-      "https://github.com/octocat/f5.git",
+      prefix + "bitbucket.org/octocat/f5.git",
     ]);
+  });
+
+  it("withholds remote command output on failure", async () => {
+    const scripted = makeScriptedGitService((input) =>
+      argsEqual(input, ["remote", "-v"])
+        ? { code: 1, stderr: "failed to read https://user:secret@github.com/octocat/f5.git" }
+        : {},
+    );
+    const core = await makeCore(scripted.service);
+
+    await expect(Effect.runPromise(core.listRemotes(process.cwd()))).rejects.toThrow(
+      / - Git could not inspect or update the repository remotes\.$/,
+    );
   });
 
   it("uses an argument separator and finds an available suffix when renaming", async () => {

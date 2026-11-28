@@ -350,6 +350,7 @@ describe("makeClaudeLimitResetClient", () => {
         },
     );
     const refreshToken = vi.fn(async () => undefined);
+    const warn = vi.fn((_message: string) => undefined);
     const responses = [...options.responses];
     const fetch = vi.fn(async (_url: string, _init: RequestInit) => {
       const next = responses.shift();
@@ -365,9 +366,69 @@ describe("makeClaudeLimitResetClient", () => {
       fetch,
       now: () => NOW,
       baseUrl: "https://api.test",
+      warn,
     });
-    return { client, readToken, refreshToken, fetch };
+    return { client, readToken, refreshToken, fetch, warn };
   };
+
+  it("logs why Claude withholds resets once per reason, without the body", async () => {
+    const ineligible = (reason: unknown, eligible = false) =>
+      json(200, { cedar_ember: { eligible, ineligible_reason: reason, grants: [] } });
+    const { client, warn } = setup({
+      responses: [
+        ineligible("surface"),
+        ineligible("surface"),
+        // Opaque or token-shaped reasons never reach the log, nor grow the set.
+        ineligible("region_7f3a"),
+        ineligible(`<${SECRET}>`),
+        // Eligible but unavailable reads as null, so it is explained too.
+        ineligible("unavailable", true),
+        json(200, { cedar_ember: { eligible: true, grants: [grant()] } }),
+        json(200, { five_hour: {} }),
+      ],
+    });
+    for (let read = 0; read < 5; read++) expect(await client.fetchStatus()).toBeNull();
+    expect((await client.fetchStatus())?.grants).toHaveLength(1);
+    expect(await client.fetchStatus()).toBeNull();
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "[claude-limit-resets] status ineligible: surface",
+      "[claude-limit-resets] status ineligible: unknown",
+      "[claude-limit-resets] status ineligible: unavailable",
+    ]);
+  });
+
+  it("reports a surface refusal as withheld until a read says otherwise or the account changes", async () => {
+    const surface = () =>
+      json(200, { cedar_ember: { eligible: false, ineligible_reason: "surface", grants: [] } });
+    const { client, warn } = setup({
+      responses: [
+        surface(),
+        new Error("offline"),
+        json(200, { cedar_ember: { eligible: false, ineligible_reason: "unavailable" } }),
+        surface(),
+        surface(),
+      ],
+    });
+    expect(client.withheld()).toBe(false);
+    await client.fetchStatus();
+    expect(client.withheld()).toBe(true);
+    // A failed read keeps the last answer instead of flickering.
+    await client.fetchStatus();
+    expect(client.withheld()).toBe(true);
+    await client.fetchStatus();
+    expect(client.withheld()).toBe(false);
+    await client.fetchStatus();
+    expect(client.withheld()).toBe(true);
+    // Signing out forgets the answer, and the next account's refusal is logged again.
+    client.invalidate();
+    expect(client.withheld()).toBe(false);
+    await client.fetchStatus();
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "[claude-limit-resets] status ineligible: surface",
+      "[claude-limit-resets] status ineligible: unavailable",
+      "[claude-limit-resets] status ineligible: surface",
+    ]);
+  });
 
   it("reads status with the OAuth headers and caches the token", async () => {
     const body = {
