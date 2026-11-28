@@ -54,12 +54,20 @@ export function TightestLimitCallout(props: {
   readonly windows: ReadonlyArray<CalloutWindow>;
   /** Rendered beside the text, e.g. a reset-credit button for an exhausted window. */
   readonly action?: (window: CalloutWindow) => ReactNode;
+  /**
+   * The caller's clock, so the callout and the caller agree on which windows are
+   * live. Without it, the callout ticks on its own every 30s.
+   */
+  readonly now?: number;
 }) {
-  const [now, setNow] = useState(Date.now);
+  const ownClock = props.now === undefined;
+  const [ownNow, setOwnNow] = useState(Date.now);
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    if (!ownClock) return;
+    const timer = setInterval(() => setOwnNow(Date.now()), 30_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [ownClock]);
+  const now = props.now ?? ownNow;
   const window = tightestQuotaWindow(props.windows, now);
   if (!window) return null;
   const used = Math.min(100, Math.max(0, window.usedPercent!));

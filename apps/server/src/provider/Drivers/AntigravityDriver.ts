@@ -4,7 +4,11 @@ import { mcpHubAdapterOption } from "../../mcp/hub/McpHub";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
-import { makeProviderLimits } from "../../usage/providerLimits.ts";
+import {
+  makeAntigravityLimits,
+  type AntigravityQuotaSignal,
+} from "../../usage/antigravityCliUsage.ts";
+import { makeAntigravityUsageRun } from "../antigravityUsageRun.ts";
 import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import * as AcpErrors from "effect-acp/errors";
 import { ProviderDriverError } from "../Errors.ts";
@@ -41,6 +45,7 @@ import {
   antigravityLaunchedVersion,
   makeAntigravityAcpRuntime,
   antigravityProfileDirectory,
+  antigravityProfileKey,
   type AntigravityThinkingLevels,
 } from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
@@ -51,6 +56,7 @@ import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
 import { isProviderSecretUnavailable } from "../../serverSettingsSecrets.ts";
 import {
   ANTIGRAVITY_STALE_AUTH_MESSAGE,
+  antigravityAccountKey,
   antigravityAuthConfig,
   antigravityReadiness,
   isAntigravityAuthCurrent,
@@ -495,6 +501,35 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         );
       });
 
+      // The last quota stop a turn reported, tagged with the account it ran under. In memory
+      // only: it is evidence from a turn, not a quota reading, so it never enters history and
+      // expires at its reset. Another account signed in on this instance never sees it.
+      let quotaSignal: AntigravityQuotaSignal | undefined;
+      const onQuotaExhausted = (resetsAt: string | null) =>
+        Effect.suspend(() => {
+          // Stamped when the turn reports the stop, before the account lookup: a limits reading
+          // that finishes during the lookup is newer than the stop and must still clear it.
+          const observedAt = new Date().toISOString();
+          return Effect.promise(() =>
+            antigravityAccountKey(profileDirectory).catch(() => undefined),
+          ).pipe(
+            Effect.map((account) => {
+              quotaSignal = {
+                observedAt,
+                resetsAt,
+                ...(account !== undefined ? { account } : {}),
+              };
+            }),
+          );
+        });
+      // Turning limit reads off and on again is how a user retries a refused CLI version.
+      if (!config.readLimitsWithCli && before.usageCommandRefused)
+        yield* Effect.promise(() =>
+          updateAntigravityAuthState(profileDirectory, ({ usageCommandRefused: _, ...rest }) => ({
+            ...rest,
+          })).catch(() => undefined),
+        );
+
       const previewMcp = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
       const computerBroker = Option.getOrUndefined(
         yield* Effect.serviceOption(ComputerAutomationBroker),
@@ -516,6 +551,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             accountRevision,
             observeCatalog,
             staleAccount,
+            onQuotaExhausted,
             // The version the session's runtime was spawned from, not whatever is active now.
             nativeReaders: (runtime) => {
               const launched = antigravityLaunchedVersion(runtime);
@@ -544,13 +580,39 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         },
       );
-      const accountUsage = yield* makeProviderLimits({
-        provider: "antigravity",
+      const accountUsage = yield* makeAntigravityLimits({
         instanceId,
         displayName: displayName || "Antigravity",
         enabled,
-        environment: processEnv,
-        ...(auth.authMethod === "gemini-api-key" ? { antigravityBilledPerToken: true } : {}),
+        profileKey: antigravityProfileKey(instanceId),
+        billedPerToken: auth.authMethod === "gemini-api-key",
+        readLimitsWithCli: config.readLimitsWithCli,
+        quotaSignal: () => quotaSignal,
+        currentAccount: () => antigravityAccountKey(profileDirectory),
+        usageRun: makeAntigravityUsageRun({
+          stateDir: server.stateDir,
+          instanceId,
+          profileDirectory,
+          auth,
+          keyUnavailable,
+          environment: processEnv,
+        }),
+        refusal: () =>
+          readAntigravityAuthState(profileDirectory).then((state) => state.usageCommandRefused),
+        refuse: (version, reason) =>
+          updateAntigravityAuthState(profileDirectory, (state) => ({
+            ...state,
+            usageCommandRefused: { version, reason },
+          })).then(() => undefined),
+        verifiedVersion: () =>
+          readAntigravityAuthState(profileDirectory).then(
+            (state) => state.usageCommandVerifiedVersion,
+          ),
+        verify: (version) =>
+          updateAntigravityAuthState(profileDirectory, (state) => ({
+            ...state,
+            usageCommandVerifiedVersion: version,
+          })).then(() => undefined),
       });
       const textGeneration = yield* makeGrokTextGeneration(
         { enabled, binaryPath: "", customModels: config.customModels },

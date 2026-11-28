@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import {
+  type ClaudeAccountUsage,
   type ClaudeLimitResetGrant,
   type CodexAccountRateLimit,
   ProjectId,
@@ -35,6 +36,7 @@ import {
   usageAccountsQueryOptions,
   usageQueryKeys,
 } from "../../lib/usageReactQuery";
+import { toastManager } from "../ui/toast";
 import { ResetCreditButton } from "./ResetCreditButton";
 import { ClaudeGrantButton } from "./ClaudeLimitResets";
 import { UsageDashboard, UsageDashboardView } from "./UsageDashboard";
@@ -44,6 +46,7 @@ const api = vi.hoisted(() => ({
   getAccounts: vi.fn(),
   getQuotaHistory: vi.fn(),
   consumeResetCredit: vi.fn(),
+  openExternal: vi.fn(async (_url: string) => undefined),
 }));
 const connection = vi.hoisted(() => ({
   state: {
@@ -72,6 +75,7 @@ const listeners = vi.hoisted(() => ({
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({
     usage: api,
+    shell: { openExternal: api.openExternal },
     server: { getConfig: async () => ({ keybindings: DEFAULT_RESOLVED_KEYBINDINGS }) },
     orchestration: {
       onDomainEvent: (listener: (event: { type: string; payload?: unknown }) => void) => {
@@ -1229,6 +1233,110 @@ describe("query-connected usage dashboard", () => {
     }
   });
 
+  it("puts a turn's quota stop next to an older reading on the glance", async () => {
+    const fetchedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue([
+      {
+        key: "antigravity:stopped",
+        provider: "antigravity",
+        providerInstanceId: null,
+        displayName: "Antigravity",
+        enabled: true,
+        refreshState: "idle",
+        sections: [
+          {
+            kind: "provider-limits",
+            outcome: "available",
+            errorCode: null,
+            accountFingerprint: "account-a",
+            lastAttemptAt: fetchedAt,
+            quotaExhausted: { observedAt: new Date().toISOString(), resetsAt: null },
+            snapshot: {
+              fetchedAt,
+              data: {
+                accountFingerprint: "account-a",
+                windows: [
+                  {
+                    id: "gemini-5h",
+                    label: "Gemini · 5-hour",
+                    usedPercent: 40,
+                    resetsAt: new Date(Date.now() + 3_600_000).toISOString(),
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      const tile = page
+        .getByRole("region", { name: "Limits at a glance" })
+        .getByTestId("limits-glance-tile")
+        .first();
+      await expect.element(tile).toHaveTextContent(/60%\s*left/);
+      await expect.element(tile).toHaveTextContent("Quota reached during a turn.");
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it("keeps the quota stop on the glance when the retained window has expired", async () => {
+    const fetchedAt = new Date(Date.now() - 6 * 60 * 60_000).toISOString();
+    api.getSummary.mockResolvedValue(summary());
+    api.getAccounts.mockResolvedValue([
+      {
+        key: "antigravity:stopped-expired",
+        provider: "antigravity",
+        providerInstanceId: null,
+        displayName: "Antigravity",
+        enabled: true,
+        refreshState: "idle",
+        sections: [
+          {
+            kind: "provider-limits",
+            outcome: "unavailable",
+            errorCode: "timeout",
+            accountFingerprint: "account-a",
+            lastAttemptAt: new Date().toISOString(),
+            quotaExhausted: { observedAt: new Date().toISOString(), resetsAt: null },
+            snapshot: {
+              fetchedAt,
+              data: {
+                accountFingerprint: "account-a",
+                windows: [
+                  {
+                    id: "gemini-5h",
+                    label: "Gemini · 5-hour",
+                    usedPercent: 40,
+                    resetsAt: new Date(Date.now() - 60_000).toISOString(),
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    const queryClient = client();
+    const screen = await renderDashboard(queryClient);
+    try {
+      const tile = page
+        .getByRole("region", { name: "Limits at a glance" })
+        .getByTestId("limits-glance-tile")
+        .first();
+      await expect.element(tile).toHaveTextContent("Quota reached during a turn.");
+      await expect.element(tile).not.toHaveTextContent(/awaiting updated usage/);
+    } finally {
+      await screen.unmount();
+      queryClient.clear();
+    }
+  });
+
   it("shows an unsupported message for a project filter on an older server", async () => {
     api.getSummary.mockResolvedValue(summary({ projectScope: null }));
     api.getAccounts.mockResolvedValue(accounts());
@@ -2219,6 +2327,153 @@ describe("limits", () => {
       const group = page.getByRole("group", { name: "Limit resets" });
       await expect.element(group.getByRole("button", { name: "Use Full reset (1)" })).toBeEnabled();
     } finally {
+      await screen.unmount();
+    }
+  });
+
+  const withData = (
+    account: UsageAccounts[number],
+    data: Partial<ClaudeAccountUsage>,
+  ): UsageAccounts[number] => {
+    const section = account.sections[0] as Extract<
+      UsageAccounts[number]["sections"][number],
+      { kind: "claude-usage" }
+    >;
+    return {
+      ...account,
+      sections: [
+        {
+          ...section,
+          snapshot: { ...section.snapshot!, data: { ...section.snapshot!.data, ...data } },
+        },
+      ],
+    };
+  };
+  const renderAccountView = (account: UsageAccounts[number]) =>
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <UsageDashboardView
+          summary={summary()}
+          accounts={[account]}
+          range="7d"
+          onRangeChange={() => {}}
+          fetching={false}
+        />
+      </QueryClientProvider>,
+    );
+  /** Claude answered that it withholds resets from F5. */
+  const withheldAccount = (fiveHourUsed: number) =>
+    withData(claudeAccountWithResets(fiveHourUsed), {
+      limitResets: null,
+      limitResetsWithheld: true,
+    });
+
+  it("links a subscription to claude.ai when Claude withholds its limit resets from F5", async () => {
+    const renderView = renderAccountView;
+    const withoutResets = withheldAccount;
+
+    api.openExternal.mockClear();
+    let screen = await renderView(withoutResets(40));
+    try {
+      const group = page.getByRole("group", { name: "Limit resets" });
+      await expect
+        .element(
+          group.getByText(
+            "Claude shows limit resets only in its own apps. Check claude.ai for any you have.",
+          ),
+        )
+        .toBeVisible();
+      await expect
+        .element(page.getByTestId("tightest-limit").getByRole("button"))
+        .not.toBeInTheDocument();
+      await group.getByRole("button", { name: "Open claude.ai" }).click();
+      await expect
+        .poll(() => api.openExternal.mock.calls)
+        .toEqual([["https://claude.ai/settings/usage"]]);
+    } finally {
+      await screen.unmount();
+    }
+
+    // At the limit, the link joins the callout instead of its own row.
+    screen = await renderView(withoutResets(100));
+    try {
+      await expect
+        .element(page.getByTestId("tightest-limit").getByRole("button", { name: "Open claude.ai" }))
+        .toBeVisible();
+      expect(page.getByRole("button", { name: "Open claude.ai" }).all()).toHaveLength(1);
+      await expect
+        .element(page.getByRole("group", { name: "Limit resets" }))
+        .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+
+    // Native grants keep their own buttons, an account without a plan gets nothing,
+    // and a read that failed (no withheld answer) doesn't claim there are resets.
+    for (const account of [
+      claudeAccountWithResets(40),
+      withData(withheldAccount(40), { subscriptionLabel: null }),
+      withData(claudeAccountWithResets(40), { limitResets: null }),
+    ]) {
+      screen = await renderView(account);
+      try {
+        await expect.element(page.getByTestId("tightest-limit")).toBeVisible();
+        expect(page.getByRole("button", { name: "Open claude.ai" }).all()).toHaveLength(0);
+      } finally {
+        await screen.unmount();
+      }
+    }
+  });
+
+  it("explains when claude.ai can't be opened", async () => {
+    const toast = vi.spyOn(toastManager, "add");
+    api.openExternal.mockRejectedValueOnce(new Error("No browser is configured."));
+    const screen = await renderAccountView(withheldAccount(40));
+    try {
+      await page.getByRole("button", { name: "Open claude.ai" }).click();
+      await expect
+        .poll(() => toast.mock.calls.at(-1)?.[0])
+        .toMatchObject({
+          type: "error",
+          title: "Unable to open claude.ai",
+          description: "No browser is configured.",
+        });
+    } finally {
+      toast.mockRestore();
+      await screen.unmount();
+    }
+  });
+
+  it("moves the claude.ai link back to its row when the exhausted window resets on screen", async () => {
+    // Only the interval is faked: Date stays real, so the window's reset passes
+    // in real time and the next tick sees it, with no new snapshot.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const account = withheldAccount(100);
+    const section = account.sections[0] as Extract<
+      UsageAccounts[number]["sections"][number],
+      { kind: "claude-usage" }
+    >;
+    const soon = new Date(Date.now() + 1_500).toISOString();
+    const screen = await renderAccountView(
+      withData(account, {
+        windows: section.snapshot!.data.windows.map((window) =>
+          window.key === "five_hour" ? { ...window, resetsAt: soon } : window,
+        ),
+      }),
+    );
+    try {
+      await expect
+        .element(page.getByTestId("tightest-limit").getByRole("button", { name: "Open claude.ai" }))
+        .toBeVisible();
+      await new Promise((resolve) => setTimeout(resolve, 1_700));
+      vi.advanceTimersByTime(30_000);
+      // The callout drops the reset window, and the link returns to its own row.
+      await expect
+        .element(page.getByRole("group", { name: "Limit resets" }).getByRole("button"))
+        .toBeVisible();
+      expect(page.getByRole("button", { name: "Open claude.ai" }).all()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
       await screen.unmount();
     }
   });

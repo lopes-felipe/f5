@@ -52,6 +52,12 @@ to that provider:
 F5 does not copy these credentials into its own files, logs or backups. **Include local provider
 history** reads OpenCode and Antigravity history from their local stores and sends nothing.
 
+F5 never sends an Antigravity credential anywhere. It only reads the instance's local sign-in file
+to check that a sign-in exists and which account it belongs to (as it does before any Antigravity
+session). With **Read limits with the Antigravity CLI** on (off by default), F5 runs the
+Antigravity CLI's own `/usage` command, and the CLI uses that sign-in for its request to Google.
+F5 never logs that report.
+
 ## Provider CLIs
 
 Agent processes, and the commands they run, start with `DISABLE_ERROR_REPORTING=1`, which opts

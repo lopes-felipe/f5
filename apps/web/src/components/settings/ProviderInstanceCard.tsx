@@ -951,6 +951,38 @@ export function ProviderInstanceCard({
                 />
               </label>
             ) : null}
+            {driverKind === "antigravity" &&
+            !(
+              typeof instance.config === "object" &&
+              instance.config !== null &&
+              "authMethod" in instance.config &&
+              instance.config.authMethod === "gemini-api-key"
+            ) ? (
+              <label className="flex items-center justify-between gap-3 border-t border-border/60 px-4 py-3 sm:px-5">
+                <span className="text-xs">
+                  Read limits with the Antigravity CLI
+                  <span className="block text-muted-foreground">
+                    Runs Antigravity's own /usage command. F5 never calls Google's quota APIs, which
+                    have led to account flags.
+                  </span>
+                </span>
+                <Switch
+                  aria-label="Read limits with the Antigravity CLI"
+                  checked={
+                    typeof instance.config === "object" &&
+                    instance.config !== null &&
+                    "readLimitsWithCli" in instance.config &&
+                    instance.config.readLimitsWithCli === true
+                  }
+                  onCheckedChange={(value) =>
+                    onUpdate({
+                      ...instance,
+                      config: nextConfigBlobWithValue(instance.config, "readLimitsWithCli", value),
+                    })
+                  }
+                />
+              </label>
+            ) : null}
             {driverKind === "claudeAgent" && (
               <div className="space-y-3 border-t px-4 py-3">
                 <label className="flex items-center justify-between gap-2 text-xs">

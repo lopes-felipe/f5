@@ -264,13 +264,21 @@ export const McpReconnectServerRequest = Schema.Struct({
 });
 export type McpReconnectServerRequest = typeof McpReconnectServerRequest.Type;
 
-export const McpListImportCandidatesRequest = Schema.Struct({
+const McpAccountRequestFields = {
   projectId: Schema.optional(ProjectId),
   instanceId: Schema.optional(ProviderInstanceId),
+};
+export const McpListImportCandidatesRequest = Schema.Struct({
+  ...McpAccountRequestFields,
+  /**
+   * In a separate profile, also read the user's own home folder. Its configuration can hold
+   * keys the profile otherwise never sees, so it is read only when the user asks.
+   */
+  includeUserHome: Schema.optional(Schema.Boolean),
 });
 export type McpListImportCandidatesRequest = typeof McpListImportCandidatesRequest.Type;
 export const McpProbeServerRequest = Schema.Struct({
-  ...McpListImportCandidatesRequest.fields,
+  ...McpAccountRequestFields,
   serverName: TrimmedNonEmptyString,
   server: McpServerDefinition,
 });

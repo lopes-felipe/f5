@@ -28,6 +28,12 @@ export const makeAccountUsageCapability = <E>(
      * failures retry after a short hold.
      */
     readonly retryFailedReads?: boolean;
+    /**
+     * Epoch milliseconds before which no refresh may start, forced ones included, or null. A
+     * refused refresh calls no reader, so `refreshAccount` reports it as not fresh with this time
+     * as `nextAllowedAt`. Readers that spawn a process use it to space out real runs.
+     */
+    readonly notBefore?: () => number | null;
   },
 ) =>
   Effect.gen(function* () {
@@ -97,6 +103,8 @@ export const makeAccountUsageCapability = <E>(
         Effect.gen(function* () {
           if (!initial.enabled || mode === "none") return;
           const now = yield* Clock.currentTimeMillis;
+          const notBefore = options.notBefore?.() ?? null;
+          if (notBefore !== null && now < notBefore) return;
           const previous = yield* Ref.get(lastCompleted);
           const jobGeneration = yield* Ref.get(generation);
           // An invalidated read no longer holds ordinary refreshes; the force throttle still applies.
@@ -202,12 +210,18 @@ export const makeAccountUsageCapability = <E>(
         const completed = yield* Ref.get(lastCompleted);
         const joined = pending !== undefined || completed !== previousCompletion;
         const fresh = joined && (yield* Ref.get(lastJobFresh));
+        const now = yield* Clock.currentTimeMillis;
+        const notBefore = options.notBefore?.() ?? null;
+        const allowedAt = joined
+          ? null
+          : Math.max(
+              mode === "force" && completed !== null ? completed.at + 5000 : 0,
+              notBefore !== null && notBefore > now ? notBefore : 0,
+            ) || null;
         return {
           snapshot,
           fresh,
-          ...(mode === "force" && !joined && completed !== null
-            ? { nextAllowedAt: new Date(completed.at + 5000).toISOString() }
-            : {}),
+          ...(allowedAt !== null ? { nextAllowedAt: new Date(allowedAt).toISOString() } : {}),
         };
       });
     return {
