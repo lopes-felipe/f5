@@ -8,7 +8,9 @@ import { startKeepAwake } from "./background/KeepAwake";
 import { bindSubmissionTurnIds } from "./nextTurnQueue/submissionStatus.ts";
 import { cancelQueuedSubmission } from "./nextTurnQueue/cancelSubmission.ts";
 import { makeScheduledNotificationDelivery } from "./scheduledTasks/notificationDelivery.ts";
-import { resolveTemporaryWorktreeBranch } from "./git/temporaryWorktreeBranch.ts";
+import { placeholderBranchFor, resolvePlaceholderBranch } from "./git/placeholderBranch.ts";
+import { readBranchNamePrefix } from "./project/branchNamePrefix.ts";
+import { buildPlaceholderBranchName } from "@t3tools/shared/branchNaming";
 import { parseNaturalLanguageSchedule } from "./scheduledTasks/naturalLanguage.ts";
 import { TURN_SUBMISSION_FAILURES } from "./TurnSubmissionError.ts";
 import { makeTurnSubmissionService } from "./TurnSubmissionService.ts";
@@ -1909,6 +1911,20 @@ export const createServer = Effect.fn(function* (
         dispatch: (command) => dispatchWithCreationAttachment(input.orchestrationEngine, command),
       },
       git: { ...git, createWorktree: createConfiguredWorktree },
+      resolveNewWorktreeBranch: ({ projectCwd, requested, sourceText }) =>
+        Effect.gen(function* () {
+          const model = yield* input.orchestrationEngine.getReadModel();
+          const project =
+            model.projects.find(
+              (entry) => entry.workspaceRoot === projectCwd && entry.deletedAt === null,
+            ) ?? null;
+          const branch = placeholderBranchFor({
+            requested,
+            prefix: yield* readBranchNamePrefix(serverSettings.getSettings, project),
+            sourceText,
+          });
+          return yield* resolvePlaceholderBranch(git, projectCwd, branch);
+        }),
       prepareNestedWorktrees: (worktree) =>
         Effect.gen(function* () {
           const model = yield* input.orchestrationEngine.getReadModel();
@@ -4312,11 +4328,15 @@ export const createServer = Effect.fn(function* (
           return yield* new RouteRequestError({
             message: "Native forks are unavailable for this provider.",
           });
-        const branch = yield* resolveTemporaryWorktreeBranch(
-          git,
-          project.workspaceRoot,
-          `t3code/${input.operationId.slice(0, 8)}`,
-        );
+        // A retried operation must reach the same checkout, so the name carries the
+        // operation's own id instead of taking the next free suffix.
+        const branch = `${buildPlaceholderBranchName({
+          prefix: yield* readBranchNamePrefix(serverSettings.getSettings, project),
+          sourceText: source.title,
+        })}-${input.operationId
+          .replace(/[^a-z0-9]/gi, "")
+          .slice(0, 8)
+          .toLowerCase()}`;
         const cwd = yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch });
         const binding = yield* providerSessionDirectory
           .getBinding(input.threadId)

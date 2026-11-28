@@ -6,9 +6,9 @@ import {
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
-import { buildGeneratedWorktreeBranchName } from "../../git/worktreeBranchNames.ts";
-import { resolveTemporaryWorktreeBranch } from "../../git/temporaryWorktreeBranch.ts";
-import { isTemporaryWorktreeBranch, canonicalWorktreePath } from "../../git/worktreePaths.ts";
+import { placeholderBranchFor, resolvePlaceholderBranch } from "../../git/placeholderBranch.ts";
+import { readBranchNamePrefix } from "../branchNamePrefix.ts";
+import { isPlaceholderBranch, canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import {
   INTERRUPTED_SCRIPT_RERUN,
   SETUP_SCRIPT_INTERRUPTED,
@@ -58,7 +58,10 @@ import {
 import { parseCheckedInProjectFile } from "@t3tools/shared/checkedInProjectFile";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { projectScriptRuntimeEnv, setupProjectScript } from "@t3tools/shared/projectScripts";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
+import {
+  buildFinalBranchName,
+  PLACEHOLDER_BRANCH_RESERVED_MESSAGE,
+} from "@t3tools/shared/branchNaming";
 import {
   Cause,
   Effect,
@@ -592,7 +595,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         !plainGroup &&
         !layoutCreate &&
         !initial.createdWorktree &&
-        isTemporaryWorktreeBranch(request.branch) &&
+        isPlaceholderBranch(request.branch) &&
         queued &&
         (queued.command.message.text.trim() || queued.command.message.attachments.length > 0)
           ? yield* textGeneration
@@ -609,10 +612,11 @@ export const makeWorktreeSetup = Effect.gen(function* () {
               })
               .pipe(
                 Effect.map((result) =>
-                  buildGeneratedWorktreeBranchName(
-                    result.branch,
-                    namingSettings?.sourceControlWriting.branchNamePrefix ?? "f5",
-                  ),
+                  buildFinalBranchName({
+                    prefix: namingSettings?.sourceControlWriting.branchNamePrefix,
+                    type: result.type,
+                    slug: result.branch,
+                  }),
                 ),
                 Effect.orElseSucceed(() => null),
                 Effect.forkIn(scope),
@@ -828,11 +832,13 @@ export const makeWorktreeSetup = Effect.gen(function* () {
                 );
                 creationIntent = "generated";
               }
-              checkoutBranch = yield* resolveTemporaryWorktreeBranch(
-                git,
-                request.projectCwd,
-                checkoutBranch,
-              );
+              // A retry whose worktree already exists keeps the name it created.
+              if (!generatedName && !initial.createdWorktree)
+                checkoutBranch = yield* resolvePlaceholderBranch(
+                  git,
+                  request.projectCwd,
+                  checkoutBranch,
+                );
               worktreePath ??= yield* git.allocateWorktreePath({
                 cwd: request.projectCwd,
                 branch: checkoutBranch,
@@ -1231,7 +1237,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           !layoutCreate &&
           Option.isSome(late) &&
           late.value &&
-          isTemporaryWorktreeBranch(request.branch)
+          isPlaceholderBranch(request.branch)
         ) {
           yield* withWorktreeLifecycleLock(
             worktreePath,
@@ -1521,14 +1527,22 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         };
       }
       const threadId = input.command.threadId;
-      const branch = prepareWorktree.branch ?? buildTemporaryWorktreeBranchName();
       const explicit =
         prepareWorktree.namingIntent === "explicit" ||
-        (prepareWorktree.branch !== undefined && !isTemporaryWorktreeBranch(branch));
-      if (
-        explicit &&
-        (!(yield* git.isValidBranchName(branch)) || isTemporaryWorktreeBranch(branch))
-      )
+        (prepareWorktree.branch !== undefined && !isPlaceholderBranch(prepareWorktree.branch));
+      const branch = explicit
+        ? (prepareWorktree.branch ?? "")
+        : placeholderBranchFor({
+            requested: prepareWorktree.branch,
+            prefix: yield* readBranchNamePrefix(settings.getSettings, registeredProject),
+            sourceText: input.command.message.text,
+          });
+      if (explicit && isPlaceholderBranch(branch))
+        return yield* new WorktreeSetupError({
+          message: PLACEHOLDER_BRANCH_RESERVED_MESSAGE,
+          code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,
+        });
+      if (explicit && !(yield* git.isValidBranchName(branch)))
         return yield* new WorktreeSetupError({
           message: "Invalid branch name",
           code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,

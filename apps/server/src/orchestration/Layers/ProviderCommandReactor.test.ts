@@ -4684,13 +4684,17 @@ describe("ProviderCommandReactor", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const worktreePath = path.join(harness.workspaceRoot, "named-worktree");
     fs.mkdirSync(worktreePath);
-    harness.generateBranchName.mockImplementation(() => Effect.succeed({ branch: "safe-name" }));
+    harness.generateBranchName.mockImplementation(() =>
+      Effect.succeed({ type: "fix" as const, branch: "safe-name" }),
+    );
     const startSession = harness.startSession.getMockImplementation()!;
     harness.startSession.mockImplementation((provider, input) =>
       Effect.gen(function* () {
         expect(harness.renameBranch).toHaveBeenCalledOnce();
         const model = yield* harness.engine.getReadModel();
-        expect(model.threads.find((thread) => thread.id === threadId)?.branch).toBe("f5/safe-name");
+        expect(model.threads.find((thread) => thread.id === threadId)?.branch).toBe(
+          "f5/fix/safe-name",
+        );
         yield* Effect.sleep("50 millis");
         return yield* startSession(provider, input);
       }),
@@ -4723,7 +4727,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
-    expect(harness.ensureWorktree.mock.calls[0]?.[0]).toMatchObject({ branch: "f5/safe-name" });
+    expect(harness.ensureWorktree.mock.calls[0]?.[0]).toMatchObject({ branch: "f5/fix/safe-name" });
   });
 
   it.each(["none", "shallow"] as const)(

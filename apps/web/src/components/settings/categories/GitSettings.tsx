@@ -1,4 +1,5 @@
 import { ThreadSettlementSettings } from "../ThreadSettlementSettings";
+import { BRANCH_PREFIX_HELP } from "../branchPrefixHelp";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_SERVER_SETTINGS,
@@ -370,9 +371,10 @@ function WritingSettings() {
               key={writingPreferences.branchNamePrefix}
               aria-label="Generated branch prefix"
               defaultValue={writingPreferences.branchNamePrefix}
-              placeholder="team or username"
+              placeholder="f5"
               onBlur={(event) => updateWritingPreferences({ branchNamePrefix: event.target.value })}
             />
+            <span className="block">{BRANCH_PREFIX_HELP}</span>
           </label>
         </div>
 

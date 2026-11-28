@@ -1,14 +1,19 @@
 import { isScratchProject } from "@t3tools/shared/scratchProject";
 import { readManagedWorktreesDirectories } from "../../worktreesDirectory.ts";
-import { isTemporaryWorktreeBranch } from "@t3tools/shared/worktree";
-import { resolveTemporaryWorktreeBranch } from "../../git/temporaryWorktreeBranch.ts";
+import {
+  buildFinalBranchName,
+  buildPlaceholderBranchName,
+  isPlaceholderBranch,
+  PLACEHOLDER_BRANCH_RESERVED_MESSAGE,
+} from "@t3tools/shared/branchNaming";
+import { resolvePlaceholderBranch } from "../../git/placeholderBranch.ts";
+import { readBranchNamePrefix } from "../branchNamePrefix.ts";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { readProjectSettings } from "../projectSettings.ts";
 import { sameMoveSnapshot, isMoveCopySnapshot } from "../../git/moveSnapshot.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
-import { buildGeneratedWorktreeBranchName } from "../../git/worktreeBranchNames.ts";
 import { WorkspaceRequiresNewWorktreeError } from "../../git/workspaceSwitch.ts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { lstat } from "node:fs/promises";
@@ -1208,7 +1213,9 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
           );
         let branch = input.branch;
         if (branch) {
-          if (!(yield* git.isValidBranchName(branch)) || isTemporaryWorktreeBranch(branch))
+          if (isPlaceholderBranch(branch))
+            return yield* Effect.fail(new Error(PLACEHOLDER_BRANCH_RESERVED_MESSAGE));
+          if (!(yield* git.isValidBranchName(branch)))
             return yield* Effect.fail(new Error("Invalid branch name."));
           if (yield* git.branchExists(project.workspaceRoot, branch))
             return yield* Effect.fail(new Error(`Branch '${branch}' already exists.`));
@@ -1238,14 +1245,18 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
           branch = Option.isSome(generated)
             ? yield* git.resolveAvailableBranchName(
                 project.workspaceRoot,
-                buildGeneratedWorktreeBranchName(
-                  generated.value.branch,
-                  namingSettings?.sourceControlWriting.branchNamePrefix ?? "f5",
-                ),
+                buildFinalBranchName({
+                  prefix: namingSettings?.sourceControlWriting.branchNamePrefix,
+                  type: generated.value.type,
+                  slug: generated.value.branch,
+                }),
               )
-            : `t3code/${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+            : buildPlaceholderBranchName({
+                prefix: namingSettings?.sourceControlWriting.branchNamePrefix,
+                sourceText: first?.text ?? thread.title,
+              });
         }
-        branch = yield* resolveTemporaryWorktreeBranch(git, project.workspaceRoot, branch);
+        branch = yield* resolvePlaceholderBranch(git, project.workspaceRoot, branch);
         target = {
           path: yield* canonicalWorkspace(
             yield* git.allocateWorktreePath({ cwd: project.workspaceRoot, branch }),
@@ -1303,7 +1314,16 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         const branch =
           thread.branch && recorded === null
             ? thread.branch
-            : `t3code/${crypto.randomUUID().replaceAll("-", "").slice(0, 8)}`;
+            : yield* resolvePlaceholderBranch(
+                git,
+                project.workspaceRoot,
+                buildPlaceholderBranchName({
+                  prefix: Option.isSome(settings)
+                    ? yield* readBranchNamePrefix(settings.value.getSettings, project)
+                    : "",
+                  sourceText: thread.title,
+                }),
+              );
         baseRef = base!;
         const managed = yield* readManagedWorktreesDirectories(config.worktreesDir);
         target = {

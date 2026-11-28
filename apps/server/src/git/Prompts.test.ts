@@ -8,7 +8,7 @@ import {
   buildThreadTitlePrompt,
   buildDeterministicCommitMessage,
   buildDeterministicPrContent,
-  prefixGeneratedBranchName,
+  toBranchNameGenerationResult,
 } from "./Prompts.ts";
 
 const defaults = DEFAULT_SERVER_SETTINGS.sourceControlWriting;
@@ -100,6 +100,13 @@ describe("source-control writing prompts", () => {
     expect(prompt).toContain("Additional instructions: Prefer nouns.");
   });
 
+  it("asks for a branch type from the fixed list and forbids wip", () => {
+    const { prompt } = buildBranchNamePrompt({ message: "Fix the login redirect" });
+    expect(prompt).toContain("keys: type, branch");
+    expect(prompt).toContain("feat, fix, refactor, chore, docs, perf, test");
+    expect(prompt).toContain("Never use wip");
+  });
+
   it("builds deterministic commit and PR content when generation is disabled", () => {
     expect(
       buildDeterministicCommitMessage("src/a.ts\nsrc/b.ts", {
@@ -122,16 +129,16 @@ describe("source-control writing prompts", () => {
     expect(pr.body).toContain("- Not run (generated without AI)");
   });
 
-  it("prefixes only generated branch names", () => {
-    expect(
-      prefixGeneratedBranchName("safe-import", { ...defaults, branchNamePrefix: "team/f5" }),
-    ).toBe("team/f5/safe-import");
-    expect(prefixGeneratedBranchName("safe-import", defaults)).toBe("safe-import");
-    expect(
-      prefixGeneratedBranchName("feature/safe-import", {
-        ...defaults,
-        branchNamePrefix: "team/f5",
-      }),
-    ).toBe("team/f5/safe-import");
+  it("keeps a valid branch type and drops an unknown one", () => {
+    expect(toBranchNameGenerationResult({ type: " Fix ", branch: "Safe Import" })).toEqual({
+      type: "fix",
+      branch: "safe-import",
+    });
+    expect(toBranchNameGenerationResult({ type: "wip", branch: "safe-import" })).toEqual({
+      branch: "safe-import",
+    });
+    expect(toBranchNameGenerationResult({ branch: "safe-import" })).toEqual({
+      branch: "safe-import",
+    });
   });
 });

@@ -1,9 +1,10 @@
 import type { ModelSelection } from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { Effect, type Schema } from "effect";
 import type { TextGenerationError } from "./Errors.ts";
 import {
   buildBranchNamePrompt,
+  toBranchNameGenerationResult,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
@@ -92,7 +93,7 @@ export function makePromptTextGeneration(runJson: StructuredTextRunner): TextGen
       modelSelection: input.modelSelection,
       model: input.model,
     });
-    return { branch: sanitizeBranchFragment(generated.branch) };
+    return toBranchNameGenerationResult(generated);
   });
 
   const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(

@@ -676,6 +676,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
           ...(input.projectTitle !== undefined ? { projectTitle: input.projectTitle } : {}),
           ...(input.threadTitle !== undefined ? { threadTitle: input.threadTitle } : {}),
+          ...(input.branchNamePrefix !== undefined
+            ? { branchNamePrefix: input.branchNamePrefix }
+            : {}),
           ...(input.turnCount !== undefined ? { turnCount: input.turnCount } : {}),
           ...(input.projectMemories !== undefined
             ? { projectMemories: input.projectMemories }

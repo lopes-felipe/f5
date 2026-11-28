@@ -244,9 +244,9 @@
       "types": "./src/searchRanking.ts",
       "import": "./src/searchRanking.ts"
     },
-    "./worktree": {
-      "types": "./src/worktree.ts",
-      "import": "./src/worktree.ts"
+    "./branchNaming": {
+      "types": "./src/branchNaming.ts",
+      "import": "./src/branchNaming.ts"
     },
     "./orchestrationActivityPayload": {
       "types": "./src/orchestrationActivityPayload.ts",

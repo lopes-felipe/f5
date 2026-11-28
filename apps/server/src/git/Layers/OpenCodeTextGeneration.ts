@@ -8,7 +8,7 @@ import {
   type ModelSelection,
   type OpenCodeSettings,
 } from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { createModelSelection, getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { ServerConfig } from "../../config.ts";
@@ -19,6 +19,7 @@ import {
 } from "../../serverSettingsSecrets.ts";
 import {
   buildBranchNamePrompt,
+  toBranchNameGenerationResult,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
@@ -489,9 +490,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       attachments: input.attachments,
     });
 
-    return {
-      branch: sanitizeBranchFragment(generated.branch),
-    };
+    return toBranchNameGenerationResult(generated);
   });
 
   const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(

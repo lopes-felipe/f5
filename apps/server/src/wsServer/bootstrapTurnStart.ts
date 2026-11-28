@@ -4,12 +4,12 @@ import { dispatchVerifiedWorkspace } from "../project/workspaceTransitionContext
 import { isPossiblyStaleWorktreeBase, resolveWorktreeBase } from "../project/worktreeBase.ts";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { CommandId, type OrchestrationCommand } from "@t3tools/contracts";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { Effect, Schema } from "effect";
 
 import { AttachmentIngressError } from "../attachmentIngress.ts";
 import { GitCommandError } from "../git/Errors.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
+import { placeholderBranchFor } from "../git/placeholderBranch.ts";
 import { PersistenceDecodeError, PersistenceSqlError } from "../persistence/Errors.ts";
 import {
   OrchestrationCommandIdConflictError,
@@ -98,6 +98,16 @@ interface BootstrapTurnStartBaseDependencies {
     ownedTerminalId?: string,
   ) => Effect.Effect<void, GitCommandError>;
   readonly worktreesDir?: string | undefined;
+  /**
+   * The branch a new worktree is created on: the requested one, or a placeholder
+   * named from the first message under the project's Branch prefix. Defaults to
+   * an `f5/wip/<slug>` placeholder without checking for collisions.
+   */
+  readonly resolveNewWorktreeBranch?: (input: {
+    readonly projectCwd: string;
+    readonly requested: string | undefined;
+    readonly sourceText: string;
+  }) => Effect.Effect<string, GitCommandError>;
   /**
    * Reports how a failed bootstrap left the thread it was asked to create:
    * `deleted` after a confirmed rollback, `not-created` when creation never
@@ -548,7 +558,17 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
 
       if (shouldPrepareWorktree && bootstrap.prepareWorktree) {
         failureStage = "worktree-create";
-        const newBranch = bootstrap.prepareWorktree.branch ?? buildTemporaryWorktreeBranchName();
+        const newBranch = input.resolveNewWorktreeBranch
+          ? yield* input.resolveNewWorktreeBranch({
+              projectCwd: bootstrap.prepareWorktree.projectCwd,
+              requested: bootstrap.prepareWorktree.branch,
+              sourceText: input.command.message.text,
+            })
+          : placeholderBranchFor({
+              requested: bootstrap.prepareWorktree.branch,
+              prefix: "",
+              sourceText: input.command.message.text,
+            });
         const { baseSha } = yield* observeBootstrapStage(
           "worktree-base-fetch",
           resolveWorktreeBase(input.git, {

@@ -9,7 +9,7 @@ import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { Effect } from "effect";
 import * as NodePath from "node:path";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
-import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../git/worktreePaths.ts";
+import { canonicalWorktreePath, isPlaceholderBranch } from "../git/worktreePaths.ts";
 import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { pathContains } from "./Layers/WorktreeLifecycleCoordinator.ts";
@@ -74,7 +74,7 @@ const recordObservedBranch = (
   branch: string,
 ) =>
   Effect.gen(function* () {
-    if (thread.branch === branch || isTemporaryWorktreeBranch(branch)) return false;
+    if (thread.branch === branch || isPlaceholderBranch(branch)) return false;
     const previousBranch = thread.branch;
     const command = {
       type: "thread.meta.update" as const,
@@ -182,7 +182,7 @@ export const observedCheckoutCandidates = <
  */
 export const syncObservedCheckout = (deps: ObservedBranchDeps, cwd: string, branch: string) =>
   Effect.gen(function* () {
-    if (isTemporaryWorktreeBranch(branch)) return;
+    if (isPlaceholderBranch(branch)) return;
     const model = yield* deps.engine.getReadModel();
     if (!model.threads.some((thread) => thread.deletedAt === null && thread.worktreePath !== null))
       return;

@@ -6,6 +6,7 @@
  *
  * @module TextGeneration
  */
+import type { BranchType } from "@t3tools/shared/branchNaming";
 import { ServiceMap } from "effect";
 import type { Effect, Schema } from "effect";
 import type {
@@ -68,6 +69,8 @@ export interface BranchNameGenerationInput {
 
 export interface BranchNameGenerationResult {
   branch: string;
+  /** The kind of work, when the model named a valid one. */
+  type?: BranchType;
 }
 
 export interface ThreadTitleGenerationInput {

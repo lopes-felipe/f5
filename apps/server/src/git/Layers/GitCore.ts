@@ -8,7 +8,7 @@ import {
   allocationWorktreesDirectory,
   isFilesystemRoot,
 } from "../../worktreesDirectory.ts";
-import { resolveTemporaryWorktreeBranch } from "../temporaryWorktreeBranch.ts";
+import { resolveLegacyPlaceholderBranch } from "../placeholderBranch.ts";
 import { makeRefSnapshotCache } from "../refSnapshotCache.ts";
 import { gitMutatesRefSnapshot } from "../refMutation.ts";
 import { makeMoveSnapshotOperations } from "../moveSnapshot.ts";
@@ -3310,7 +3310,7 @@ const makeGitCore = Effect.gen(function* () {
       if (input.newBranch) {
         input = {
           ...input,
-          newBranch: yield* resolveTemporaryWorktreeBranch(
+          newBranch: yield* resolveLegacyPlaceholderBranch(
             { branchExists },
             input.cwd,
             input.newBranch,

@@ -9,7 +9,7 @@ import { isControlEvent } from "../commandAdmission.ts";
 import { ServerConfig } from "../../config.ts";
 import { withRepositoryLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
-import { buildGeneratedWorktreeBranchName } from "../../git/worktreeBranchNames.ts";
+import { buildFinalBranchName } from "@t3tools/shared/branchNaming";
 import { WorktreePreparation } from "../../project/Services/WorktreePreparation.ts";
 import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { makeOperationGate } from "../../provider/operationGate.ts";
@@ -27,7 +27,7 @@ import { readCodexMcpOAuthCallbackConfig } from "@t3tools/shared/mcpTranslation"
 import { readSubmissionSource } from "../../provider/submissionProvenance.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { readProjectSettings } from "../../project/projectSettings";
-import { isTemporaryWorktreeBranch } from "../../git/worktreePaths.ts";
+import { isPlaceholderBranch } from "../../git/worktreePaths.ts";
 import { ensureWorkspaceDirectory } from "../../provider/workspaceDirectory.ts";
 import {
   PROVIDER_CONTEXT_HANDOFF_ACTIVITY_KIND,
@@ -995,11 +995,16 @@ const make = Effect.gen(function* () {
       projectWorkspaceRoot: project?.workspaceRoot ?? null,
       effectiveCwd: effectiveCwd ?? null,
     });
+    const branchNamePrefix = yield* settingsForThread(thread).pipe(
+      Effect.map((settings) => settings.sourceControlWriting.branchNamePrefix),
+      Effect.orElseSucceed(() => ""),
+    );
     const instructionContext = buildThreadInstructionContext({
       thread,
       project,
       cwd: effectiveCwd,
       workflowExecutionProfile,
+      branchNamePrefix,
     });
     return {
       thread,
@@ -2678,7 +2683,7 @@ const make = Effect.gen(function* () {
     if (!input.branch || !input.worktreePath) {
       return;
     }
-    if (!isTemporaryWorktreeBranch(input.branch)) {
+    if (!isPlaceholderBranch(input.branch)) {
       return;
     }
 
@@ -2718,10 +2723,11 @@ const make = Effect.gen(function* () {
         Effect.flatMap((generated) => {
           if (!generated) return Effect.void;
 
-          const targetBranch = buildGeneratedWorktreeBranchName(
-            generated.branch,
-            writingPreferences.branchNamePrefix,
-          );
+          const targetBranch = buildFinalBranchName({
+            prefix: writingPreferences.branchNamePrefix,
+            type: generated.type,
+            slug: generated.branch,
+          });
           if (targetBranch === oldBranch) return Effect.void;
 
           return Effect.gen(function* () {

@@ -335,6 +335,7 @@ export interface CodexAppServerStartSessionInput {
   readonly cwd?: string;
   readonly projectTitle?: string;
   readonly threadTitle?: string;
+  readonly branchNamePrefix?: string;
   readonly turnCount?: number;
   readonly projectMemories?: ReadonlyArray<ProjectMemory>;
   readonly priorWorkSummary?: string;
@@ -1302,6 +1303,7 @@ export function buildCodexTurnInstructions(input: {
     ...(input.effort !== undefined ? { effort: input.effort } : {}),
     ...(context?.projectTitle ? { projectTitle: context.projectTitle } : {}),
     ...(context?.threadTitle ? { threadTitle: context.threadTitle } : {}),
+    ...(context?.branchNamePrefix ? { branchNamePrefix: context.branchNamePrefix } : {}),
     ...(context?.turnCount !== undefined ? { turnCount: context.turnCount } : {}),
     ...(context?.cwd ? { cwd: context.cwd } : {}),
     ...(context?.workflowExecutionProfile
@@ -1357,6 +1359,7 @@ export function buildCodexInstructionContext(
   return {
     ...(input.projectTitle ? { projectTitle: input.projectTitle } : {}),
     ...(input.threadTitle ? { threadTitle: input.threadTitle } : {}),
+    ...(input.branchNamePrefix ? { branchNamePrefix: input.branchNamePrefix } : {}),
     ...(input.turnCount !== undefined ? { turnCount: input.turnCount } : {}),
     cwd: resolvedCwd,
     runtimeMode: input.runtimeMode,

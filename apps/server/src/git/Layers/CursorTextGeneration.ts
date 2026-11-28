@@ -9,7 +9,7 @@ import {
   type CursorSettings,
   type ModelSelection,
 } from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import { TextGenerationError } from "../Errors.ts";
@@ -19,6 +19,7 @@ import {
 } from "../Services/TextGeneration.ts";
 import {
   buildBranchNamePrompt,
+  toBranchNameGenerationResult,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
@@ -343,9 +344,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
     });
 
-    return {
-      branch: sanitizeBranchFragment(generated.branch),
-    };
+    return toBranchNameGenerationResult(generated);
   });
 
   const generateThreadTitle: TextGenerationShape["generateThreadTitle"] = Effect.fn(

@@ -49,6 +49,7 @@ import { useStore } from "../../store";
 import { PreviewExternalHostsEditor } from "./PreviewExternalHostsEditor";
 import { McpServersSettings } from "./McpServersSettings";
 import { useSettingsRouteContext } from "./SettingsRouteContext";
+import { BRANCH_PREFIX_HELP } from "./branchPrefixHelp";
 import {
   ClaudeSubagentControls,
   RUNTIME_MODE_LABELS,
@@ -884,7 +885,11 @@ export function ProjectGitOverrides() {
           }
         />
         {(["branchNamePrefix", "customInstructions", "prBodyTemplate"] as const).map((key) => (
-          <ProjectSettingRow key={key} title={SOURCE_CONTROL_TEXT_LABELS[key]}>
+          <ProjectSettingRow
+            key={key}
+            title={SOURCE_CONTROL_TEXT_LABELS[key]}
+            {...(key === "branchNamePrefix" ? { description: BRANCH_PREFIX_HELP } : {})}
+          >
             <textarea
               aria-label={SOURCE_CONTROL_TEXT_LABELS[key]}
               className={cn(
@@ -893,6 +898,7 @@ export function ProjectGitOverrides() {
                 key === "branchNamePrefix" ? "min-h-8" : "min-h-20",
               )}
               rows={key === "branchNamePrefix" ? 1 : 3}
+              {...(key === "branchNamePrefix" ? { placeholder: "f5" } : {})}
               key={settings.sourceControlWriting[key]}
               defaultValue={settings.sourceControlWriting[key]}
               onBlur={(e) => {

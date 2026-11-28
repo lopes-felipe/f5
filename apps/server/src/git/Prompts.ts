@@ -13,18 +13,22 @@ import {
   type SourceControlWritingSettings,
 } from "@t3tools/contracts";
 import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
+import { BRANCH_TYPES, isBranchType } from "@t3tools/shared/branchNaming";
+import { sanitizeBranchFragment } from "@t3tools/shared/git";
 
+import type { BranchNameGenerationResult } from "./Services/TextGeneration.ts";
 import { limitSection } from "./Utils.ts";
 
-export function prefixGeneratedBranchName(
-  branch: string,
-  preferences: SourceControlWritingSettings,
-): string {
-  const prefix = preferences.branchNamePrefix
-    .trim()
-    .replace(/^refs\/heads\//, "")
-    .replace(/^\/+|\/+$/g, "");
-  return prefix.length > 0 ? `${prefix}/${branch.replace(/^feature\//, "")}` : branch;
+/** A provider's branch-name answer: a sanitized slug plus the type, when valid. */
+export function toBranchNameGenerationResult(generated: {
+  readonly branch: string;
+  readonly type?: string | undefined;
+}): BranchNameGenerationResult {
+  const type = generated.type?.trim().toLowerCase();
+  return {
+    branch: sanitizeBranchFragment(generated.branch),
+    ...(isBranchType(type) ? { type } : {}),
+  };
 }
 
 export function buildDeterministicCommitMessage(
@@ -264,10 +268,11 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
   const preferences = input.writingPreferences;
   const prompt = buildPromptFromMessage({
     instruction: "You generate concise git branch names.",
-    responseShape: "Return a JSON object with key: branch.",
+    responseShape: "Return a JSON object with keys: type, branch.",
     rules: [
-      "Branch should describe the requested work from the user message.",
-      "Keep it short and specific (2-6 words).",
+      `type is the kind of work, exactly one of: ${BRANCH_TYPES.join(", ")}.`,
+      "branch is a 2-6 word kebab-case slug describing the requested work from the user message.",
+      "Never use wip. No prefix, no type, no slashes in branch: F5 adds those.",
       "Use plain words only, no issue prefixes and no punctuation-heavy text.",
       "If images are attached, use them as primary context for visual/UI issues.",
       ...(preferences?.customInstructions
@@ -278,6 +283,7 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
     attachments: input.attachments,
   });
   const outputSchema = Schema.Struct({
+    type: Schema.optional(Schema.String),
     branch: Schema.String,
   });
 
