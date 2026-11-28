@@ -1,4 +1,5 @@
 import * as NodeOS from "node:os";
+import { access, stat } from "node:fs/promises";
 import type { WindowsPathHydration } from "@t3tools/shared/windowsPath";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +11,9 @@ const readEnvironmentFromLoginShell = vi.fn(
 const ensureWindowsPathHydration = vi.fn(
   async (): Promise<WindowsPathHydration> => ({ path: undefined, registryRead: false }),
 );
-vi.mock("@t3tools/shared/shell", () => ({
+vi.mock("node:fs/promises", { spy: true });
+vi.mock("@t3tools/shared/shell", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@t3tools/shared/shell")>()),
   readEnvironmentFromLoginShellAsync: readEnvironmentFromLoginShell,
 }));
 vi.mock("@t3tools/shared/windowsPath", async (importOriginal) => ({
@@ -37,15 +40,49 @@ describe("fixPath", () => {
     });
     const env: NodeJS.ProcessEnv = { PATH: "/usr/bin", SHELL: "/bin/zsh" };
     await fixPath(env, "darwin");
-    expect(readEnvironmentFromLoginShell).toHaveBeenCalledWith("/bin/zsh", ["PATH", "__MISE_DIFF"]);
+    expect(readEnvironmentFromLoginShell).toHaveBeenCalledWith("/bin/zsh", [
+      "PATH",
+      "__MISE_DIFF",
+      "FNM_MULTISHELL_PATH",
+    ]);
     expect(env.__MISE_DIFF).toBe("mise-diff");
   });
 
+  it("replaces the inherited fnm multishell directory across nested launches", async () => {
+    const inherited = "/tmp/fnm_multishells/launcher";
+    const env: NodeJS.ProcessEnv = {
+      PATH: `${inherited}:${inherited}/bin:${inherited}-other/bin:/usr/bin`,
+      FNM_MULTISHELL_PATH: inherited,
+    };
+    for (const multishell of ["/tmp/fnm_multishells/first", "/tmp/fnm_multishells/second"]) {
+      vi.mocked(stat).mockResolvedValueOnce({ isFile: () => true } as Awaited<
+        ReturnType<typeof stat>
+      >);
+      vi.mocked(access).mockResolvedValueOnce(undefined);
+      readEnvironmentFromLoginShell.mockReturnValueOnce({
+        PATH: `${multishell}/bin:${env.PATH}`,
+        FNM_MULTISHELL_PATH: multishell,
+      });
+      await fixPath(env, "darwin");
+      expect(env.PATH).toBe(`${multishell}/bin:${inherited}-other/bin:/usr/bin`);
+      expect(env.FNM_MULTISHELL_PATH).toBe(multishell);
+    }
+  });
+
   it("keeps the inherited PATH when the login shell returns a blank one", async () => {
-    readEnvironmentFromLoginShell.mockReturnValueOnce({ PATH: "  ", __MISE_DIFF: "mise-diff" });
-    const env: NodeJS.ProcessEnv = { PATH: "/usr/bin", SHELL: "/bin/zsh" };
+    readEnvironmentFromLoginShell.mockReturnValueOnce({
+      PATH: "  ",
+      __MISE_DIFF: "mise-diff",
+      FNM_MULTISHELL_PATH: "/tmp/fnm_multishells/new",
+    });
+    const env: NodeJS.ProcessEnv = {
+      PATH: "/tmp/fnm_multishells/inherited/bin:/usr/bin",
+      SHELL: "/bin/zsh",
+      FNM_MULTISHELL_PATH: "/tmp/fnm_multishells/inherited",
+    };
     await fixPath(env, "darwin");
-    expect(env.PATH).toBe("/usr/bin");
+    expect(env.PATH).toBe("/tmp/fnm_multishells/inherited/bin:/usr/bin");
+    expect(env.FNM_MULTISHELL_PATH).toBe("/tmp/fnm_multishells/inherited");
     expect(env.__MISE_DIFF).toBeUndefined();
   });
 

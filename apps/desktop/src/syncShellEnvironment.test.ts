@@ -1,16 +1,25 @@
+import { access, stat } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 
 import { syncShellEnvironment } from "./syncShellEnvironment";
 
+vi.mock("node:fs/promises", { spy: true });
+
 describe("syncShellEnvironment", () => {
   it("hydrates PATH and missing SSH_AUTH_SOCK from the login shell on macOS", async () => {
+    vi.mocked(stat).mockResolvedValueOnce({ isFile: () => true } as Awaited<
+      ReturnType<typeof stat>
+    >);
+    vi.mocked(access).mockResolvedValueOnce(undefined);
     const env: NodeJS.ProcessEnv = {
       SHELL: "/bin/zsh",
-      PATH: "/usr/bin",
+      PATH: "/tmp/fnm_multishells/inherited/bin:/usr/bin",
+      FNM_MULTISHELL_PATH: "/tmp/fnm_multishells/inherited",
     };
     const readEnvironment = vi.fn(() => ({
-      PATH: "/opt/homebrew/bin:/usr/bin",
+      PATH: "/tmp/fnm_multishells/desktop/bin:/tmp/fnm_multishells/inherited/bin:/opt/homebrew/bin:/usr/bin",
       __MISE_DIFF: "mise-diff",
+      FNM_MULTISHELL_PATH: "/tmp/fnm_multishells/desktop",
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     }));
 
@@ -24,6 +33,7 @@ describe("syncShellEnvironment", () => {
     expect(readEnvironment).toHaveBeenCalledWith("/bin/zsh", [
       "PATH",
       "__MISE_DIFF",
+      "FNM_MULTISHELL_PATH",
       "SSH_AUTH_SOCK",
       "LANG",
       "LC_ALL",
@@ -33,7 +43,8 @@ describe("syncShellEnvironment", () => {
       "NODE_EXTRA_CA_CERTS",
       "DO_NOT_TRACK",
     ]);
-    expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
+    expect(env.PATH).toBe("/tmp/fnm_multishells/desktop/bin:/opt/homebrew/bin:/usr/bin");
+    expect(env.FNM_MULTISHELL_PATH).toBe("/tmp/fnm_multishells/desktop");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/secretive.sock");
   });
 
@@ -95,7 +106,7 @@ describe("syncShellEnvironment", () => {
     expect(env.LC_CTYPE).toBe("en_US.UTF-8");
   });
 
-  it.each([{}, { PATH: "  " }, { SSH_AUTH_SOCK: "/tmp/agent.sock" }])(
+  it.each([{}, { PATH: "  " }, { PATH: ": :" }, { SSH_AUTH_SOCK: "/tmp/agent.sock" }])(
     "leaves macOS preparation incomplete when the login shell returns no PATH (%o)",
     async (shell) => {
       const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" };
