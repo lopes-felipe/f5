@@ -1,8 +1,45 @@
+import "../../index.css";
+
 import { useState } from "react";
 import { expect, it } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { UserInputQuestionStep } from "./UserInputQuestionStep";
+
+it("wraps a long header when expanded and truncates it when collapsed", async () => {
+  const header = "LongQuestionHeader".repeat(6);
+  const screen = await render(
+    <div className="w-60">
+      <UserInputQuestionStep
+        question={{ id: "long-header", header, question: "Choose", options: [], multiSelect: true }}
+        questionIndex={0}
+        questionCount={1}
+        selectedOptionLabels={[]}
+        disabled={false}
+        customMode="composer"
+        shortcutScope="document"
+        onSelectOption={() => {}}
+        onToggleOption={() => {}}
+        onAdvance={() => {}}
+      />
+    </div>,
+  );
+  try {
+    const toggle = page.getByRole("button", { name: new RegExp(header) });
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    const label = page.getByText(header, { exact: true }).element() as HTMLElement;
+    const expandedHeight = label.offsetHeight;
+    expect(label.scrollWidth).toBe(label.clientWidth);
+
+    await toggle.click();
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(label.offsetHeight).toBeLessThan(expandedHeight);
+    expect(label.scrollWidth).toBeGreaterThan(label.clientWidth);
+    expect(getComputedStyle(label).textOverflow).toBe("ellipsis");
+  } finally {
+    await screen.unmount();
+  }
+});
 
 it("hides custom answers for provider option-only questions", async () => {
   const screen = await render(
