@@ -1,0 +1,1 @@
+- Long question headers wrap in expanded cards so you can read them in full.
