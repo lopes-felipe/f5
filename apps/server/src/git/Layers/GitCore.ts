@@ -410,6 +410,15 @@ const makeGitCore = Effect.gen(function* () {
           if (options.allowNonZeroExit || result.code === 0) {
             return Effect.succeed(result);
           }
+          if (args[0] === "remote") {
+            // Keep the config-lock retry without reporting potentially credentialed Git output.
+            const detail = isGitConfigLockedError({ detail: result.stderr })
+              ? "could not lock config file (repository config): File exists"
+              : "Git could not inspect or update the repository remotes.";
+            return Effect.fail(
+              createGitCommandError(operation, cwd, args.map(stripRemoteUrlCredentials), detail),
+            );
+          }
           if (["fetch", "push", "pull", "ls-remote"].includes(args[0] ?? "")) {
             return Effect.fail(
               createGitCommandError(
@@ -1139,10 +1148,12 @@ const makeGitCore = Effect.gen(function* () {
       const listRemoteFetchUrls = runGitStdout("GitCore.ensureRemote.listRemoteUrls", input.cwd, [
         "remote",
         "-v",
-      ]).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout)));
+      ]).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout, { includeCredentials: true })));
       const findMatchingRemote = (remoteFetchUrls: Map<string, string>) =>
         [...remoteFetchUrls].find(
-          ([, remoteUrl]) => normalizeRemoteUrl(remoteUrl) === normalizedTargetUrl,
+          ([, remoteUrl]) =>
+            stripRemoteUrlCredentials(remoteUrl) === remoteUrl &&
+            normalizeRemoteUrl(remoteUrl) === normalizedTargetUrl,
         )?.[0];
 
       const remoteFetchUrls = yield* listRemoteFetchUrls;

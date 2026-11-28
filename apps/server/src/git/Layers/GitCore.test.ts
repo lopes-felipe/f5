@@ -795,12 +795,12 @@ describe("GitCore unit", () => {
     });
   });
 
-  it("reuses a remote when its fetch URL differs only by credentials or suffix", async () => {
+  it("reuses a clean remote when the requested URL has credentials", async () => {
     const scripted = makeScriptedGitService((input) =>
       argsEqual(input, ["remote", "-v"])
         ? {
             stdout:
-              "fork-alias https://user:password@github.com/octocat/f5.git?token=fetch-secret (fetch)\nfork-alias git@github.com:octocat/f5.git (push)\n",
+              "fork-alias https://github.com/octocat/f5.git (fetch)\nfork-alias git@github.com:octocat/f5.git (push)\n",
           }
         : {},
     );
@@ -810,7 +810,7 @@ describe("GitCore unit", () => {
       core.ensureRemote({
         cwd: process.cwd(),
         preferredName: "Octo Cat",
-        url: "https://github.com/octocat/f5/",
+        url: "https://user:password@github.com/octocat/f5/?token=fetch-secret",
       }),
     );
 
@@ -818,11 +818,12 @@ describe("GitCore unit", () => {
     expect(scripted.calls.some((call) => call.args[1] === "add")).toBe(false);
   });
 
-  it("stores a credential-free URL under a sanitized, unique remote name", async () => {
+  it.each([
+    ["https://", "https://alice@bitbucket.org/octocat/f5.git"],
+    ["https::https://", "https::https://alice:password@bitbucket.org/octocat/f5.git?token=secret"],
+  ])("adds a clean %s remote rather than reusing a credentialed one", async (prefix, dirtyUrl) => {
     const scripted = makeScriptedGitService((input) =>
-      argsEqual(input, ["remote", "-v"])
-        ? { stdout: "Octo-Cat https://github.com/other/repo (fetch)\n" }
-        : {},
+      argsEqual(input, ["remote", "-v"]) ? { stdout: "Octo-Cat " + dirtyUrl + " (fetch)\n" } : {},
     );
     const core = await makeCore(scripted.service);
 
@@ -830,7 +831,7 @@ describe("GitCore unit", () => {
       core.ensureRemote({
         cwd: process.cwd(),
         preferredName: " Octo Cat ",
-        url: "https://user:password@github.com/octocat/f5.git?token=fetch-secret",
+        url: dirtyUrl,
       }),
     );
 
@@ -840,8 +841,21 @@ describe("GitCore unit", () => {
       "add",
       "--",
       "Octo-Cat-1",
-      "https://github.com/octocat/f5.git",
+      prefix + "bitbucket.org/octocat/f5.git",
     ]);
+  });
+
+  it("withholds remote command output on failure", async () => {
+    const scripted = makeScriptedGitService((input) =>
+      argsEqual(input, ["remote", "-v"])
+        ? { code: 1, stderr: "failed to read https://user:secret@github.com/octocat/f5.git" }
+        : {},
+    );
+    const core = await makeCore(scripted.service);
+
+    await expect(Effect.runPromise(core.listRemotes(process.cwd()))).rejects.toThrow(
+      / - Git could not inspect or update the repository remotes\.$/,
+    );
   });
 
   it("uses an argument separator and finds an available suffix when renaming", async () => {
