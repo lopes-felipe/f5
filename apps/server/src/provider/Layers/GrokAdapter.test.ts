@@ -736,6 +736,7 @@ const antigravityProfileAdapter = (input: {
   readonly accountRevision?: number;
   readonly credentials?: ReadonlyArray<string>;
   readonly staleAccount?: () => string | undefined;
+  readonly onQuotaExhausted?: (resetsAt: string | null) => void;
   readonly options?: (dir: string) => Partial<GrokAdapterLiveOptions>;
 }) =>
   Effect.gen(function* () {
@@ -761,6 +762,12 @@ const antigravityProfileAdapter = (input: {
           accountRevision: Effect.succeed(input.accountRevision ?? 0),
           ...(input.credentials ? { credentials: input.credentials } : {}),
           ...(input.staleAccount ? { staleAccount: Effect.sync(input.staleAccount) } : {}),
+          ...(input.onQuotaExhausted
+            ? {
+                onQuotaExhausted: (resetsAt: string | null) =>
+                  Effect.sync(() => input.onQuotaExhausted!(resetsAt)),
+              }
+            : {}),
           nativeReaders: () => Effect.succeed(false),
         },
         ...input.options?.(dir),
@@ -1772,7 +1779,11 @@ rootIt.layer(
         "\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h8m59s.\n";
       const runTurn = (env: Record<string, string>, name: string) =>
         Effect.gen(function* () {
-          const { adapter, events } = yield* antigravityProfileAdapter({ env });
+          const quotaStops: Array<string | null> = [];
+          const { adapter, events } = yield* antigravityProfileAdapter({
+            env,
+            onQuotaExhausted: (resetsAt) => quotaStops.push(resetsAt),
+          });
           const threadId = ThreadId.make(name);
           yield* adapter.startSession({
             threadId,
@@ -1785,6 +1796,7 @@ rootIt.layer(
           return {
             errors: events.filter((event) => event.type === "runtime.error"),
             completed: events.filter((event) => event.type === "turn.completed"),
+            quotaStops,
           };
         });
 
@@ -1808,6 +1820,8 @@ rootIt.layer(
       assert.equal(completedPayload?.state, "failed");
       // The failed turn's terminal sets the session's limit, so it must carry the same one.
       assert.deepEqual(completedPayload?.usageLimit, payload.usageLimit);
+      // Usage learns of the stop and its reset from the turn itself.
+      assert.deepEqual(limited.quotaStops, [payload.usageLimit?.resetsAt ?? null]);
 
       // A notice split across chunks, after the model's own text, still reads whole.
       const split = yield* runTurn(
@@ -1826,6 +1840,7 @@ rootIt.layer(
           `agy-quota-notice-then-${trailing}`,
         );
         assert.equal(continued.errors.length, 0, trailing);
+        assert.deepEqual(continued.quotaStops, [], trailing);
         assert.equal(
           (continued.completed.at(-1)?.payload as { state?: string } | undefined)?.state,
           "completed",

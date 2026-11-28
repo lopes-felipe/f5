@@ -434,6 +434,38 @@ function SectionMeta(props: { readonly section: AccountUsageSection }) {
   );
 }
 
+/**
+ * Why Antigravity shows no subscription limits. F5 never calls Google's quota APIs; limits come
+ * only from the CLI's own `/usage`, when the instance opts in. Null for other providers.
+ */
+export function antigravityLimitsNotice(
+  account: UsageAccount,
+  section: AccountUsageSection,
+): string | null {
+  if (
+    account.provider !== "antigravity" ||
+    section.kind !== "provider-limits" ||
+    section.outcome !== "unsupported"
+  )
+    return null;
+  if (section.readsDisabled)
+    return 'Limits are off. Turn on "Read limits with the Antigravity CLI" in Settings → Providers.';
+  if (section.unsupportedReason === "cli-spends-turn")
+    return "This Antigravity version can't report limits without using a turn, so F5 stopped asking. Turn limit reads off and on to try again.";
+  if (section.unsupportedReason === "cli-unrecognized")
+    return "This Antigravity version's /usage answer wasn't recognised, so F5 stopped asking in case it used a turn. Turn limit reads off and on to try again.";
+  if (section.unsupportedReason === "cli-too-old")
+    return "Update Antigravity in Settings to read limits.";
+  return "Antigravity didn't report subscription limits for this sign-in.";
+}
+
+/** The quota stop a recent turn reported, as text, or null. */
+export function quotaExhaustedText(section: AccountUsageSection): string | null {
+  if (section.kind !== "provider-limits" || !section.quotaExhausted) return null;
+  const { resetsAt } = section.quotaExhausted;
+  return `Quota reached during a turn${resetsAt ? ` · resets ${formatAbsoluteTimeLabel(resetsAt)}` : ""}.`;
+}
+
 /** Why the latest attempt failed, as an inline notice. */
 function SectionError(props: {
   readonly account: UsageAccount;
@@ -446,7 +478,8 @@ function SectionError(props: {
     <Alert variant={section.outcome === "unsupported" ? "default" : "warning"} role="status">
       <AlertDescription className="text-xs">
         {section.outcome === "unsupported"
-          ? `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`
+          ? (antigravityLimitsNotice(account, section) ??
+            `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`)
           : accountErrorMessage(account.provider, section.errorCode ?? "temporary-failure")}
         {section.snapshot
           ? ` Showing data from ${formatAbsoluteTimeLabel(section.snapshot.fetchedAt)}.`
@@ -513,8 +546,10 @@ export function accountStatusText(account: UsageAccount): string | null {
   if (!account.enabled)
     return `${providerLabel(account.provider)} is disabled in provider settings.`;
   for (const section of account.sections) {
-    if (section.outcome === "unsupported" && account.provider === "antigravity")
-      return "Subscription quota is unavailable for Antigravity.";
+    const exhausted = quotaExhaustedText(section);
+    if (exhausted) return exhausted;
+    const antigravity = antigravityLimitsNotice(account, section);
+    if (antigravity) return antigravity;
     if (section.outcome === "unsupported")
       return `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`;
     if (section.errorCode) return accountErrorMessage(account.provider, section.errorCode);
@@ -556,6 +591,11 @@ function AccountSectionBody(props: {
   return (
     <>
       <SectionError account={account} section={section} />
+      {quotaExhaustedText(section) ? (
+        <Alert variant="warning" role="status">
+          <AlertDescription className="text-xs">{quotaExhaustedText(section)}</AlertDescription>
+        </Alert>
+      ) : null}
       {section.kind === "provider-limits" && section.snapshot && (
         <QuotaWindowRows
           account={account}
