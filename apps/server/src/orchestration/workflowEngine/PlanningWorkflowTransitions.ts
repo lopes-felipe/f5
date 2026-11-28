@@ -588,6 +588,33 @@ export function markBranchRevised(
       ...branch,
       status: "revised",
       revisionTurnId: input.turnId ?? branch.revisionTurnId,
+      condenseTargetChars: null,
+      error: null,
+      errorStage: null,
+      updatedAt: input.updatedAt,
+    })),
+    updatedAt: input.updatedAt,
+  };
+}
+
+/**
+ * Sends a revised branch back to `revising` for a condense turn: its plan is over its share of
+ * the merge. `allowanceChars` is what the merge has room for from this branch; the attempt is
+ * counted when the intent is saved, so a restart resumes the same attempt.
+ */
+export function markBranchCondensing(
+  workflow: PlanningWorkflow,
+  branchId: WorkflowBranchId,
+  input: { readonly allowanceChars: number; readonly updatedAt: string },
+): PlanningWorkflow {
+  return {
+    ...updatePlanningBranch(workflow, branchId, (branch) => ({
+      ...branch,
+      status: "revising",
+      condenseTargetChars: input.allowanceChars,
+      condenseAttempts: (branch.condenseAttempts ?? 0) + 1,
+      revisionFormatRepairAttempts: 0,
+      rejectedDocumentTurnId: null,
       error: null,
       errorStage: null,
       updatedAt: input.updatedAt,
@@ -1066,12 +1093,14 @@ export function reviewedPlanTurnIdForBranch(
   return null;
 }
 
-export function planOverBudgetMessage(
+/** Why a branch still over its merge allowance after every condense attempt is failed. */
+export function planCondenseExhaustedMessage(
   workflow: PlanningWorkflow,
   renderedChars: number,
-  maxPlanChars: number,
+  allowanceChars: number,
+  attempts: number,
 ): string {
-  return `The ${planningWorkflowDocumentType(workflow) ? "document" : "plan"} takes ${renderedChars.toLocaleString("en-US")} characters in the merge; this run allows at most ${maxPlanChars.toLocaleString("en-US")} characters per author so every plan fits. Submit a shorter complete version.`;
+  return `The ${planningWorkflowDocumentType(workflow) ? "document" : "plan"} takes ${renderedChars.toLocaleString("en-US")} characters in the merge; after ${attempts} condense attempt${attempts === 1 ? "" : "s"} it still exceeds its ${allowanceChars.toLocaleString("en-US")}-character share. Retry to condense again.`;
 }
 
 export function validateCapturedPlanForTurn(input: {
@@ -1082,30 +1111,8 @@ export function validateCapturedPlanForTurn(input: {
     "latestTurn" | "messages" | "session" | "proposedPlans"
   >;
   readonly turnId: TurnId;
-  /**
-   * Author and revision captures on runs with more than two authors must stay under the
-   * per-plan budget (`workflowPlanCharBudget`); merge captures pass nothing.
-   */
-  readonly maxPlanChars?: number | null | undefined;
-  /** The author whose plan is measured against `maxPlanChars` as the merge renders it. */
-  readonly branchId?: WorkflowBranchId | undefined;
-}):
-  | { readonly valid: true }
-  | { readonly valid: false; readonly error: string; readonly overBudget?: true } {
+}): { readonly valid: true } | { readonly valid: false; readonly error: string } {
   const plan = input.thread.proposedPlans.find((candidate) => candidate.turnId === input.turnId);
-  const renderedChars =
-    input.maxPlanChars != null && plan
-      ? input.branchId
-        ? workflowPlanMergeChars(input.workflow, input.branchId, plan.planMarkdown, input.turnId)
-        : plan.planMarkdown.length
-      : null;
-  if (input.maxPlanChars != null && renderedChars !== null && renderedChars > input.maxPlanChars) {
-    return {
-      valid: false,
-      overBudget: true,
-      error: planOverBudgetMessage(input.workflow, renderedChars, input.maxPlanChars),
-    };
-  }
   const behavior = resolveWorkflowBehavior({
     runKind: "planning",
     templateId: input.workflow.templateId,
@@ -1314,30 +1321,88 @@ export function excerptRevisionReviews<
   };
 }
 
+/** Share of the even merge share that authors are asked to aim for, and condense targets. */
+const WORKFLOW_PLAN_TARGET_SHARE = 0.85;
+
 /**
- * Per-plan length limit on runs with more than two authors, so every revised plan fits in the
- * merge prompt: the rendered limit minus the merge prompt with empty plans and a 1,000-character
- * margin, shared evenly. Two-author runs have no limit (`null`).
+ * Room every plan shares in the merge prompt: the rendered limit minus the merge prompt with
+ * empty plans (and no turn ids) and a 1,000-character margin.
  */
-export function workflowPlanCharBudget(workflow: PlanningWorkflow): number | null {
+export function workflowPlanMergeRoom(workflow: PlanningWorkflow): number {
   const count = planningBranches(workflow).length;
-  if (!workflowUsesMesh(count)) return null;
   const emptyMergePrompt = buildWorkflowMergePrompt(
     workflow,
     Array.from({ length: count }, () => ""),
     undefined,
     { includeTurnIds: false },
   );
-  return Math.floor(
-    (WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT - emptyMergePrompt.length - 1_000) / count,
+  return WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT - emptyMergePrompt.length - 1_000;
+}
+
+/** The merge room split evenly among the authors; the run-creation guard checks it. */
+export function workflowPlanEvenShare(workflow: PlanningWorkflow): number {
+  return Math.floor(workflowPlanMergeRoom(workflow) / planningBranches(workflow).length);
+}
+
+/**
+ * The length authors are asked to aim for: 85% of the even share. Guidance only; plans are
+ * measured together before the merge and only the ones over their allowance are condensed.
+ */
+export function workflowPlanSoftTarget(workflow: PlanningWorkflow): number {
+  return Math.max(0, Math.floor(workflowPlanEvenShare(workflow) * WORKFLOW_PLAN_TARGET_SHARE));
+}
+
+/** The length a condense turn asks for: 85% of the allowance, which acceptance is measured by. */
+export function workflowCondenseTargetChars(allowanceChars: number): number {
+  return Math.max(0, Math.floor(allowanceChars * WORKFLOW_PLAN_TARGET_SHARE));
+}
+
+export interface WorkflowPlanMergeFitEntry {
+  readonly branchId: WorkflowBranchId;
+  readonly renderedChars: number;
+  readonly allowanceChars: number;
+}
+
+/**
+ * Measures every revised plan as the merge renders it, and shares the merge room among them
+ * water-fill style: plans that fit their share keep their full length, and what they leave is
+ * split evenly among the longer ones. `plans` are the branches' plans in author order, each with
+ * the turn it was captured in.
+ */
+export function workflowPlanMergeFit(
+  workflow: PlanningWorkflow,
+  plans: ReadonlyArray<{ readonly planMarkdown: string; readonly turnId: string | null }>,
+): { readonly fits: boolean; readonly perBranch: ReadonlyArray<WorkflowPlanMergeFitEntry> } {
+  const branches = planningBranches(workflow);
+  const lengths = branches.map((branch, index) =>
+    workflowPlanMergeChars(
+      workflow,
+      branch.branchId,
+      plans[index]?.planMarkdown ?? "",
+      plans[index]?.turnId ?? null,
+    ),
   );
+  const { allowances } = allocateArtifactCharBudget(
+    lengths,
+    workflowPlanMergeRoom(workflow),
+    Number.POSITIVE_INFINITY,
+  );
+  const perBranch = branches.map((branch, index) => ({
+    branchId: branch.branchId,
+    renderedChars: lengths[index]!,
+    allowanceChars: allowances[index]!,
+  }));
+  return {
+    fits: perBranch.every((entry) => entry.renderedChars <= entry.allowanceChars),
+    perBranch,
+  };
 }
 
 /**
  * The characters a plan adds to the merge prompt as the merge renders it. Document drafts are
  * normalized, their envelope terminators escaped and their source turn named, so the raw length
  * can understate it. The baseline is the merge prompt with every plan empty and no turn ids, the
- * same one `workflowPlanCharBudget` subtracts, so plans that each fit their share fit together.
+ * same one `workflowPlanMergeRoom` subtracts, so plans that each fit their allowance fit together.
  */
 export function workflowPlanMergeChars(
   workflow: PlanningWorkflow,
@@ -1361,19 +1426,6 @@ export function workflowPlanMergeChars(
     { includeTurnIds: false },
   ).length;
   return withPlan - withoutPlan;
-}
-
-export interface ReplacementPlanCandidate {
-  readonly planMarkdown: string;
-  readonly turnId: TurnId | null;
-}
-
-/** Accepts a replacement plan only when it fits the per-plan budget as the merge renders it. */
-export function planReplacementFilter(workflow: PlanningWorkflow, branchId: WorkflowBranchId) {
-  const budget = workflowPlanCharBudget(workflow);
-  return (plan: ReplacementPlanCandidate) =>
-    budget === null ||
-    workflowPlanMergeChars(workflow, branchId, plan.planMarkdown, plan.turnId) <= budget;
 }
 
 /** Stable plan-review thread id; mesh runs add the reviewer so every edge gets its own thread. */

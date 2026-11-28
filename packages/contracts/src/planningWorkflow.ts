@@ -160,6 +160,12 @@ export const WorkflowBranch = Schema.Struct({
   revisionFormatRepairAttempts: Schema.optional(Schema.Number).pipe(
     Schema.withDecodingDefault(() => 0),
   ),
+  /** Condense turns sent since the revision was captured, because its plan overflowed the merge. */
+  condenseAttempts: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  /** The branch's share of the merge, in characters, while a condense turn is in flight. */
+  condenseTargetChars: Schema.optional(Schema.NullOr(Schema.Number)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,
 });

@@ -4,6 +4,7 @@ import { planningBranches, workflowUsesMesh } from "@t3tools/shared/workflowPart
 import {
   type WorkflowRetryContext,
   workflowInterruptedRetrySection,
+  workflowRetryContextSection,
 } from "./workflowPromptFragments.ts";
 import { joinPromptSections, providerGuidanceSection, slotLabel } from "./workflowSharedUtils.ts";
 
@@ -28,14 +29,17 @@ export interface MergePlanInput {
   readonly model: WorkflowModelSlot;
 }
 
-/** Output limit for runs with more than two authors, so every plan fits in the merge prompt. */
+/**
+ * Length guidance for authors, so every plan fits in the merge prompt. A soft target: plans are
+ * measured together before the merge, and only the ones over their share are condensed.
+ */
 export function planLengthLimitSection(
-  maxPlanChars: number | null | undefined,
+  targetPlanChars: number | null | undefined,
   artifact: "plan" | "document" = "plan",
 ): string | null {
-  if (maxPlanChars == null) return null;
-  return `## Length Limit
-Keep the complete ${artifact} under ${maxPlanChars} characters. Longer ${artifact}s are rejected, so every author's ${artifact} fits into the merge.`;
+  if (targetPlanChars == null) return null;
+  return `## Length Target
+Aim to keep the complete ${artifact} under ${targetPlanChars} characters (about ${Math.floor(targetPlanChars / 6)} words) so every author's ${artifact} fits in the merge. Longer ${artifact}s are condensed before the merge.`;
 }
 
 const PLAN_SUBMISSION_REQUIREMENT =
@@ -46,8 +50,8 @@ export function buildAuthorPromptSections(input: {
   readonly branch: WorkflowBranch;
   readonly authorSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
-  /** Per-plan output limit; set only on runs with more than two authors. */
-  readonly maxPlanChars?: number | null | undefined;
+  /** Soft per-plan length target (`workflowPlanSoftTarget`). */
+  readonly targetPlanChars?: number | null | undefined;
 }): ReadonlyArray<string | null | undefined> {
   const mesh = workflowUsesMesh(planningBranches(input.workflow).length);
   return [
@@ -64,7 +68,7 @@ ${input.workflow.requirementPrompt}`,
 - Include specific file references. When you refer to existing code, use \`file_path:line_number\` references.`,
     `Return the full plan in your assistant response.
 Do not create or modify files during this planning phase.`,
-    planLengthLimitSection(input.maxPlanChars),
+    planLengthLimitSection(input.targetPlanChars),
     PLAN_SUBMISSION_REQUIREMENT,
     workflowInterruptedRetrySection(input.retry),
   ];
@@ -129,8 +133,8 @@ export function buildRevisionPromptSections(input: {
    * it again only pushes large plans over the message limit.
    */
   readonly includeOriginalPlan?: boolean | undefined;
-  /** Per-plan output limit; set only on runs with more than two authors. */
-  readonly maxPlanChars?: number | null | undefined;
+  /** Soft per-plan length target (`workflowPlanSoftTarget`). */
+  readonly targetPlanChars?: number | null | undefined;
 }): ReadonlyArray<string | null | undefined> {
   const reviewSections = input.reviews.map(
     (review) => `## ${review.reviewerLabel}\n\n${review.reviewMarkdown}`,
@@ -150,7 +154,7 @@ ${reviewSections.join("\n\n")}`,
 The revised plan should be a complete replacement, not a diff.
 Return the full revised plan in your assistant response.
 Do not create or modify files during this planning phase.`,
-    planLengthLimitSection(input.maxPlanChars),
+    planLengthLimitSection(input.targetPlanChars),
     PLAN_SUBMISSION_REQUIREMENT,
   ];
 }
@@ -159,6 +163,51 @@ export function buildRevisionPrompt(
   input: Parameters<typeof buildRevisionPromptSections>[0],
 ): string {
   return joinPromptSections(buildRevisionPromptSections(input));
+}
+
+/** What a condense turn tells the author: its plan's size in the merge, its share, and a target. */
+export interface CondensePromptInput {
+  /** The over-long revised plan, or `null` to point at the author's previous response instead. */
+  readonly planMarkdown: string | null;
+  readonly planSource: WorkflowPromptArtifactSource;
+  readonly renderedChars: number;
+  readonly allowanceChars: number;
+  readonly targetChars: number;
+  readonly authorSlot: WorkflowModelSlot;
+  readonly retry?: WorkflowRetryContext | undefined;
+}
+
+export function condenseInstructions(
+  input: Pick<CondensePromptInput, "renderedChars" | "allowanceChars" | "targetChars">,
+  artifact: "plan" | "document",
+): string {
+  return `Your revised ${artifact} takes ${input.renderedChars.toLocaleString("en-US")} characters in the merge; the merge has room for ${input.allowanceChars.toLocaleString("en-US")} from you. Rewrite it as one complete ${artifact} under ${input.targetChars.toLocaleString("en-US")} characters (about ${Math.floor(input.targetChars / 6).toLocaleString("en-US")} words).
+
+- Keep every decision, file reference, interface change, and test.
+- Cut repetition, restated context, long prose rationale, and code samples longer than a few lines.
+- Do not add new content, and do not drop sections.`;
+}
+
+export function buildCondensePromptSections(
+  input: CondensePromptInput,
+): ReadonlyArray<string | null | undefined> {
+  return [
+    input.planMarkdown === null
+      ? "Condense the revised plan from your previous response in this thread."
+      : `Condense your revised plan below.\n\n## Your revised plan\n\n${input.planMarkdown}`,
+    condenseInstructions(input, "plan"),
+    providerGuidanceSection(input.authorSlot.provider),
+    "Do not create or modify files during this planning phase.",
+    PLAN_SUBMISSION_REQUIREMENT,
+    input.retry?.kind === "retry" && input.retry.formatRepair
+      ? workflowRetryContextSection(input.retry)
+      : null,
+    workflowInterruptedRetrySection(input.retry),
+  ];
+}
+
+export function buildCondensePrompt(input: CondensePromptInput): string {
+  return joinPromptSections(buildCondensePromptSections(input));
 }
 
 export function buildMergePromptSections(input: {

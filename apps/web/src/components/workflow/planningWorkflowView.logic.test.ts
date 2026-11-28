@@ -110,4 +110,19 @@ describe("planningWorkflowView.logic", () => {
 
     expect(planningWorkflowStatusLabel(workflow)).toBe("Revising");
   });
+
+  it("labels branches condensing their plans to fit the merge", () => {
+    const condensing = createPlanningWorkflow({
+      branchA: { planTurnId: "plan-a", status: "revising", condenseTargetChars: 40_000 },
+      branchB: { planTurnId: "plan-b", status: "revised" },
+    });
+    expect(planningWorkflowStatusLabel(condensing)).toBe("Condensing for merge");
+
+    // A branch still revising from reviews keeps the run "Revising".
+    const mixed = createPlanningWorkflow({
+      branchA: { planTurnId: "plan-a", status: "revising", condenseTargetChars: 40_000 },
+      branchB: { planTurnId: "plan-b", status: "revising" },
+    });
+    expect(planningWorkflowStatusLabel(mixed)).toBe("Revising");
+  });
 });
