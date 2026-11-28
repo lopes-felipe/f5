@@ -1365,6 +1365,15 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       // This callback may predate the initial load's render; fall back to the tab it settled on.
       const currentSession = activeSession ?? (await initialSessionLoadRef.current);
 
+      const isClosedTab = async (tabId: string) => {
+        const { sessions } = await api.preview.list({ threadId });
+        return !sessions.some((session) => session.tabId === tabId);
+      };
+      const closedTabError = () =>
+        makePreviewAutomationError(
+          "PreviewAutomationTabNotFoundError",
+          "The preview tab was closed. Call preview_open first.",
+        );
       const statusForTab = (tabId: string | null | undefined) =>
         tabId
           ? previewAutomation.status(tabId)
@@ -1402,8 +1411,12 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         return tabId;
       };
 
-      if (request.operation === "status")
-        return statusForTab(request.tabId ?? currentSession?.tabId);
+      if (request.operation === "status") {
+        const tabId = request.tabId ?? currentSession?.tabId;
+        const status = await statusForTab(tabId);
+        if (tabId && status.tabId === null && (await isClosedTab(tabId))) throw closedTabError();
+        return status;
+      }
       if (request.operation === "open") {
         const input = request.input as PreviewAutomationOpenInput;
         let session = currentSession;
@@ -1472,7 +1485,8 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       if (request.operation === "recordingStop") {
         return stopPreviewRecording(request.tabId ?? activeRecordingRef.current?.tabId);
       }
-      const release = await wakePreviewTab(requireTabId());
+      const targetTabId = requireTabId();
+      const release = await wakePreviewTab(targetTabId);
       try {
         switch (request.operation) {
           case "navigate": {
@@ -1554,6 +1568,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
             return null;
           case "viewport": {
             const tabId = requireTabId();
+            if (await isClosedTab(tabId)) throw closedTabError();
             const input = request.input as PreviewAutomationViewportInput;
             const dimensions = clampPreviewViewport({ requested: input, bounds: viewportBounds });
             setRequestedViewportByTabId((current) => ({ ...current, [tabId]: dimensions }));
@@ -1566,6 +1581,18 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
           case "recordingStart":
             return await startPreviewRecording(requireTabId());
         }
+      } catch (cause) {
+        // A transport or attachment failure only invalidates the tab if the server
+        // confirms it is gone. Preserve typed automation errors from the desktop.
+        if (
+          request.operation !== "viewport" &&
+          previewAutomationErrorResponse(request, cause).error?._tag ===
+            "PreviewAutomationExecutionError" &&
+          (await isClosedTab(targetTabId).catch(() => false))
+        ) {
+          throw closedTabError();
+        }
+        throw cause;
       } finally {
         release();
       }

@@ -1,0 +1,1 @@
+- Agent preview tools forget closed tabs and use the active preview tab on subsequent calls.
