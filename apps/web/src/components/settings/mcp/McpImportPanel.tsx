@@ -14,6 +14,8 @@ import { Button } from "../../ui/button";
 import { Textarea } from "../../ui/textarea";
 import { readErrorMessage } from "./mcpSettingsHelpers";
 
+const NO_CANDIDATES: McpListImportCandidatesResult = { candidates: [], issues: [] };
+
 /**
  * Previews servers from pasted text (`paste`) or from other clients' configuration
  * files (`detected`), and imports the chosen ones into the scope. Conflicts keep the
@@ -31,10 +33,8 @@ export function McpImportPanel(props: {
   onImported: () => void;
 }) {
   const [text, setText] = useState("");
-  const [detected, setDetected] = useState<McpListImportCandidatesResult>({
-    candidates: [],
-    issues: [],
-  });
+  // Null until Detect has finished once, so an empty result can say so.
+  const [detected, setDetected] = useState<McpListImportCandidatesResult | null>(null);
   const [choices, setChoices] = useState<Record<string, boolean>>({});
   const [replace, setReplace] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
@@ -42,10 +42,10 @@ export function McpImportPanel(props: {
   const parsed = useMemo(
     () =>
       props.source === "detected"
-        ? detected
+        ? (detected ?? NO_CANDIDATES)
         : text.trim()
           ? parseMcpImport(text)
-          : { candidates: [], issues: [] },
+          : NO_CANDIDATES,
     [props.source, detected, text],
   );
   // A stored entry under the imported name, or under the source's original name (a
@@ -132,9 +132,10 @@ export function McpImportPanel(props: {
       ) : (
         <>
           <p className="text-xs text-muted-foreground">
-            Reads Claude user and project configuration, this project's .mcp.json, the selected
-            account's Codex config, and Cursor, VS Code, Claude Desktop, and OpenCode configuration.
-            Servers from other clients start unselected. Nothing is applied automatically.
+            Reads the selected account's Claude and Codex configuration, this project's .mcp.json,
+            and Cursor, VS Code, Claude Desktop, and OpenCode configuration. In a separate profile
+            it also reads Claude and Codex configuration from your own home folder. Servers from
+            other clients start unselected. Nothing is applied automatically.
           </p>
           <Button
             size="sm"
@@ -154,6 +155,24 @@ export function McpImportPanel(props: {
           >
             Detect configurations
           </Button>
+          {detected && !detected.candidates.length && !detected.issues.length ? (
+            <div role="status" className="space-y-1 text-xs text-muted-foreground">
+              <p>
+                {detected.readFiles?.length
+                  ? "No MCP servers found. These files were read and list none:"
+                  : "No MCP servers found. None of the configuration files listed above exist."}
+              </p>
+              {detected.readFiles?.length ? (
+                <ul className="list-disc pl-4">
+                  {detected.readFiles.map((file) => (
+                    <li key={file} className="break-all">
+                      {file}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
         </>
       )}
       <div className="space-y-3">

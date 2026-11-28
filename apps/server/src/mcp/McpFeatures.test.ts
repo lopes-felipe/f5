@@ -187,6 +187,7 @@ describe("MCP feature boundaries", () => {
       otherClientConfigFiles({ environment: {}, home: "/Users/a", cwd: "/w", platform: "darwin" }),
     ).toEqual([
       "/Users/a/.cursor/mcp.json",
+      "/Users/a/Library/Application Support/Code/User/mcp.json",
       "/Users/a/Library/Application Support/Claude/claude_desktop_config.json",
       "/Users/a/.config/opencode/opencode.json",
       "/Users/a/.config/opencode/opencode.jsonc",
@@ -200,7 +201,7 @@ describe("MCP feature boundaries", () => {
         environment: { APPDATA: "C:\\Users\\a\\AppData\\Roaming" },
         home: "C:\\Users\\a",
         platform: "win32",
-      })[1],
+      })[2],
     ).toBe("C:\\Users\\a\\AppData\\Roaming\\Claude\\claude_desktop_config.json");
   });
   it("refuses to test a server that needs an unset environment variable", async () => {
@@ -229,7 +230,56 @@ describe("MCP feature boundaries", () => {
     expect(await detectMcpImports({ environment: { HOME: dir } })).toEqual({
       candidates: [],
       issues: [],
+      readFiles: [join(dir, ".codex/config.toml")],
     });
+  });
+  it("reads the user's own configuration, unselected, from a separate profile", async () => {
+    const dir = await temp();
+    const user = join(dir, "user");
+    const profileHome = join(dir, "profile", "provider-homes", "claude");
+    const profileCodex = join(dir, "profile", "provider-homes", "codex");
+    await mkdir(join(user, ".cursor"), { recursive: true });
+    await mkdir(join(user, ".codex"), { recursive: true });
+    await mkdir(join(profileHome, ".claude"), { recursive: true });
+    await mkdir(profileCodex, { recursive: true });
+    await writeFile(
+      join(user, ".claude.json"),
+      JSON.stringify({ mcpServers: { personal_claude: { command: "a" } } }),
+    );
+    await writeFile(
+      join(user, ".codex", "config.toml"),
+      '[mcp_servers.personal_codex]\ncommand="b"',
+    );
+    await writeFile(
+      join(user, ".cursor", "mcp.json"),
+      JSON.stringify({ mcpServers: { cursor_user: { command: "c" } } }),
+    );
+    await writeFile(
+      join(profileHome, ".claude", ".claude.json"),
+      JSON.stringify({ mcpServers: { profile_claude: { command: "d" } } }),
+    );
+    const result = await detectMcpImports({
+      environment: {
+        HOME: profileHome,
+        CLAUDE_CONFIG_DIR: join(profileHome, ".claude"),
+        CODEX_HOME: profileCodex,
+        XDG_CONFIG_HOME: join(profileHome, ".config"),
+      },
+      user: { home: user, environment: { HOME: user } },
+    });
+    expect(result.issues).toEqual([]);
+    expect(result.candidates.map((entry) => [entry.name, entry.selectedByDefault])).toEqual([
+      ["profile_claude", undefined],
+      ["personal_claude", false],
+      ["personal_codex", false],
+      ["cursor_user", false],
+    ]);
+    expect(result.readFiles).toEqual([
+      join(profileHome, ".claude", ".claude.json"),
+      join(user, ".claude.json"),
+      join(user, ".codex", "config.toml"),
+      join(user, ".cursor", "mcp.json"),
+    ]);
   });
   it("refuses symlinks, directories, and oversized import files", async () => {
     const dir = await temp();

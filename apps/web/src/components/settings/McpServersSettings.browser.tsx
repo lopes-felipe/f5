@@ -2078,6 +2078,30 @@ it("reads detected configuration only after an explicit Detect click", async () 
   }
 });
 
+it("says where detection looked when it finds no servers", async () => {
+  createNativeApiMock();
+  nativeApiRef.current!.mcp.listImportCandidates = vi.fn(async () => ({
+    candidates: [],
+    issues: [],
+    readFiles: ["/Users/a/.claude.json"],
+  }));
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openAddServer("Import");
+    await expect
+      .element(page.getByText("No MCP servers found", { exact: false }))
+      .not.toBeInTheDocument();
+    await page.getByRole("button", { name: "Detect configurations", exact: true }).click();
+    await expect
+      .element(page.getByRole("status").getByText("No MCP servers found", { exact: false }))
+      .toBeVisible();
+    await expect.element(page.getByText("/Users/a/.claude.json", { exact: true })).toBeVisible();
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
 it("tests an unsaved draft only on click and opens its bounded tool summaries", async () => {
   const mocks = createNativeApiMock();
   const probe = vi.fn(async () => ({

@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import * as path from "node:path";
 import type { McpListImportCandidatesResult } from "@t3tools/contracts";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
@@ -55,6 +55,7 @@ export function otherClientConfigFiles(input: {
   );
   return [
     pathApi.join(input.home, ".cursor", "mcp.json"),
+    pathApi.join(appData, "Code", "User", "mcp.json"),
     pathApi.join(appData, "Claude", "claude_desktop_config.json"),
     pathApi.join(openCodeConfig, "opencode.json"),
     pathApi.join(openCodeConfig, "opencode.jsonc"),
@@ -69,37 +70,83 @@ export function otherClientConfigFiles(input: {
   ];
 }
 
+/**
+ * The F5 server's own user: a separate profile changes HOME only for the processes F5
+ * starts, so the account directory and the server's environment still name the user's.
+ */
+export function serverUserConfigLocation(): {
+  readonly home: string;
+  readonly environment: NodeJS.ProcessEnv;
+} {
+  let home: string;
+  try {
+    home = userInfo().homedir;
+  } catch {
+    home = homedir();
+  }
+  return { home, environment: process.env };
+}
+
+const claudeStateFile = (environment: NodeJS.ProcessEnv, home: string) =>
+  path.join(environment.CLAUDE_CONFIG_DIR ?? home, ".claude.json");
+const codexConfigFile = (environment: NodeJS.ProcessEnv, home: string) =>
+  path.join(environment.CODEX_HOME ?? path.join(home, ".codex"), "config.toml");
+
 /** Called exclusively by the explicit Detect action; never during startup or settings reads. */
 export async function detectMcpImports(input: {
+  /** The selected account's environment; in a separate profile, HOME is the profile's own folder. */
   environment: NodeJS.ProcessEnv;
   cwd?: string | undefined;
+  /**
+   * The user's own home and environment, outside any separate profile. Other clients'
+   * configuration lives there, and so do Claude and Codex configuration made outside F5.
+   */
+  user?: { readonly home: string; readonly environment: NodeJS.ProcessEnv } | undefined;
 }): Promise<McpListImportCandidatesResult> {
   const home = input.environment.HOME ?? homedir();
-  const claudeDir = input.environment.CLAUDE_CONFIG_DIR;
-  const claudeState = claudeDir
-    ? path.join(claudeDir, ".claude.json")
-    : path.join(home, ".claude.json");
-  // Other clients' configuration is offered but never preselected.
-  const sources: Array<{ readonly filename: string; readonly selectedByDefault: boolean }> = [
-    { filename: claudeState, selectedByDefault: true },
+  const userHome = input.user?.home ?? home;
+  const userEnvironment = input.user?.environment ?? input.environment;
+  // Other clients' configuration, and Claude and Codex configuration outside this
+  // profile, is offered but never preselected.
+  const sources: Array<{
+    readonly filename: string;
+    readonly selectedByDefault: boolean;
+    readonly claudeState?: boolean;
+  }> = [
+    {
+      filename: claudeStateFile(input.environment, home),
+      selectedByDefault: true,
+      claudeState: true,
+    },
     ...(input.cwd
       ? [{ filename: path.join(input.cwd, ".mcp.json"), selectedByDefault: false }]
       : []),
+    { filename: codexConfigFile(input.environment, home), selectedByDefault: true },
     {
-      filename: path.join(input.environment.CODEX_HOME ?? path.join(home, ".codex"), "config.toml"),
-      selectedByDefault: true,
+      filename: claudeStateFile(userEnvironment, userHome),
+      selectedByDefault: false,
+      claudeState: true,
     },
-    ...otherClientConfigFiles({ environment: input.environment, home, cwd: input.cwd }).map(
-      (filename) => ({ filename, selectedByDefault: false }),
-    ),
+    { filename: codexConfigFile(userEnvironment, userHome), selectedByDefault: false },
+    ...otherClientConfigFiles({
+      environment: userEnvironment,
+      home: userHome,
+      cwd: input.cwd,
+    }).map((filename) => ({ filename, selectedByDefault: false })),
   ];
   const candidates: McpListImportCandidatesResult["candidates"][number][] = [];
   const issues: McpListImportCandidatesResult["issues"][number][] = [];
-  for (const { filename, selectedByDefault } of sources) {
+  const readFiles: string[] = [];
+  const seen = new Set<string>();
+  for (const { filename, selectedByDefault, claudeState } of sources) {
+    // Outside a separate profile the account's files and the user's are the same.
+    if (seen.has(path.resolve(filename))) continue;
+    seen.add(path.resolve(filename));
     try {
       const text = await readMcpImportFile(filename);
       if (text === null) continue;
-      if (filename !== claudeState) {
+      readFiles.push(filename);
+      if (!claudeState) {
         const parsed = parseMcpImport(text, filename, { requireServerMap: true });
         candidates.push(...parsed.candidates.map((entry) => ({ ...entry, selectedByDefault })));
         issues.push(...parsed.issues);
@@ -109,7 +156,11 @@ export async function detectMcpImports(input: {
       const append = (servers: unknown, source: string) => {
         if (!servers || typeof servers !== "object") return;
         const parsed = parseMcpImport(JSON.stringify({ mcpServers: servers }), source);
-        candidates.push(...parsed.candidates);
+        candidates.push(
+          ...parsed.candidates.map((entry) =>
+            selectedByDefault ? entry : { ...entry, selectedByDefault },
+          ),
+        );
         issues.push(...parsed.issues);
       };
       append(state.mcpServers, filename);
@@ -151,5 +202,6 @@ export async function detectMcpImports(input: {
         : entry;
     }),
     issues,
+    readFiles,
   };
 }

@@ -675,6 +675,8 @@ export const McpImportCandidate = Schema.Struct({
 export const McpListImportCandidatesResult = Schema.Struct({
   candidates: Schema.Array(McpImportCandidate),
   issues: Schema.Array(McpImportIssue),
+  /** The configuration files detection found and read, so an empty result can say where it looked. */
+  readFiles: Schema.optional(Schema.Array(Schema.String)),
 });
 export const McpProbeServerResult = Schema.Struct({
   ok: Schema.Boolean,
