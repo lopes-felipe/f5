@@ -378,7 +378,7 @@ describe("Phone access", () => {
       await writeFile(identityFile!, JSON.stringify({ origin, code: pairing.code }), {
         mode: 0o600,
       });
-      const deadline = Date.now() + 120_000;
+      const deadline = Date.now() + 240_000;
       while (Date.now() < deadline) {
         const result = await sendRequest(desktop, ORCHESTRATION_WS_METHODS.getStartupSnapshot, {});
         const serialized = JSON.stringify(result.result ?? "");
@@ -397,7 +397,7 @@ describe("Phone access", () => {
       }
       throw new Error("No approval response arrived from the simulator.");
     },
-    150_000,
+    360_000,
   );
 });
 

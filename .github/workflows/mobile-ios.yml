@@ -37,7 +37,7 @@ jobs:
           pod install --project-directory=ios
           xcodebuild -workspace ios/F5.xcworkspace -scheme F5 -configuration Release \
             -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/f5-ios-build" CODE_SIGNING_ALLOWED=NO build
+            -derivedDataPath "$RUNNER_TEMP/f5-ios-build" "ARCHS=$(uname -m)" CODE_SIGNING_ALLOWED=NO build
       - name: Install the release build on an iPhone simulator
         run: |
           udid="$(xcrun simctl list devices available -j | jq -er '[.devices | to_entries[] | select(.key | contains(".iOS-")) | .value[] | select(.name | startswith("iPhone"))][0].udid')"
@@ -55,6 +55,7 @@ jobs:
           test -x "$RUNNER_TEMP/maestro/bin/maestro"
           echo "$RUNNER_TEMP/maestro/bin" >> "$GITHUB_PATH"
       - name: Pair and respond to an existing approval
+        id: approval-smoke
         env:
           F5_MOBILE_FIXTURE_ADDRESS: "100.64.0.2"
           F5_MOBILE_FIXTURE_INFO: ${{ runner.temp }}/f5-phone-fixture.json
@@ -80,7 +81,18 @@ jobs:
           code="$(jq -er .code "$F5_MOBILE_FIXTURE_INFO")"
           echo "::add-mask::$code"
           if ! maestro --device "$F5_SIM_UDID" test apps/mobile/.maestro/pair-and-approve.yml \
+            --test-output-dir "$RUNNER_TEMP/f5-ios-smoke" \
             -e "F5_ORIGIN=$origin" -e "F5_CODE=$code" || ! wait "$fixture_pid"; then
             cat "$fixture_log"
             exit 1
           fi
+      - name: Upload simulator smoke diagnostics
+        if: failure() && steps.approval-smoke.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-approval-smoke
+          path: |-
+            ${{ runner.temp }}/f5-ios-smoke
+            ${{ runner.temp }}/f5-phone-fixture.log
+          if-no-files-found: ignore
+          retention-days: 7

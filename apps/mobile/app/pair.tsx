@@ -114,6 +114,7 @@ export default function Pair() {
       <Card title="Enter pairing details">
         <Text style={styles.muted}>Server origin</Text>
         <Field
+          testID="phone-pair-origin"
           accessibilityLabel="Server origin"
           value={origin}
           onChangeText={setOrigin}
@@ -124,6 +125,7 @@ export default function Pair() {
         />
         <Text style={styles.muted}>Pairing code</Text>
         <Field
+          testID="phone-pair-code"
           accessibilityLabel="Pairing code"
           value={code}
           onChangeText={setCode}

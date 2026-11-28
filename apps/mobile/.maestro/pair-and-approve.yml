@@ -3,9 +3,11 @@ appId: io.github.lopesfelipe.f5.mobile
 - launchApp:
     clearState: true
 - tapOn: "Pair a phone"
-- tapOn: "Server origin"
+- tapOn:
+    id: "phone-pair-origin"
 - inputText: ${F5_ORIGIN}
-- tapOn: "Pairing code"
+- tapOn:
+    id: "phone-pair-code"
 - inputText: ${F5_CODE}
 - hideKeyboard
 - tapOn: "Review pairing"
