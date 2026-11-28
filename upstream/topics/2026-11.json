@@ -100921,11 +100921,25 @@
     },
     {
       "createdAt": "2026-11-24T11:16:51.565Z",
-      "decidedAt": "2026-11-25T22:16:10.877Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-28T15:36:15.402Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/prHub/threadReader.ts:94",
+          "apps/server/src/prHub/threadReader.ts:169",
+          "apps/server/src/prHub/threadReplies.ts:146",
+          "apps/server/src/prHub/PrHubExtensions.ts:447",
+          "apps/server/src/prHub/PrHubExtensions.ts:606",
+          "apps/server/src/mcp/pullRequestMcpRuntime.ts:748"
+        ],
+        "f5Refs": [
+          "399ab1b6b8f4658ac79cc08b858ffef08042251b"
+        ]
+      },
       "id": "pr-41762",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "forges",
