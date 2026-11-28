@@ -29,6 +29,8 @@ F5 sends generic notification text by default. Push delivery pauses while the ho
 
 Record the TestFlight build, host version, iOS version, network, and results before opening Milestone 1.
 
+The hosted simulator smoke test uses in-memory credentials in its unsigned fixture build. TestFlight uses the iOS keychain. Relaunch the signed app after pairing to verify it remembers the host.
+
 - Pair by QR over Tailscale. Check HTTP, WebSocket, and attachment access with the MagicDNS and numeric origins. Repeat with local-network permission denied. Record which origins iOS accepts.
 - Open a host profile with an approval and a question already pending. Check both appear in **Needs you** before opening the conversation. Approve from the phone and confirm the request resolves on the host.
 - Lock the iPhone and trigger a new approval. Record production push latency against the five-second target.

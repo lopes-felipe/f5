@@ -37,28 +37,20 @@ jobs:
           pod install --project-directory=ios
           xcodebuild -workspace ios/F5.xcworkspace -scheme F5 -configuration Release \
             -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/f5-ios-build" "ARCHS=$(uname -m)" CODE_SIGNING_ALLOWED=NO build
+            -derivedDataPath "$RUNNER_TEMP/f5-ios-build" "ARCHS=$(uname -m)" \
+            CODE_SIGNING_ALLOWED=NO F5_IOS_SMOKE_STORAGE=1 build
       - name: Install the release build on an iPhone simulator
         run: |
           app="$RUNNER_TEMP/f5-ios-build/Build/Products/Release-iphonesimulator/F5.app"
-          entitlements="$RUNNER_TEMP/f5-simulator.entitlements"
-          bundle_id="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Info.plist")"
-          # The simulator keychain requires an application identifier even without provisioning.
-          /usr/libexec/PlistBuddy -c 'Clear dict' \
-            -c "Add application-identifier string F5CI000000.$bundle_id" "$entitlements"
-          for component in "$app"/Frameworks/*.framework "$app"/Frameworks/*.dylib; do
-            if [ -e "$component" ]; then codesign --force --sign - "$component"; fi
-          done
-          codesign --force --sign - --entitlements "$entitlements" --generate-entitlement-der "$app"
-          codesign --verify --strict "$app"
+          test -s "$app/main.jsbundle"
+          if grep -aFq 'f5.servers' "$app/main.jsbundle"; then
+            echo '::error::The unsigned simulator build contains the production credential store'
+            exit 1
+          fi
           udid="$(xcrun simctl list devices available -j | jq -er '[.devices | to_entries[] | select(.key | contains(".iOS-")) | .value[] | select(.name | startswith("iPhone"))][0].udid')"
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
           xcrun simctl install "$udid" "$app"
-          installed_app="$(xcrun simctl get_app_container "$udid" "$bundle_id" app)"
-          installed_id="$(codesign -d --entitlements :- "$installed_app" | plutil -extract application-identifier raw -o - -)"
-          test "$installed_id" = "F5CI000000.$bundle_id"
-          xcrun simctl launch "$udid" "$bundle_id"
           echo "F5_SIM_UDID=$udid" >> "$GITHUB_ENV"
       - name: Install Maestro
         run: |

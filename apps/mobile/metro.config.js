@@ -13,8 +13,23 @@ config.resolver.disableHierarchicalLookup = true;
 config.resolver.unstable_enablePackageExports = true;
 
 const otherApp = path.join(root, "apps") + path.sep;
+const smokeStorage = process.env.F5_IOS_SMOKE_STORAGE === "1";
+if (
+  smokeStorage &&
+  (process.env.CI !== "1" || !process.env.SDK_NAME?.startsWith("iphonesimulator"))
+) {
+  throw new Error("Smoke-test storage is only available in CI iOS simulator builds");
+}
 const { resolveRequest } = config.resolver;
 config.resolver.resolveRequest = (context, name, platform) => {
+  if (
+    smokeStorage &&
+    platform === "ios" &&
+    name === "./storage" &&
+    context.originModulePath === path.join(app, "src", "core", "sync.ts")
+  ) {
+    return { type: "sourceFile", filePath: path.join(app, ".maestro", "storage.ts") };
+  }
   // The URL polyfill depends on the npm implementation of punycode.
   if (isBuiltin(name) && name !== "punycode")
     throw new Error("Node built-in in mobile bundle: " + name);
