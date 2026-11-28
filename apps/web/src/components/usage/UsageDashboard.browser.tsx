@@ -1,6 +1,7 @@
 import "../../index.css";
 
 import {
+  type ClaudeAccountUsage,
   type ClaudeLimitResetGrant,
   type CodexAccountRateLimit,
   ProjectId,
@@ -44,6 +45,7 @@ const api = vi.hoisted(() => ({
   getAccounts: vi.fn(),
   getQuotaHistory: vi.fn(),
   consumeResetCredit: vi.fn(),
+  openExternal: vi.fn(async (_url: string) => undefined),
 }));
 const connection = vi.hoisted(() => ({
   state: {
@@ -72,6 +74,7 @@ const listeners = vi.hoisted(() => ({
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({
     usage: api,
+    shell: { openExternal: api.openExternal },
     server: { getConfig: async () => ({ keybindings: DEFAULT_RESOLVED_KEYBINDINGS }) },
     orchestration: {
       onDomainEvent: (listener: (event: { type: string; payload?: unknown }) => void) => {
@@ -2220,6 +2223,87 @@ describe("limits", () => {
       await expect.element(group.getByRole("button", { name: "Use Full reset (1)" })).toBeEnabled();
     } finally {
       await screen.unmount();
+    }
+  });
+
+  it("links a subscription to claude.ai when Claude withholds its limit resets from F5", async () => {
+    const withData = (
+      account: UsageAccounts[number],
+      data: Partial<ClaudeAccountUsage>,
+    ): UsageAccounts[number] => {
+      const section = account.sections[0] as Extract<
+        UsageAccounts[number]["sections"][number],
+        { kind: "claude-usage" }
+      >;
+      return {
+        ...account,
+        sections: [
+          {
+            ...section,
+            snapshot: { ...section.snapshot!, data: { ...section.snapshot!.data, ...data } },
+          },
+        ],
+      };
+    };
+    const renderView = (account: UsageAccounts[number]) =>
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <UsageDashboardView
+            summary={summary()}
+            accounts={[account]}
+            range="7d"
+            onRangeChange={() => {}}
+            fetching={false}
+          />
+        </QueryClientProvider>,
+      );
+    const withoutResets = (fiveHourUsed: number) =>
+      withData(claudeAccountWithResets(fiveHourUsed), { limitResets: null });
+
+    api.openExternal.mockClear();
+    let screen = await renderView(withoutResets(40));
+    try {
+      const group = page.getByRole("group", { name: "Limit resets" });
+      await expect
+        .element(group.getByText("Claude shows your limit resets in claude.ai's Usage settings."))
+        .toBeVisible();
+      await expect
+        .element(page.getByTestId("tightest-limit").getByRole("button"))
+        .not.toBeInTheDocument();
+      await group.getByRole("button", { name: "Open claude.ai" }).click();
+      await expect
+        .poll(() => api.openExternal.mock.calls)
+        .toEqual([["https://claude.ai/settings/usage"]]);
+    } finally {
+      await screen.unmount();
+    }
+
+    // At the limit, the link joins the callout instead of its own row.
+    screen = await renderView(withoutResets(100));
+    try {
+      await expect
+        .element(page.getByTestId("tightest-limit").getByRole("button", { name: "Open claude.ai" }))
+        .toBeVisible();
+      expect(page.getByRole("button", { name: "Open claude.ai" }).all()).toHaveLength(1);
+      await expect
+        .element(page.getByRole("group", { name: "Limit resets" }))
+        .not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+
+    // Native grants keep their own buttons, and an account without a plan gets nothing.
+    for (const account of [
+      claudeAccountWithResets(40),
+      withData(claudeAccountWithResets(40), { limitResets: null, subscriptionLabel: null }),
+    ]) {
+      screen = await renderView(account);
+      try {
+        await expect.element(page.getByTestId("tightest-limit")).toBeVisible();
+        expect(page.getByRole("button", { name: "Open claude.ai" }).all()).toHaveLength(0);
+      } finally {
+        await screen.unmount();
+      }
     }
   });
 

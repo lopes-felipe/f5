@@ -1,13 +1,21 @@
 import type {
+  ClaudeAccountUsage,
   ClaudeLimitResetGrant,
   ClaudeLimitResets as ClaudeLimitResetsData,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { type QuotaWindow } from "@t3tools/shared/usageLimit";
+import { ExternalLinkIcon } from "lucide-react";
 
+import { ensureNativeApi } from "../../nativeApi";
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
+import { Button } from "../ui/button";
+import { toastManager } from "../ui/toast";
 import { tightestQuotaWindow } from "./charts/TightestLimitCallout";
 import { ResetCreditButton } from "./ResetCreditButton";
+
+/** Where claude.ai lists a subscription's limit resets, with its own Reset buttons. */
+export const CLAUDE_USAGE_SETTINGS_URL = "https://claude.ai/settings/usage";
 
 const CLAUDE_LIMIT_LABELS: Record<string, string> = {
   five_hour: "5-hour limit",
@@ -91,8 +99,69 @@ export function claudeCalloutGrant(
   if (!resets?.nextGrantId) return null;
   const grant = resets.grants.find((entry) => entry.id === resets.nextGrantId);
   if (!grant || !grant.usableNow || grant.resetsLeft <= 0) return null;
+  return isTightestWindowExhausted(windows, nowMs) ? grant : null;
+}
+
+function isTightestWindowExhausted(windows: ReadonlyArray<QuotaWindow>, nowMs: number): boolean {
   const tightest = tightestQuotaWindow(windows, nowMs);
-  return tightest !== null && tightest.usedPercent! >= 100 ? grant : null;
+  return tightest !== null && tightest.usedPercent! >= 100;
+}
+
+/**
+ * Where the claude.ai link goes, or null when it doesn't show. Claude withholds
+ * limit resets from F5 (its status read says "surface"), so a subscription
+ * without native resets gets the link: in the callout once the tightest live
+ * window is exhausted, otherwise in its own row.
+ */
+export function claudeResetsLinkPlacement(
+  data: Pick<ClaudeAccountUsage, "subscriptionLabel" | "limitsAvailable" | "limitResets">,
+  windows: ReadonlyArray<QuotaWindow>,
+  nowMs: number,
+): "callout" | "row" | null {
+  if (data.limitResets || data.subscriptionLabel === null || !data.limitsAvailable) return null;
+  return isTightestWindowExhausted(windows, nowMs) ? "callout" : "row";
+}
+
+export function ClaudeResetsLinkButton() {
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={() => {
+        void Promise.resolve()
+          .then(() => ensureNativeApi().shell.openExternal(CLAUDE_USAGE_SETTINGS_URL))
+          .catch((error: unknown) => {
+            toastManager.add({
+              type: "error",
+              title: "Unable to open claude.ai",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            });
+          });
+      }}
+    >
+      Open claude.ai
+      <ExternalLinkIcon aria-hidden="true" className="size-3.5" />
+    </Button>
+  );
+}
+
+/** A row pointing to claude.ai, where Claude offers the limit resets F5 can't read. */
+export function ClaudeResetsLink() {
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-2"
+      role="group"
+      aria-label="Limit resets"
+    >
+      <div className="min-w-0">
+        <p className="text-xs font-medium">Limit resets</p>
+        <p className="text-2xs text-muted-foreground">
+          Claude shows your limit resets in claude.ai's Usage settings.
+        </p>
+      </div>
+      <ClaudeResetsLinkButton />
+    </div>
+  );
 }
 
 export function ClaudeGrantButton(props: {

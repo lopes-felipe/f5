@@ -350,6 +350,7 @@ describe("makeClaudeLimitResetClient", () => {
         },
     );
     const refreshToken = vi.fn(async () => undefined);
+    const warn = vi.fn((_message: string) => undefined);
     const responses = [...options.responses];
     const fetch = vi.fn(async (_url: string, _init: RequestInit) => {
       const next = responses.shift();
@@ -365,9 +366,33 @@ describe("makeClaudeLimitResetClient", () => {
       fetch,
       now: () => NOW,
       baseUrl: "https://api.test",
+      warn,
     });
-    return { client, readToken, refreshToken, fetch };
+    return { client, readToken, refreshToken, fetch, warn };
   };
+
+  it("logs why Claude withholds resets once per reason, without the body", async () => {
+    const ineligible = (reason: unknown) =>
+      json(200, { cedar_ember: { eligible: false, ineligible_reason: reason, grants: [] } });
+    const { client, warn } = setup({
+      responses: [
+        ineligible("surface"),
+        ineligible("surface"),
+        ineligible("region"),
+        ineligible(`<${SECRET}>`),
+        json(200, { cedar_ember: { eligible: true, grants: [grant()] } }),
+        json(200, { five_hour: {} }),
+      ],
+    });
+    for (let read = 0; read < 4; read++) expect(await client.fetchStatus()).toBeNull();
+    expect((await client.fetchStatus())?.grants).toHaveLength(1);
+    expect(await client.fetchStatus()).toBeNull();
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "[claude-limit-resets] status ineligible: surface",
+      "[claude-limit-resets] status ineligible: region",
+      "[claude-limit-resets] status ineligible: unknown",
+    ]);
+  });
 
   it("reads status with the OAuth headers and caches the token", async () => {
     const body = {

@@ -26,7 +26,14 @@ import { TightestLimitCallout, tightestQuotaWindow } from "./charts/TightestLimi
 import { codexAccountRangeTokens, codexDailyTokenSeries } from "./codexDailyTokens";
 import { providerLabel } from "./format";
 import { ResetCreditButton } from "./ResetCreditButton";
-import { ClaudeGrantButton, ClaudeLimitResets, claudeCalloutGrant } from "./ClaudeLimitResets";
+import {
+  ClaudeGrantButton,
+  ClaudeLimitResets,
+  ClaudeResetsLink,
+  ClaudeResetsLinkButton,
+  claudeCalloutGrant,
+  claudeResetsLinkPlacement,
+} from "./ClaudeLimitResets";
 import { ClaudeUsageAnalysisPanel } from "./ClaudeUsageAnalysisPanel";
 import { StatTile, UsageSection, UsageSubsection } from "./kit";
 
@@ -299,10 +306,24 @@ function ClaudeUsageLimits(props: {
   const windows = quotaWindowsFromSection(props.section);
   const instanceId = props.account.providerInstanceId;
   const resets = snapshot.data.limitResets ?? null;
+  const now = Date.now();
+  const calloutWindows = claudeCalloutWindows(windows);
   const calloutGrant =
-    instanceId && resets
-      ? claudeCalloutGrant(resets, claudeCalloutWindows(windows), Date.now())
-      : null;
+    instanceId && resets ? claudeCalloutGrant(resets, calloutWindows, now) : null;
+  const linkPlacement = claudeResetsLinkPlacement(snapshot.data, calloutWindows, now);
+  const calloutAction =
+    instanceId && calloutGrant && resets
+      ? () => (
+          <ClaudeGrantButton
+            instanceId={instanceId}
+            accountName={props.account.displayName}
+            grant={calloutGrant}
+            cooldownUntil={resets.cooldownUntil}
+          />
+        )
+      : linkPlacement === "callout"
+        ? () => <ClaudeResetsLinkButton />
+        : null;
   return (
     <>
       {windows.length > 0 ? (
@@ -311,18 +332,7 @@ function ClaudeUsageLimits(props: {
           windows={windows}
           observedAt={snapshot.fetchedAt}
           history={props.history}
-          {...(instanceId && calloutGrant && resets
-            ? {
-                calloutAction: () => (
-                  <ClaudeGrantButton
-                    instanceId={instanceId}
-                    accountName={props.account.displayName}
-                    grant={calloutGrant}
-                    cooldownUntil={resets.cooldownUntil}
-                  />
-                ),
-              }
-            : {})}
+          {...(calloutAction ? { calloutAction } : {})}
         />
       ) : null}
       {instanceId && resets ? (
@@ -333,6 +343,7 @@ function ClaudeUsageLimits(props: {
           excludeGrantId={windows.length > 0 ? (calloutGrant?.id ?? null) : null}
         />
       ) : null}
+      {linkPlacement === "row" ? <ClaudeResetsLink /> : null}
     </>
   );
 }

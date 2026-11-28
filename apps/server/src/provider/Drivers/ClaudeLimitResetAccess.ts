@@ -75,6 +75,7 @@ export const makeClaudeLimitResetAccess = Effect.fn("makeClaudeLimitResetAccess"
     yield* readClaudeSettingsBaseUrl(settings, processEnvironment, options.cwd),
   );
   const fallbackUser = currentUsername();
+  const runLog = Effect.runForkWith(yield* Effect.services<never>());
   return makeClaudeLimitResetClient({
     readToken: () =>
       readClaudeOAuthToken({
@@ -97,6 +98,9 @@ export const makeClaudeLimitResetAccess = Effect.fn("makeClaudeLimitResetAccess"
     refreshToken: options.refreshToken,
     fetch: options.fetch ?? ((url, init) => globalThis.fetch(url, init)),
     now: () => Date.now(),
+    warn: (message) => {
+      runLog(Effect.logWarning(message));
+    },
   });
 });
 

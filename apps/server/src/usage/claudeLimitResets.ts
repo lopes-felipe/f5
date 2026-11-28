@@ -10,6 +10,9 @@
  *
  * The endpoints are undocumented and can change with any Claude Code release.
  * Every read failure degrades to "no limit resets", never to a card error.
+ * Claude also withholds resets from clients that aren't its own apps (the
+ * status block says `ineligible_reason: "surface"`). F5 does not pose as one:
+ * the read logs the reason once, and the Usage page links to claude.ai instead.
  *
  * Claims follow the reset-credit coordinator's rule: a claim whose outcome is
  * uncertain throws, so its request id stays pending and the retry reuses it.
@@ -254,6 +257,20 @@ export function normalizeClaudeLimitResets(response: unknown): ClaudeLimitResets
   };
 }
 
+const INELIGIBLE_REASON = /^[a-z0-9_]{1,40}$/;
+
+/**
+ * Why Claude withheld limit resets, when the response has a status block that
+ * says ineligible. Claude answers `surface` to clients other than its own apps.
+ * Unrecognized text reads as `unknown`, so a log line never echoes the body.
+ */
+export function claudeLimitResetIneligibleReason(response: unknown): string | null {
+  const block = asRecord(asRecord(response)?.cedar_ember);
+  if (!block || block.eligible === true) return null;
+  const reason = asTrimmedString(block.ineligible_reason);
+  return reason && INELIGIBLE_REASON.test(reason) ? reason : "unknown";
+}
+
 // ── Claim mapping ───────────────────────────────────────────────────────
 
 /** A claim whose outcome is uncertain: retry with the same request id. */
@@ -340,6 +357,8 @@ export interface ClaudeLimitResetClientDeps {
   readonly fetch: (url: string, init: RequestInit) => Promise<Response>;
   readonly now: () => number;
   readonly baseUrl?: string;
+  /** Reports why status reads come back empty; called once per distinct reason. */
+  readonly warn?: (message: string) => void;
 }
 
 export interface ClaudeLimitResetClient {
@@ -371,6 +390,14 @@ export function makeClaudeLimitResetClient(
   // After the Keychain refuses (a denied prompt), only a claim or sign-in asks again.
   let keychainBlocked = false;
   let lastStatus: { value: ClaudeLimitResets | null; at: number } | null = null;
+  // Every refresh repeats the same answer, so each reason is logged once.
+  const warnedReasons = new Set<string>();
+  const warnIneligible = (body: unknown) => {
+    const reason = claudeLimitResetIneligibleReason(body);
+    if (reason === null || warnedReasons.has(reason)) return;
+    warnedReasons.add(reason);
+    deps.warn?.(`[claude-limit-resets] status ineligible: ${reason}`);
+  };
 
   const readStore = async (): Promise<ClaudeTokenRead> => {
     cached = null;
@@ -402,7 +429,9 @@ export function makeClaudeLimitResetClient(
       });
       if (isAuthFailure(response.status)) cached = null;
       if (!response.ok) return null;
-      const value = normalizeClaudeLimitResets(await response.json());
+      const body: unknown = await response.json();
+      warnIneligible(body);
+      const value = normalizeClaudeLimitResets(body);
       lastStatus = { value, at: deps.now() };
       return value;
     } catch {
