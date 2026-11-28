@@ -14,12 +14,17 @@ const MAX_IMPORT_BYTES = 1024 * 1024;
  */
 async function readMcpImportFileWithIdentity(
   filename: string,
-): Promise<{ readonly text: string; readonly identity: string } | null> {
+  /** A file already read under another spelling is skipped before its contents are read. */
+  alreadyRead: (identity: string) => boolean = () => false,
+): Promise<{ readonly identity: string; readonly text?: string } | null> {
   let file;
   try {
     file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat({ bigint: true });
     if (!stat.isFile()) throw new Error("Only regular files can be imported.");
+    // Some filesystems report no inode; fall back to the resolved path there.
+    const identity = stat.ino ? `${stat.dev}:${stat.ino}` : path.resolve(filename);
+    if (alreadyRead(identity)) return { identity };
     if (stat.size > MAX_IMPORT_BYTES)
       throw new Error("Configuration exceeds the 1 MiB import limit.");
     const buffer = Buffer.alloc(MAX_IMPORT_BYTES + 1);
@@ -30,11 +35,7 @@ async function readMcpImportFileWithIdentity(
       size += read.bytesRead;
     }
     if (size > MAX_IMPORT_BYTES) throw new Error("Configuration exceeds the 1 MiB import limit.");
-    return {
-      text: buffer.subarray(0, size).toString("utf8"),
-      // Some filesystems report no inode; fall back to the resolved path there.
-      identity: stat.ino ? `${stat.dev}:${stat.ino}` : path.resolve(filename),
-    };
+    return { identity, text: buffer.subarray(0, size).toString("utf8") };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -175,11 +176,11 @@ export async function detectMcpImports(input: {
   const seen = new Set<string>();
   for (const { filename, selectedByDefault, claudeState } of sources) {
     try {
-      const file = await readMcpImportFileWithIdentity(filename);
-      if (file === null || seen.has(file.identity)) continue;
+      const file = await readMcpImportFileWithIdentity(filename, (identity) => seen.has(identity));
+      if (file?.text === undefined) continue;
       seen.add(file.identity);
       readFiles.push(filename);
-      const { text } = file;
+      const text = file.text;
       if (!claudeState) {
         const parsed = parseMcpImport(text, filename, { requireServerMap: true });
         candidates.push(...parsed.candidates.map((entry) => ({ ...entry, selectedByDefault })));
