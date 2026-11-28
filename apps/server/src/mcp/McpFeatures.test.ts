@@ -13,6 +13,7 @@ import {
   detectMcpImports,
   otherClientConfigFiles,
   readMcpImportFile,
+  serverUserConfigLocation,
 } from "./McpImportDetection.ts";
 import { probeMcpServer } from "./McpProbe.ts";
 import {
@@ -233,18 +234,28 @@ describe("MCP feature boundaries", () => {
       readFiles: [join(dir, ".codex/config.toml")],
     });
   });
-  it("reads the user's own configuration, unselected, from a separate profile", async () => {
+  async function separateProfileFixture() {
     const dir = await temp();
     const user = join(dir, "user");
+    const project = join(dir, "project");
+    const userConfig = join(user, "cfg");
+    // Where otherClientConfigFiles looks for VS Code's user mcp.json on this platform.
+    const userAppData =
+      process.platform === "darwin" ? join(user, "Library", "Application Support") : userConfig;
     const profileHome = join(dir, "profile", "provider-homes", "claude");
     const profileCodex = join(dir, "profile", "provider-homes", "codex");
     await mkdir(join(user, ".cursor"), { recursive: true });
     await mkdir(join(user, ".codex"), { recursive: true });
+    await mkdir(join(userAppData, "Code", "User"), { recursive: true });
     await mkdir(join(profileHome, ".claude"), { recursive: true });
     await mkdir(profileCodex, { recursive: true });
+    await mkdir(project, { recursive: true });
     await writeFile(
       join(user, ".claude.json"),
-      JSON.stringify({ mcpServers: { personal_claude: { command: "a" } } }),
+      JSON.stringify({
+        mcpServers: { personal_claude: { command: "a" } },
+        projects: { [project]: { mcpServers: { personal_project: { command: "p" } } } },
+      }),
     );
     await writeFile(
       join(user, ".codex", "config.toml"),
@@ -252,34 +263,124 @@ describe("MCP feature boundaries", () => {
     );
     await writeFile(
       join(user, ".cursor", "mcp.json"),
-      JSON.stringify({ mcpServers: { cursor_user: { command: "c" } } }),
+      JSON.stringify({
+        mcpServers: { cursor_user: { command: "c" }, profile_claude: { command: "x" } },
+      }),
+    );
+    await writeFile(
+      join(userAppData, "Code", "User", "mcp.json"),
+      JSON.stringify({ servers: { vscode_user: { type: "http", url: "https://v.example/mcp" } } }),
     );
     await writeFile(
       join(profileHome, ".claude", ".claude.json"),
       JSON.stringify({ mcpServers: { profile_claude: { command: "d" } } }),
     );
-    const result = await detectMcpImports({
+    return {
+      user,
+      project,
+      profileHome,
       environment: {
+        F5_PROFILE_ISOLATED: "1",
         HOME: profileHome,
         CLAUDE_CONFIG_DIR: join(profileHome, ".claude"),
         CODEX_HOME: profileCodex,
         XDG_CONFIG_HOME: join(profileHome, ".config"),
       },
-      user: { home: user, environment: { HOME: user } },
+      userLocation: () => ({
+        home: user,
+        environment: { HOME: user, XDG_CONFIG_HOME: userConfig, APPDATA: userConfig },
+      }),
+    };
+  }
+  it("reads the user's own home in a separate profile only when asked", async () => {
+    const fixture = await separateProfileFixture();
+    const withoutHome = await detectMcpImports({
+      environment: fixture.environment,
+      cwd: fixture.project,
+      userLocation: fixture.userLocation,
+    });
+    expect(withoutHome.candidates.map((entry) => entry.name)).toEqual(["profile_claude"]);
+    expect(withoutHome.readFiles).toEqual([join(fixture.profileHome, ".claude", ".claude.json")]);
+    expect(withoutHome.userHome).toEqual({ path: fixture.user, included: false });
+
+    const result = await detectMcpImports({
+      environment: fixture.environment,
+      cwd: fixture.project,
+      includeUserHome: true,
+      userLocation: fixture.userLocation,
     });
     expect(result.issues).toEqual([]);
+    expect(result.userHome).toEqual({ path: fixture.user, included: true });
     expect(result.candidates.map((entry) => [entry.name, entry.selectedByDefault])).toEqual([
       ["profile_claude", undefined],
       ["personal_claude", false],
+      ["personal_project", false],
       ["personal_codex", false],
       ["cursor_user", false],
+      ["profile_claude", false],
+      ["vscode_user", false],
     ]);
-    expect(result.readFiles).toEqual([
-      join(profileHome, ".claude", ".claude.json"),
-      join(user, ".claude.json"),
-      join(user, ".codex", "config.toml"),
-      join(user, ".cursor", "mcp.json"),
+    // The Cursor copy of profile_claude is flagged against the profile's own entry.
+    expect(result.candidates[5]!.issues).toEqual([
+      expect.objectContaining({ field: "name", severity: "warning" }),
     ]);
+    expect(result.readFiles).toHaveLength(5);
+  });
+  it("keeps the Default profile on the account's home even when asked for the user's", async () => {
+    const dir = await temp();
+    await mkdir(join(dir, ".cursor"));
+    await writeFile(
+      join(dir, ".cursor", "mcp.json"),
+      JSON.stringify({ mcpServers: { cursor_user: { command: "c" } } }),
+    );
+    await writeFile(
+      join(dir, ".claude.json"),
+      JSON.stringify({ mcpServers: { account: { command: "a" } } }),
+    );
+    let asked = false;
+    const result = await detectMcpImports({
+      // CLAUDE_CONFIG_DIR is blank, so it must fall back to HOME, not the working directory.
+      environment: { HOME: dir, CLAUDE_CONFIG_DIR: " " },
+      includeUserHome: true,
+      userLocation: () => {
+        asked = true;
+        return { home: join(dir, "elsewhere"), environment: {} };
+      },
+    });
+    expect(asked).toBe(false);
+    expect(result.userHome).toBeUndefined();
+    expect(result.candidates.map((entry) => [entry.name, entry.selectedByDefault])).toEqual([
+      ["account", undefined],
+      ["cursor_user", false],
+    ]);
+  });
+  it("reads a file reached through two spellings once", async () => {
+    const dir = await temp();
+    const codex = join(dir, "codex");
+    await mkdir(codex);
+    await symlink(codex, join(dir, "codex-link"));
+    await writeFile(join(codex, "config.toml"), '[mcp_servers.once]\ncommand="a"');
+    const result = await detectMcpImports({
+      environment: { F5_PROFILE_ISOLATED: "1", HOME: join(dir, "profile"), CODEX_HOME: codex },
+      includeUserHome: true,
+      userLocation: () => ({
+        home: join(dir, "user"),
+        environment: { CODEX_HOME: join(dir, "codex-link") },
+      }),
+    });
+    expect(result.candidates.map((entry) => entry.name)).toEqual(["once"]);
+    expect(result.readFiles).toEqual([join(codex, "config.toml")]);
+  });
+  it("finds the server user's home from HOME, then the account database", () => {
+    expect(serverUserConfigLocation({ HOME: "/work/home" }, () => "/home/a").home).toBe(
+      "/work/home",
+    );
+    expect(serverUserConfigLocation({ HOME: "" }, () => "/home/a").home).toBe("/home/a");
+    expect(
+      serverUserConfigLocation({}, () => {
+        throw new Error("no account entry");
+      }).home.length,
+    ).toBeGreaterThan(0);
   });
   it("refuses symlinks, directories, and oversized import files", async () => {
     const dir = await temp();

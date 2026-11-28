@@ -1,5 +1,6 @@
-- MCP **Import → Detect configurations** finds servers again in a separate profile. It used to
-  look for Cursor, VS Code, Claude Desktop and OpenCode files in the profile's own home folder, so
-  it found nothing and the panel showed nothing. It now reads those files from your own home folder,
-  also offers your own `~/.claude.json` and `~/.codex/config.toml` (not selected by default), reads
-  VS Code's user `mcp.json`, and says which files it read when none of them list a server.
+- MCP **Import → Detect configurations** no longer looks like it did nothing when it finds no
+  servers. It says so and lists the files it read. It now also reads VS Code's user `mcp.json`, and
+  warns that VS Code's `envFile` and sandbox settings are not imported.
+- In a separate profile, Detect reads only the profile's own home folder, where other clients'
+  configuration usually doesn't exist. It now offers **Also look in my home folder**, which adds
+  your own `~/.claude.json`, `~/.codex/config.toml` and other clients' files, all unselected.

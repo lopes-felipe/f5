@@ -2102,6 +2102,94 @@ it("says where detection looked when it finds no servers", async () => {
   }
 });
 
+it("never leaves an earlier detection on screen next to a failed one", async () => {
+  createNativeApiMock();
+  const detect = vi
+    .fn<NativeApi["mcp"]["listImportCandidates"]>()
+    .mockResolvedValueOnce({ candidates: [], issues: [], readFiles: [] })
+    .mockResolvedValueOnce({ candidates: [], issues: [] })
+    .mockRejectedValueOnce(new Error("Detection broke."));
+  nativeApiRef.current!.mcp.listImportCandidates = detect;
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openAddServer("Import");
+    const detectButton = page.getByRole("button", { name: "Detect configurations", exact: true });
+    await detectButton.click();
+    await expect
+      .element(
+        page.getByText("No MCP servers found, and none of the files Detect looks for exist.", {
+          exact: true,
+        }),
+      )
+      .toBeVisible();
+    await detectButton.click();
+    await expect
+      .element(page.getByRole("status").getByText("No MCP servers found.", { exact: true }))
+      .toBeVisible();
+    await detectButton.click();
+    await expect.element(page.getByRole("alert")).toHaveTextContent("Detection broke.");
+    await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("reads the user's own home folder in a separate profile only after asking", async () => {
+  createNativeApiMock();
+  const detect = vi
+    .fn<NativeApi["mcp"]["listImportCandidates"]>()
+    .mockResolvedValueOnce({
+      candidates: [],
+      issues: [],
+      readFiles: [],
+      userHome: { path: "/Users/a", included: false },
+    })
+    .mockResolvedValue({
+      candidates: [
+        {
+          id: "home",
+          name: "home-server",
+          source: "/Users/a/.cursor/mcp.json",
+          selectedByDefault: false,
+          server: { type: "stdio" as const, command: "node" },
+          issues: [],
+        },
+      ],
+      issues: [],
+      readFiles: ["/Users/a/.cursor/mcp.json"],
+      userHome: { path: "/Users/a", included: true },
+    });
+  nativeApiRef.current!.mcp.listImportCandidates = detect;
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openAddServer("Import");
+    await page.getByRole("button", { name: "Detect configurations", exact: true }).click();
+    await vi.waitFor(() =>
+      expect(detect).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ includeUserHome: expect.anything() }),
+      ),
+    );
+    await page.getByRole("button", { name: "Also look in my home folder", exact: true }).click();
+    await vi.waitFor(() =>
+      expect(detect).toHaveBeenLastCalledWith(expect.objectContaining({ includeUserHome: true })),
+    );
+    await expect
+      .element(page.getByRole("checkbox", { name: "home-server", exact: true }))
+      .not.toBeChecked();
+    await expect
+      .element(page.getByRole("button", { name: "Also look in my home folder", exact: true }))
+      .not.toBeInTheDocument();
+    // Later detections keep reading the home folder the user chose.
+    await page.getByRole("button", { name: "Detect configurations", exact: true }).click();
+    await vi.waitFor(() => expect(detect).toHaveBeenCalledTimes(3));
+    expect(detect).toHaveBeenLastCalledWith(expect.objectContaining({ includeUserHome: true }));
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
 it("tests an unsaved draft only on click and opens its bounded tool summaries", async () => {
   const mocks = createNativeApiMock();
   const probe = vi.fn(async () => ({

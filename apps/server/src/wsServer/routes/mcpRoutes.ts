@@ -13,7 +13,7 @@ import { Effect, Schema, Struct } from "effect";
 import type { ServerSecretStoreShape } from "../../auth/Services/ServerSecretStore.ts";
 import type { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import type { makeMcpAccountExecutionResolver } from "../../mcp/accountExecution.ts";
-import { detectMcpImports, serverUserConfigLocation } from "../../mcp/McpImportDetection.ts";
+import { detectMcpImports } from "../../mcp/McpImportDetection.ts";
 import type { McpHub } from "../../mcp/hub/McpHub.ts";
 import type { McpHubAuth } from "../../mcp/hub/McpHubAuth.ts";
 import type { McpHubGovernanceService } from "../../mcp/hub/McpHubGovernanceLive.ts";
@@ -261,7 +261,7 @@ export const mcpRoutes = ({
       return yield* routePromise(() =>
         detectMcpImports({
           environment: execution.environment,
-          user: serverUserConfigLocation(),
+          includeUserHome: body.includeUserHome === true,
           ...(body.projectId ? { cwd: execution.cwd } : {}),
         }),
       );
