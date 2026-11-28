@@ -54,7 +54,7 @@ export async function fixPath(
     const shell = env.SHELL ?? "/bin/zsh";
     const inheritedMultishell = env.FNM_MULTISHELL_PATH;
     const result = await readEnvironmentFromLoginShellAsync(shell, LOGIN_SHELL_PATH_ENV_NAMES);
-    applyLoginShellPath(env, result, inheritedMultishell);
+    await applyLoginShellPath(env, result, inheritedMultishell);
   } catch {
     // Silently ignore — keep default PATH
   }

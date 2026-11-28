@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { constants } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import * as NodePath from "node:path";
 
 const PATH_CAPTURE_START = "__T3CODE_PATH_START__";
@@ -8,27 +10,47 @@ const DEBUG_TRAP_SHELLS = new Set(["bash", "zsh", "sh", "ksh", "ksh93"]);
 
 export const LOGIN_SHELL_PATH_ENV_NAMES = ["PATH", "__MISE_DIFF", "FNM_MULTISHELL_PATH"] as const;
 
-export function applyLoginShellPath(
+function isWithinDirectory(entry: string, directory: string): boolean {
+  return entry === directory || entry.startsWith(directory + "/");
+}
+
+async function hasExecutableNode(bin: string): Promise<boolean> {
+  const node = bin + "/node";
+  try {
+    if (!(await stat(node)).isFile()) return false;
+    await access(node, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function applyLoginShellPath(
   env: NodeJS.ProcessEnv,
   shellEnvironment: Partial<Record<string, string>>,
   inheritedMultishell: string | undefined,
-): boolean {
-  let path = shellEnvironment.PATH;
-  if (!path?.trim()) return false;
+): Promise<boolean> {
+  let entries = shellEnvironment.PATH?.split(":");
+  if (!entries?.some((entry) => entry.trim())) return false;
 
-  const multishell = shellEnvironment.FNM_MULTISHELL_PATH;
-  // The probe inherits PATH and fnm prepends a new multishell directory.
-  if (multishell && inheritedMultishell && multishell !== inheritedMultishell) {
-    path = path
-      .split(":")
-      .filter(
-        (entry) => entry !== inheritedMultishell && !entry.startsWith(inheritedMultishell + "/"),
-      )
-      .join(":");
-    if (!path.trim()) return false;
+  let multishell = shellEnvironment.FNM_MULTISHELL_PATH;
+  if (
+    multishell &&
+    inheritedMultishell &&
+    multishell !== inheritedMultishell &&
+    entries.some((entry) => isWithinDirectory(entry, inheritedMultishell))
+  ) {
+    const bin = multishell + "/bin";
+    // Without a default version, fnm can prepend a dangling multishell symlink.
+    // Keep the inherited directory and discard the failed replacement in that case.
+    const canReplace = entries.includes(bin) && (await hasExecutableNode(bin));
+    const discarded = canReplace ? inheritedMultishell : multishell;
+    entries = entries.filter((entry) => !isWithinDirectory(entry, discarded));
+    if (!entries.some((entry) => entry.trim())) return false;
+    if (!canReplace) multishell = inheritedMultishell;
   }
 
-  env.PATH = path;
+  env.PATH = entries.join(":");
   if (multishell) env.FNM_MULTISHELL_PATH = multishell;
   // mise needs its PATH record to avoid rebuilding PATH behind same-named wrappers.
   if (shellEnvironment.__MISE_DIFF) env.__MISE_DIFF = shellEnvironment.__MISE_DIFF;

@@ -1,17 +1,99 @@
 import { spawn, type SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  applyLoginShellPath,
   buildEnvironmentCaptureCommand,
   extractPathFromShellOutput,
   readEnvironmentFromLoginShellAsync,
 } from "./shell";
+
+describe("applyLoginShellPath", () => {
+  it.each([
+    [undefined, "/fnm/probe", "/fnm/probe/bin:/usr/bin", "/fnm/probe"],
+    ["", "/fnm/probe", "/fnm/probe/bin:/usr/bin", "/fnm/probe"],
+    ["/fnm/old", "/fnm/old", "/fnm/old/bin:/usr/bin", "/fnm/old"],
+    ["/fnm/old", undefined, "/fnm/old/bin:/usr/bin", "/fnm/old"],
+    ["/fnm/old", "/fnm/probe", "/fnm/probe/bin:/fnm/other/bin:/usr/bin", "/fnm/probe"],
+  ])(
+    "applies PATH with inherited fnm value %s and probe value %s",
+    async (inherited, probe, path, expected) => {
+      const env: NodeJS.ProcessEnv = { FNM_MULTISHELL_PATH: inherited };
+      expect(
+        await applyLoginShellPath(env, { PATH: path, FNM_MULTISHELL_PATH: probe }, inherited),
+      ).toBe(true);
+      expect(env).toMatchObject({ PATH: path, FNM_MULTISHELL_PATH: expected });
+    },
+  );
+
+  it.each([": :", ":/fnm/probe/old/bin:"])(
+    "preserves the inherited environment for unusable PATH %s",
+    async (path) => {
+      const inherited = "/fnm/probe/old";
+      const original = {
+        PATH: "/usr/bin",
+        FNM_MULTISHELL_PATH: inherited,
+        __MISE_DIFF: "inherited",
+      };
+      const env = { ...original };
+      expect(
+        await applyLoginShellPath(
+          env,
+          {
+            PATH: path,
+            FNM_MULTISHELL_PATH: "/fnm/probe",
+            __MISE_DIFF: "probe",
+          },
+          inherited,
+        ),
+      ).toBe(false);
+      expect(env).toEqual(original);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps inherited Node until the replacement is executable",
+    async ({ onTestFinished }) => {
+      const root = await mkdtemp(join(tmpdir(), "f5-fnm-"));
+      onTestFinished(() => rm(root, { recursive: true, force: true }));
+      const inherited = join(root, "inherited");
+      const replacement = join(root, "replacement");
+      const target = join(root, "default");
+      await mkdir(join(inherited, "bin"), { recursive: true });
+      await writeFile(join(inherited, "bin", "node"), "#!/bin/sh\n", { mode: 0o755 });
+      await symlink(target, replacement, "dir");
+
+      const inheritedPath = inherited + "/bin:/fnm/untracked/bin:/usr/bin";
+      const probe = {
+        PATH: replacement + "/bin:" + inheritedPath,
+        FNM_MULTISHELL_PATH: replacement,
+      };
+      const env = { PATH: inheritedPath, FNM_MULTISHELL_PATH: inherited };
+
+      expect(await applyLoginShellPath(env, probe, inherited)).toBe(true);
+      expect(env).toEqual({ PATH: inheritedPath, FNM_MULTISHELL_PATH: inherited });
+
+      const node = join(target, "bin", "node");
+      await mkdir(join(target, "bin"), { recursive: true });
+      await writeFile(node, "#!/bin/sh\n", { mode: 0o644 });
+      expect(await applyLoginShellPath(env, probe, inherited)).toBe(true);
+      expect(env).toEqual({ PATH: inheritedPath, FNM_MULTISHELL_PATH: inherited });
+
+      await chmod(node, 0o755);
+      expect(await applyLoginShellPath(env, probe, inherited)).toBe(true);
+      expect(env).toEqual({
+        PATH: replacement + "/bin:/fnm/untracked/bin:/usr/bin",
+        FNM_MULTISHELL_PATH: replacement,
+      });
+    },
+  );
+});
 
 function makeProbe() {
   const child = Object.assign(new EventEmitter(), {

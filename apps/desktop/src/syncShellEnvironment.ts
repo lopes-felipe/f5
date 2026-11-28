@@ -74,7 +74,7 @@ export async function syncShellEnvironment(
       }
     }
 
-    prepared = applyLoginShellPath(env, shellEnvironment, inheritedMultishell);
+    prepared = await applyLoginShellPath(env, shellEnvironment, inheritedMultishell);
 
     if (!env.SSH_AUTH_SOCK && shellEnvironment.SSH_AUTH_SOCK) {
       env.SSH_AUTH_SOCK = shellEnvironment.SSH_AUTH_SOCK;

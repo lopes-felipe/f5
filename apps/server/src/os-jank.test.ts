@@ -1,4 +1,5 @@
 import * as NodeOS from "node:os";
+import { access, stat } from "node:fs/promises";
 import type { WindowsPathHydration } from "@t3tools/shared/windowsPath";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -10,6 +11,7 @@ const readEnvironmentFromLoginShell = vi.fn(
 const ensureWindowsPathHydration = vi.fn(
   async (): Promise<WindowsPathHydration> => ({ path: undefined, registryRead: false }),
 );
+vi.mock("node:fs/promises", { spy: true });
 vi.mock("@t3tools/shared/shell", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@t3tools/shared/shell")>()),
   readEnvironmentFromLoginShellAsync: readEnvironmentFromLoginShell,
@@ -46,13 +48,17 @@ describe("fixPath", () => {
     expect(env.__MISE_DIFF).toBe("mise-diff");
   });
 
-  it("replaces the inherited fnm multishell directory on each login-shell read", async () => {
+  it("replaces the inherited fnm multishell directory across nested launches", async () => {
     const inherited = "/tmp/fnm_multishells/launcher";
     const env: NodeJS.ProcessEnv = {
       PATH: `${inherited}:${inherited}/bin:${inherited}-other/bin:/usr/bin`,
       FNM_MULTISHELL_PATH: inherited,
     };
     for (const multishell of ["/tmp/fnm_multishells/first", "/tmp/fnm_multishells/second"]) {
+      vi.mocked(stat).mockResolvedValueOnce({ isFile: () => true } as Awaited<
+        ReturnType<typeof stat>
+      >);
+      vi.mocked(access).mockResolvedValueOnce(undefined);
       readEnvironmentFromLoginShell.mockReturnValueOnce({
         PATH: `${multishell}/bin:${env.PATH}`,
         FNM_MULTISHELL_PATH: multishell,

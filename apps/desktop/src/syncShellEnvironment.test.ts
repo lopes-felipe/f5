@@ -1,9 +1,16 @@
+import { access, stat } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 
 import { syncShellEnvironment } from "./syncShellEnvironment";
 
+vi.mock("node:fs/promises", { spy: true });
+
 describe("syncShellEnvironment", () => {
   it("hydrates PATH and missing SSH_AUTH_SOCK from the login shell on macOS", async () => {
+    vi.mocked(stat).mockResolvedValueOnce({ isFile: () => true } as Awaited<
+      ReturnType<typeof stat>
+    >);
+    vi.mocked(access).mockResolvedValueOnce(undefined);
     const env: NodeJS.ProcessEnv = {
       SHELL: "/bin/zsh",
       PATH: "/tmp/fnm_multishells/inherited/bin:/usr/bin",
@@ -99,7 +106,7 @@ describe("syncShellEnvironment", () => {
     expect(env.LC_CTYPE).toBe("en_US.UTF-8");
   });
 
-  it.each([{}, { PATH: "  " }, { SSH_AUTH_SOCK: "/tmp/agent.sock" }])(
+  it.each([{}, { PATH: "  " }, { PATH: ": :" }, { SSH_AUTH_SOCK: "/tmp/agent.sock" }])(
     "leaves macOS preparation incomplete when the login shell returns no PATH (%o)",
     async (shell) => {
       const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin:/bin" };
