@@ -23,7 +23,8 @@ export interface SavedWorkflowSlot {
 
 /**
  * The setup last submitted for one workflow type. The prompt, file references, compare
- * branch, cost limit and reader persona are per-run and never saved.
+ * branch, plans directory, cost limit and reader persona are per-run or per-repository and
+ * never saved. Code review auto-post is kept per project in `autoPostProjectIds`.
  */
 export interface SavedWorkflowSetup {
   /** Authors, reviewers or investigators in row order; 2 up to the type's maximum. */
@@ -32,34 +33,40 @@ export interface SavedWorkflowSetup {
   merge: SavedWorkflowSlot;
   /** Feature, Document and Investigation. */
   selfReviewEnabled?: boolean;
-  /** Feature. */
-  plansDirectory?: string;
   /** Document. */
   documentType?: WorkflowDocumentType;
   /** Document. */
   readerReviewEnabled?: boolean;
-  /** Document; `null` when the reader follows the merge model. */
+  /** Document; `null` when the reader follows the authors and merge model. */
   reader?: SavedWorkflowSlot | null;
-  /** Code Review: the checkbox's own value, which applies only once a PR is detected. */
-  autoPost?: boolean;
 }
 
 export interface WorkflowCreatePreferencesState {
   lastWorkflowType: WorkflowTypeValue | null;
   setupsByType: Partial<Record<WorkflowTypeValue, SavedWorkflowSetup>>;
+  /**
+   * Projects whose last code review was started with auto-post on and a PR to post to. Auto-post
+   * publishes from the user's GitHub account, so an opt-in never carries to another project.
+   */
+  autoPostProjectIds: string[];
   recordSubmitted: (type: WorkflowTypeValue, setup: SavedWorkflowSetup) => void;
+  recordAutoPost: (projectId: string, enabled: boolean) => void;
 }
 
 export const WORKFLOW_CREATE_PREFERENCES_STORAGE_KEY = "f5:workflow-create-preferences:v1";
 
+/** Most recent opt-ins kept; older projects fall back to auto-post off. */
+export const AUTO_POST_PROJECT_IDS_MAX_LENGTH = 50;
+
 type PersistedWorkflowCreatePreferences = Pick<
   WorkflowCreatePreferencesState,
-  "lastWorkflowType" | "setupsByType"
+  "lastWorkflowType" | "setupsByType" | "autoPostProjectIds"
 >;
 
 const EMPTY_WORKFLOW_CREATE_PREFERENCES: PersistedWorkflowCreatePreferences = {
   lastWorkflowType: null,
   setupsByType: {},
+  autoPostProjectIds: [],
 };
 
 function isWorkflowType(value: unknown): value is WorkflowTypeValue {
@@ -96,9 +103,6 @@ function normalizeSetup(type: WorkflowTypeValue, value: unknown): SavedWorkflowS
   if (typeof value.selfReviewEnabled === "boolean") {
     setup.selfReviewEnabled = value.selfReviewEnabled;
   }
-  if (typeof value.plansDirectory === "string" && value.plansDirectory.trim().length > 0) {
-    setup.plansDirectory = value.plansDirectory.trim();
-  }
   if (WORKFLOW_DOCUMENT_TYPE_ORDER.includes(value.documentType as WorkflowDocumentType)) {
     setup.documentType = value.documentType as WorkflowDocumentType;
   }
@@ -111,10 +115,15 @@ function normalizeSetup(type: WorkflowTypeValue, value: unknown): SavedWorkflowS
     const reader = normalizeSlot(value.reader);
     if (reader) setup.reader = reader;
   }
-  if (typeof value.autoPost === "boolean") {
-    setup.autoPost = value.autoPost;
-  }
   return setup;
+}
+
+function normalizeProjectIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids = value.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0,
+  );
+  return [...new Set(ids)].slice(0, AUTO_POST_PROJECT_IDS_MAX_LENGTH);
 }
 
 export function normalizePersistedWorkflowCreatePreferences(
@@ -131,6 +140,7 @@ export function normalizePersistedWorkflowCreatePreferences(
   return {
     lastWorkflowType: isWorkflowType(value.lastWorkflowType) ? value.lastWorkflowType : null,
     setupsByType,
+    autoPostProjectIds: normalizeProjectIds(value.autoPostProjectIds),
   };
 }
 
@@ -147,6 +157,16 @@ export const useWorkflowCreatePreferencesStore = create<WorkflowCreatePreference
             : state.setupsByType,
         }));
       },
+      recordAutoPost: (projectId, enabled) => {
+        set((state) => {
+          const others = state.autoPostProjectIds.filter((id) => id !== projectId);
+          return {
+            autoPostProjectIds: enabled
+              ? [projectId, ...others].slice(0, AUTO_POST_PROJECT_IDS_MAX_LENGTH)
+              : others,
+          };
+        });
+      },
     }),
     {
       name: WORKFLOW_CREATE_PREFERENCES_STORAGE_KEY,
@@ -155,6 +175,7 @@ export const useWorkflowCreatePreferencesStore = create<WorkflowCreatePreference
       partialize: (state) => ({
         lastWorkflowType: state.lastWorkflowType,
         setupsByType: state.setupsByType,
+        autoPostProjectIds: state.autoPostProjectIds,
       }),
       merge: (persistedState, currentState) => ({
         ...currentState,
@@ -163,3 +184,13 @@ export const useWorkflowCreatePreferencesStore = create<WorkflowCreatePreference
     },
   ),
 );
+
+// Each write stores the whole map, so a tab must pick up another tab's submits before its own
+// next write, or that write would drop them.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === WORKFLOW_CREATE_PREFERENCES_STORAGE_KEY) {
+      void useWorkflowCreatePreferencesStore.persist.rehydrate();
+    }
+  });
+}

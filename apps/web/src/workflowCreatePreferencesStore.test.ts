@@ -11,14 +11,9 @@ const claude: SavedWorkflowSlot = { provider: "claudeAgent", model: "claude-opus
 
 describe("normalizePersistedWorkflowCreatePreferences", () => {
   it("returns empty preferences for unreadable values", () => {
-    expect(normalizePersistedWorkflowCreatePreferences(null)).toEqual({
-      lastWorkflowType: null,
-      setupsByType: {},
-    });
-    expect(normalizePersistedWorkflowCreatePreferences("codeReview")).toEqual({
-      lastWorkflowType: null,
-      setupsByType: {},
-    });
+    const empty = { lastWorkflowType: null, setupsByType: {}, autoPostProjectIds: [] };
+    expect(normalizePersistedWorkflowCreatePreferences(null)).toEqual(empty);
+    expect(normalizePersistedWorkflowCreatePreferences("codeReview")).toEqual(empty);
   });
 
   it("drops unknown workflow types, providers and document types", () => {
@@ -69,12 +64,24 @@ describe("normalizePersistedWorkflowCreatePreferences", () => {
     const normalized = normalizePersistedWorkflowCreatePreferences({
       setupsByType: {
         planning: { actors, merge: codex },
-        codeReview: { actors, merge: codex, autoPost: true },
+        codeReview: { actors, merge: codex },
       },
     });
     expect(normalized.setupsByType.planning?.actors).toHaveLength(4);
     expect(normalized.setupsByType.codeReview?.actors).toHaveLength(6);
-    expect(normalized.setupsByType.codeReview?.autoPost).toBe(true);
+  });
+
+  it("drops per-repository fields and keeps distinct auto-post project ids", () => {
+    const normalized = normalizePersistedWorkflowCreatePreferences({
+      setupsByType: {
+        planning: { actors: [codex, claude], merge: codex, plansDirectory: "docs/rfcs" },
+        codeReview: { actors: [codex, claude], merge: codex, autoPost: true },
+      },
+      autoPostProjectIds: ["project-1", "project-1", 7, "", "project-2"],
+    });
+    expect(normalized.setupsByType.planning).toEqual({ actors: [codex, claude], merge: codex });
+    expect(normalized.setupsByType.codeReview).toEqual({ actors: [codex, claude], merge: codex });
+    expect(normalized.autoPostProjectIds).toEqual(["project-1", "project-2"]);
   });
 
   it("keeps only the slot's own provider options", () => {
@@ -118,7 +125,11 @@ describe("normalizePersistedWorkflowCreatePreferences", () => {
 
 describe("useWorkflowCreatePreferencesStore", () => {
   beforeEach(() => {
-    useWorkflowCreatePreferencesStore.setState({ lastWorkflowType: null, setupsByType: {} });
+    useWorkflowCreatePreferencesStore.setState({
+      lastWorkflowType: null,
+      setupsByType: {},
+      autoPostProjectIds: [],
+    });
   });
 
   it("records the submitted type and keeps other types' setups", () => {
@@ -127,13 +138,8 @@ describe("useWorkflowCreatePreferencesStore", () => {
       actors: [codex, claude],
       merge: codex,
       selfReviewEnabled: false,
-      plansDirectory: "docs/plans",
     });
-    store.recordSubmitted("codeReview", {
-      actors: [codex, claude, codex],
-      merge: claude,
-      autoPost: true,
-    });
+    store.recordSubmitted("codeReview", { actors: [codex, claude, codex], merge: claude });
 
     const state = useWorkflowCreatePreferencesStore.getState();
     expect(state.lastWorkflowType).toBe("codeReview");
@@ -141,9 +147,19 @@ describe("useWorkflowCreatePreferencesStore", () => {
       actors: [codex, claude],
       merge: codex,
       selfReviewEnabled: false,
-      plansDirectory: "docs/plans",
     });
     expect(state.setupsByType.codeReview?.actors).toHaveLength(3);
-    expect(state.setupsByType.codeReview?.autoPost).toBe(true);
+  });
+
+  it("keeps auto-post per project and clears it when a review starts without posting", () => {
+    const store = useWorkflowCreatePreferencesStore.getState();
+    store.recordAutoPost("project-1", true);
+    store.recordAutoPost("project-2", true);
+    expect(useWorkflowCreatePreferencesStore.getState().autoPostProjectIds).toEqual([
+      "project-2",
+      "project-1",
+    ]);
+    store.recordAutoPost("project-1", false);
+    expect(useWorkflowCreatePreferencesStore.getState().autoPostProjectIds).toEqual(["project-2"]);
   });
 });

@@ -171,23 +171,47 @@ function actorRow(defaults: {
 }
 
 /**
- * One workflow type's models and type-specific options in dialog-state form. Options a type
- * does not use are absent and leave the dialog's current value alone when applied.
+ * A workflow type's own options in dialog-state form. Options another type uses are absent and
+ * leave the dialog's current value alone when applied.
  */
-interface WorkflowDialogSetup {
+interface WorkflowTypeOptions {
+  selfReviewEnabled?: boolean;
+  investigationSelfReviewEnabled?: boolean;
+  documentType?: WorkflowDocumentType;
+  readerReviewEnabled?: boolean;
+  readerSlot?: WorkflowModelSlot | null;
+}
+
+/** One workflow type's models and own options in dialog-state form. */
+interface WorkflowDialogSetup extends WorkflowTypeOptions {
   actors: WorkflowActorRow[];
   merge: {
     provider: ProviderKind;
     model: string;
     modelOptions: ProviderModelOptions | undefined;
   };
-  selfReviewEnabled?: boolean;
-  investigationSelfReviewEnabled?: boolean;
-  plansDirectory?: string;
-  documentType?: WorkflowDocumentType;
-  readerReviewEnabled?: boolean;
-  readerSlot?: WorkflowModelSlot | null;
-  autoPostReview?: boolean;
+}
+
+/**
+ * The options a type starts with when nothing was saved or edited for it. Feature and Document
+ * share the own-model review state, so a switch must set it rather than carry the other's value.
+ * Auto-post is per project and the plans directory is per repository, so neither is here.
+ */
+const WORKFLOW_TYPE_OPTION_DEFAULTS: Record<WorkflowTypeValue, WorkflowTypeOptions> = {
+  planning: { selfReviewEnabled: true },
+  document: {
+    selfReviewEnabled: true,
+    documentType: DEFAULT_WORKFLOW_DOCUMENT_TYPE,
+    readerReviewEnabled: true,
+    readerSlot: null,
+  },
+  codeReview: {},
+  investigation: { investigationSelfReviewEnabled: false },
+};
+
+/** Whether the user last chose to auto-post code reviews in this project. */
+function savedAutoPostReview(projectId: ProjectId): boolean {
+  return useWorkflowCreatePreferencesStore.getState().autoPostProjectIds.includes(projectId);
 }
 
 function savedSlot(slot: WorkflowModelSlot): SavedWorkflowSlot {
@@ -202,7 +226,10 @@ function savedSlot(slot: WorkflowModelSlot): SavedWorkflowSlot {
 function savedWorkflowSetup(type: WorkflowTypeValue): WorkflowDialogSetup | null {
   const saved = useWorkflowCreatePreferencesStore.getState().setupsByType[type];
   if (!saved) return null;
+  // Starts from the type's defaults, so an option that was not saved never keeps another
+  // type's value.
   const setup: WorkflowDialogSetup = {
+    ...WORKFLOW_TYPE_OPTION_DEFAULTS[type],
     actors: saved.actors.map((slot) =>
       actorRow({ provider: slot.provider, model: slot.model, modelOptions: slot.modelOptions }),
     ),
@@ -218,18 +245,12 @@ function savedWorkflowSetup(type: WorkflowTypeValue): WorkflowDialogSetup | null
       setup.selfReviewEnabled = saved.selfReviewEnabled;
     }
   }
-  if (type === "planning" && saved.plansDirectory !== undefined) {
-    setup.plansDirectory = saved.plansDirectory;
-  }
   if (type === "document") {
     if (saved.documentType !== undefined) setup.documentType = saved.documentType;
     if (saved.readerReviewEnabled !== undefined) {
       setup.readerReviewEnabled = saved.readerReviewEnabled;
     }
     if (saved.reader !== undefined) setup.readerSlot = saved.reader;
-  }
-  if (type === "codeReview" && saved.autoPost !== undefined) {
-    setup.autoPostReview = saved.autoPost;
   }
   return setup;
 }
@@ -362,7 +383,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
    */
   const materializedUploadIdsRef = useRef(new Map<string, string>());
   const [reviewBranch, setReviewBranch] = useState("");
-  const [plansDirectory, setPlansDirectory] = useState(initial.plansDirectory ?? "plans");
+  const [plansDirectory, setPlansDirectory] = useState("plans");
   // A type switch loads that type's saved or stashed setup; with neither, the rows stay.
   const [actors, setActors] = useState<WorkflowActorRow[]>(initial.actors);
   const [mergeProvider, setMergeProvider] = useState<ProviderKind>(initial.merge.provider);
@@ -374,7 +395,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const [investigationSelfReviewEnabled, setInvestigationSelfReviewEnabled] = useState(
     initial.investigationSelfReviewEnabled ?? false,
   );
-  const [autoPostReview, setAutoPostReview] = useState(initial.autoPostReview ?? false);
+  // Restored only for the project the user opted in from, since it posts publicly.
+  const [autoPostReview, setAutoPostReview] = useState(() => savedAutoPostReview(props.projectId));
   /** Each type's in-dialog setup from before switching away, for this dialog session only. */
   const stashedSetupsRef = useRef(new Map<WorkflowTypeValue, WorkflowDialogSetup>());
   const [maxCostUsd, setMaxCostUsd] = useState("");
@@ -451,6 +473,20 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     effectiveReaderSlot.provider,
     effectiveReaderSlot.model,
   );
+  // A remembered reader model can fall back like the other slots; keep the chosen reader on the
+  // model that gets submitted, dropping options that belonged to the old model.
+  useEffect(() => {
+    if (!serverConfigQuery.data || !readerSlot || readerSlot.model === readerSelection) return;
+    const preservesOptions =
+      normalizeModelSlug(readerSlot.model, readerSlot.provider) === readerSelection;
+    setReaderSlot({
+      provider: readerSlot.provider,
+      model: readerSelection,
+      ...(preservesOptions && readerSlot.modelOptions
+        ? { modelOptions: readerSlot.modelOptions }
+        : {}),
+    });
+  }, [readerSelection, readerSlot, serverConfigQuery.data]);
   // A remembered final-stage provider can lose support after it was picked; the picker only
   // stops new picks. The Reader counts only while reader review is on.
   const mergeProviderError = serverConfigQuery.data
@@ -485,7 +521,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           : "Posting supports GitHub pull requests only.";
   const autoPostReviewDescription = canAutoPostReview
     ? `${autoPostReviewTarget} It posts from your GitHub account without a review step, and the review can quote text from the PR.`
-    : autoPostReviewTarget;
+    : autoPostReview
+      ? `${autoPostReviewTarget} Nothing is posted until then; untick to turn auto-post off.`
+      : autoPostReviewTarget;
   const parsedMaxCostUsd = maxCostUsd.trim().length > 0 ? Number(maxCostUsd) : null;
   const validMaxCostUsd =
     parsedMaxCostUsd === null || (Number.isFinite(parsedMaxCostUsd) && parsedMaxCostUsd > 0);
@@ -586,42 +624,47 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     });
   };
 
-  /** Applies a setup's rows and merge, and only the options it carries. */
+  /** Applies only the options present, leaving other types' options alone. */
+  const applyTypeOptions = (options: WorkflowTypeOptions) => {
+    if (options.selfReviewEnabled !== undefined) setSelfReviewEnabled(options.selfReviewEnabled);
+    if (options.investigationSelfReviewEnabled !== undefined) {
+      setInvestigationSelfReviewEnabled(options.investigationSelfReviewEnabled);
+    }
+    if (options.documentType !== undefined) setDocumentType(options.documentType);
+    if (options.readerReviewEnabled !== undefined) {
+      setReaderReviewEnabled(options.readerReviewEnabled);
+    }
+    if (options.readerSlot !== undefined) setReaderSlot(options.readerSlot);
+  };
+
   const applySetup = (setup: WorkflowDialogSetup) => {
     setActors(setup.actors);
     setMergeProvider(setup.merge.provider);
     setMergeModel(setup.merge.model);
     setMergeModelOptions(setup.merge.modelOptions);
-    if (setup.selfReviewEnabled !== undefined) setSelfReviewEnabled(setup.selfReviewEnabled);
-    if (setup.investigationSelfReviewEnabled !== undefined) {
-      setInvestigationSelfReviewEnabled(setup.investigationSelfReviewEnabled);
-    }
-    if (setup.plansDirectory !== undefined) setPlansDirectory(setup.plansDirectory);
-    if (setup.documentType !== undefined) setDocumentType(setup.documentType);
-    if (setup.readerReviewEnabled !== undefined) setReaderReviewEnabled(setup.readerReviewEnabled);
-    if (setup.readerSlot !== undefined) setReaderSlot(setup.readerSlot);
-    if (setup.autoPostReview !== undefined) setAutoPostReview(setup.autoPostReview);
+    applyTypeOptions(setup);
   };
 
   /** The current rows, merge and the options `type` uses, as the dialog shows them. */
   const captureSetup = (type: WorkflowTypeValue): WorkflowDialogSetup => ({
     actors,
     merge: { provider: mergeProvider, model: mergeModel, modelOptions: mergeModelOptions },
-    ...(type === "planning" ? { selfReviewEnabled, plansDirectory } : {}),
+    ...(type === "planning" ? { selfReviewEnabled } : {}),
     ...(type === "document"
       ? { selfReviewEnabled, documentType, readerReviewEnabled, readerSlot }
       : {}),
-    ...(type === "codeReview" ? { autoPostReview } : {}),
     ...(type === "investigation" ? { investigationSelfReviewEnabled } : {}),
   });
 
   // Switching keeps the edits made to the type being left for a later switch back, then loads
-  // the next type's edits or its saved setup. With neither, the rows and options stay.
+  // the next type's edits or its saved setup. With neither, the rows stay and the type's
+  // options start from their defaults.
   const switchWorkflowType = (next: WorkflowTypeValue) => {
     if (next === workflowType) return;
     stashedSetupsRef.current.set(workflowType, captureSetup(workflowType));
     const setup = stashedSetupsRef.current.get(next) ?? savedWorkflowSetup(next);
     if (setup) applySetup(setup);
+    else applyTypeOptions(WORKFLOW_TYPE_OPTION_DEFAULTS[next]);
     setWorkflowType(next);
   };
 
@@ -629,14 +672,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     const { type, ...setup } = initialSetup();
     stashedSetupsRef.current.clear();
     setWorkflowType(type);
-    // Options the starting setup does not carry go back to their defaults.
-    setDocumentType(DEFAULT_WORKFLOW_DOCUMENT_TYPE);
-    setReaderReviewEnabled(true);
-    setReaderSlot(null);
+    // Every type's options go back to their defaults before the starting setup applies.
+    for (const options of Object.values(WORKFLOW_TYPE_OPTION_DEFAULTS)) applyTypeOptions(options);
     setPlansDirectory("plans");
-    setSelfReviewEnabled(true);
-    setInvestigationSelfReviewEnabled(false);
-    setAutoPostReview(false);
+    setAutoPostReview(savedAutoPostReview(props.projectId));
     applySetup(setup);
     setReaderPersona("");
     setRequirementDraft({ text: "", mentions: [], cursor: 0 });
@@ -701,6 +740,8 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     }
     setAttachedFilePaths([]);
     setReviewBranch("");
+    // Auto-post is opted into per project, so the new project's own choice applies.
+    setAutoPostReview(savedAutoPostReview(projectId));
     setProjectChangeNote(
       dropsFiles && dropsBranch
         ? "File references and the review branch were cleared for the new project."
@@ -1039,28 +1080,35 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         >;
       const mergeSlot = buildSlot(mergeProvider, mergeSelection, mergeModelOptions);
       // The models as submitted (resolved and normalized) and this type's options.
+      // A reader the user picked, built once so the run and the saved setup agree. Without
+      // one, the reader follows the authors and merge model and is saved as `null`.
+      const pickedReaderSlot = readerSlot
+        ? buildSlot(readerSlot.provider, readerSelection, readerSlot.modelOptions)
+        : null;
       const submittedSetup: SavedWorkflowSetup = {
         actors: [branchASlot, branchBSlot, ...extraActorSlots].map(savedSlot),
         merge: savedSlot(mergeSlot),
-        ...(workflowType === "planning"
-          ? { selfReviewEnabled, plansDirectory: plansDirectory.trim() || "plans" }
-          : {}),
+        ...(workflowType === "planning" ? { selfReviewEnabled } : {}),
         ...(workflowType === "document"
           ? {
               selfReviewEnabled,
               documentType,
               readerReviewEnabled,
-              reader: readerSlot ? savedSlot(readerSlot) : null,
+              reader: pickedReaderSlot ? savedSlot(pickedReaderSlot) : null,
             }
           : {}),
-        ...(workflowType === "codeReview" ? { autoPost: autoPostReview } : {}),
         ...(workflowType === "investigation"
           ? { selfReviewEnabled: investigationSelfReviewEnabled }
           : {}),
       };
       // Saved only once the run exists, so a cancelled or failed start changes nothing.
       const onCreated = (workflowId: string) => {
-        useWorkflowCreatePreferencesStore.getState().recordSubmitted(workflowType, submittedSetup);
+        const preferences = useWorkflowCreatePreferencesStore.getState();
+        preferences.recordSubmitted(workflowType, submittedSetup);
+        // Only a review that will actually post keeps auto-post on for this project.
+        if (workflowType === "codeReview") {
+          preferences.recordAutoPost(props.projectId, autoPostReviewEffective);
+        }
         props.onWorkflowCreated?.(workflowId);
       };
       if (workflowType === "planning") {
@@ -1096,11 +1144,13 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               : {}),
             ...(readerReviewEnabled
               ? {
-                  reader: buildSlot(
-                    effectiveReaderSlot.provider,
-                    readerSelection,
-                    effectiveReaderSlot.modelOptions,
-                  ),
+                  reader:
+                    pickedReaderSlot ??
+                    buildSlot(
+                      effectiveReaderSlot.provider,
+                      readerSelection,
+                      effectiveReaderSlot.modelOptions,
+                    ),
                 }
               : {}),
             branchA: branchASlot,
@@ -1607,8 +1657,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               {workflowType === "codeReview" ? (
                 <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
                   <WorkflowOptionCheckbox
-                    disabled={!canAutoPostReview}
-                    checked={autoPostReviewEffective}
+                    // A remembered opt-in shows as checked before a PR is named, and stays
+                    // enabled so it can be turned off.
+                    disabled={!canAutoPostReview && !autoPostReview}
+                    checked={autoPostReview}
                     onCheckedChange={setAutoPostReview}
                     label="Post merged review to the PR when it finishes"
                     description={autoPostReviewDescription}
