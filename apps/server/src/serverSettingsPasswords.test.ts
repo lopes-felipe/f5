@@ -4,12 +4,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { Effect, Exit, FileSystem, Layer } from "effect";
 import { it, assert } from "@effect/vitest";
-import * as Semaphore from "effect/Semaphore";
 import { afterEach, vi } from "vitest";
 import { resolveOtlpConfiguration } from "@t3tools/shared/observability";
 import { ServerConfig } from "./config.ts";
 import { isOpenCodePasswordUnavailable } from "./serverSettingsSecrets.ts";
-import { makeProviderLimits } from "./usage/providerLimits.ts";
 import {
   ServerSettingsLiveWithSecretStore,
   ServerSettingsLive,
@@ -21,7 +19,7 @@ const layer = ServerSettingsLive.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "f5-password-migration-" })),
   Layer.provideMerge(NodeServices.layer),
 );
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => vi.unstubAllEnvs());
 it.effect("stores and preserves text generator keys outside settings", () =>
   Effect.gen(function* () {
     const settings = yield* ServerSettingsService;
@@ -358,19 +356,34 @@ it.effect("binds saved OpenCode passwords and text generator keys to their URLs"
     yield* save(original, "saved-credential");
     yield* save("https://example.test/v2", "saved-credential");
     yield* assertCredentials("saved-credential");
+    const saved = yield* service.getSettings;
+    const generator = saved.textGenerators[textGenerator]!;
+    yield* service.updateSettings({
+      textGenerators: {
+        [textGenerator]: { ...generator, kind: "anthropic", apiKey: "", apiKeyRedacted: true },
+      },
+    });
+    const changed = yield* service.getSettings;
+    assert.equal(changed.textGenerators[textGenerator]?.apiKey, "");
+    assert.equal(changed.providers.opencode.serverPassword, "saved-credential");
+    assert.propertyVal(
+      changed.providerInstances[opencode]?.config,
+      "serverPassword",
+      "saved-credential",
+    );
   }).pipe(Effect.provide(Layer.fresh(layer))),
 );
 
-it.effect("clears a retained CLIProxyAPI key when its usage destination changes", () =>
+it.effect("clears a retained CLIProxyAPI key when its hub destination changes", () =>
   Effect.gen(function* () {
+    vi.stubEnv("F5_CLIPROXY_HUB_URL", "");
     const service = yield* ServerSettingsService;
     const config = yield* ServerConfig;
     const fs = yield* FileSystem.FileSystem;
-    const id = ProviderInstanceId.make("antigravity_usage");
+    const id = ProviderInstanceId.make("grok_usage");
     const keyName = "F5_CLIPROXY_API_KEY";
     const save = (
       hub: string | undefined,
-      usage: string,
       key?: string,
       options: {
         driver?: "antigravity" | "grok";
@@ -381,7 +394,7 @@ it.effect("clears a retained CLIProxyAPI key when its usage destination changes"
       service.updateSettings({
         providerInstances: {
           [id]: {
-            driver: ProviderDriverKind.make(options.driver ?? "antigravity"),
+            driver: ProviderDriverKind.make(options.driver ?? "grok"),
             config: {},
             environment: [
               ...(hub === undefined
@@ -394,7 +407,6 @@ it.effect("clears a retained CLIProxyAPI key when its usage destination changes"
                       valueRedacted: options.sensitiveHub === "retained",
                     },
                   ]),
-              { name: "F5_CLIPROXY_USAGE_URL", value: usage, sensitive: false },
               {
                 name: keyName,
                 value: key ?? "",
@@ -422,65 +434,54 @@ it.effect("clears a retained CLIProxyAPI key when its usage destination changes"
     });
 
     const hub = "https://example.test/hub";
-    const usage = "https://example.test/usage";
-    yield* save(hub, "", "management-fixture");
-    yield* save("https://EXAMPLE.test:443/hub/", "");
+    yield* save(hub, "management-fixture");
+    yield* save("https://EXAMPLE.test:443/hub/management.html?tab=usage#overview");
     yield* assertKey("management-fixture");
-    yield* save("https://example.test/other-hub", "");
+    yield* save("https://example.test/other-hub");
     yield* assertKey("");
-    yield* save(hub, "", "management-fixture");
-    yield* save("", usage);
-    yield* assertKey("");
-    yield* save("", usage, "usage-fixture");
-    yield* save("", usage + "/");
-    yield* assertKey("");
-    yield* save("", usage, "usage-fixture");
-    yield* save("", usage + "?team=other");
-    yield* assertKey("");
-    yield* save("", usage, "replacement-fixture");
-    yield* assertKey("replacement-fixture");
-
-    yield* save(hub, usage, "hub-fixture", { sensitiveHub: "new" });
-    yield* save("", usage, undefined, { sensitiveHub: "retained" });
+    yield* save(hub, "hub-fixture", { sensitiveHub: "new" });
+    yield* save("", undefined, { sensitiveHub: "retained" });
     yield* assertKey("hub-fixture");
-    yield* save(undefined, usage);
-    yield* assertKey("");
-    const fetcher = vi
-      .spyOn(globalThis, "fetch")
-      .mockImplementation(async () => new Response(JSON.stringify({ windows: [] })));
-    const refresh = Effect.fnUntraced(function* () {
-      const settings = yield* service.getSettings;
-      const environment = settings.providerInstances[id]?.environment ?? [];
-      const capability = yield* makeProviderLimits({
-        provider: "antigravity",
-        instanceId: id,
-        displayName: "Usage fixture",
-        enabled: true,
-        environment: Object.fromEntries(environment.map(({ name, value }) => [name, value])),
-      });
-      yield* capability.refreshAccount!(yield* Semaphore.make(1));
-    });
-    yield* refresh();
-    assert.equal(fetcher.mock.calls.length, 0);
-    yield* save(undefined, usage, "fallback-fixture");
-    yield* refresh();
-    assert.equal(fetcher.mock.calls.length, 1);
-    assert.equal(String(fetcher.mock.calls[0]?.[0]), usage);
-    assert.equal(
-      new Headers(fetcher.mock.calls[0]?.[1]?.headers).get("authorization"),
-      "Bearer fallback-fixture",
+    const hubFileSuffix = "-" + Buffer.from("F5_CLIPROXY_HUB_URL").toString("base64url") + ".bin";
+    const hubFile = (yield* fs.readDirectory(config.secretsDir!)).find((file) =>
+      file.endsWith(hubFileSuffix),
     );
-
-    yield* save(hub, "", "antigravity-fixture");
-    yield* save(hub + "/new", "", undefined, { driver: "grok" });
+    assert.isDefined(hubFile);
+    yield* fs.remove(config.secretsDir! + "/" + hubFile);
+    yield* save("", undefined, { sensitiveHub: "retained" });
+    yield* assertKey("hub-fixture");
+    yield* save(undefined);
     yield* assertKey("");
-    yield* save(hub, "", "grok-fixture", { driver: "grok" });
-    yield* save(hub + "/new", "", "new-grok-fixture", { driver: "grok", duplicateKey: true });
+    yield* save(hub, "antigravity-fixture", { driver: "antigravity" });
+    yield* save(hub, undefined, { driver: "grok" });
+    yield* assertKey("");
+    yield* save(hub, "grok-fixture");
+    yield* save(hub + "/new", "new-grok-fixture", { duplicateKey: true });
     yield* assertKey("new-grok-fixture");
   }).pipe(Effect.provide(Layer.fresh(layer))),
 );
 
 it.layer(layer)("Removed OpenCode credentials", (it) => {
+  it.effect("cannot revive a password after dropping its config or saved reference", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const id = ProviderInstanceId.make("opencode_rebound");
+      const driver = ProviderDriverKind.make("opencode");
+      const original = "https://old.example";
+      const moved = "https://new.example";
+      const save = (config?: Record<string, unknown>) =>
+        service.updateSettings({
+          providerInstances: { [id]: { driver, ...(config && { config }) } },
+        });
+      for (const dropped of [undefined, { serverUrl: original }]) {
+        yield* save({ serverUrl: original, serverPassword: "stored-fixture" });
+        yield* save(dropped);
+        yield* save({ serverUrl: moved });
+        const result = yield* save({ serverUrl: moved, serverPasswordRedacted: true });
+        assert.deepEqual(result.providerInstances[id]?.config, { serverUrl: moved });
+      }
+    }),
+  );
   it.effect(
     "removes a deleted instance's password through the ordinary settings transaction",
     () => {

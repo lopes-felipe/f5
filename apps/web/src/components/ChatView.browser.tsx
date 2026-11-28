@@ -34,6 +34,7 @@ import {
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   PR_HUB_WS_METHODS,
   type OrchestrationFileChange,
   type OrchestrationGetThreadCommandExecutionResult,
@@ -50,6 +51,7 @@ import {
   ProviderDriverKind,
   type ServerConfig,
   ThreadId,
+  type ThreadWorkspaceStatus,
   TurnId,
   type WsWelcomePayload,
   WS_CHANNELS,
@@ -4393,24 +4395,26 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  const missingWorktreeState = {
-    recovery: "none",
-    worktreePath: "/wt/gone",
-    branch: "fix/gone",
-    directoryExists: false,
-    registration: "none",
-    branchExists: true,
-    defaultBranch: "main",
+  const dormantWorkspace = { kind: "dormant", path: "/wt/gone", branch: "fix/gone" } as const;
+  const branchInUse = {
+    kind: "attention",
+    reason: "branch_in_use",
+    message:
+      "fix/gone is checked out in the project folder, so this thread's worktree cannot be restored on it.",
+    actions: ["attach", "newWorktree"],
   } as const;
 
+  /** A thread whose worktree folder is not on disk; the queue snapshot carries its status. */
   const mountMissingWorktree = (
     archived: boolean,
     options: {
-      threadState?: () => MaybePromise<WsRequestResolution>;
+      workspace?: ThreadWorkspaceStatus;
       recover?: () => MaybePromise<WsRequestResolution>;
       sessionStatus?: OrchestrationSessionStatus;
     } = {},
   ) => {
+    let workspace: ThreadWorkspaceStatus = options.workspace ?? dormantWorkspace;
+    let revision = 0;
     const base = createSnapshotForTargetUser({
       targetMessageId: "msg-missing-worktree" as MessageId,
       targetText: "Missing worktree",
@@ -4442,50 +4446,60 @@ describe("ChatView timeline (full app)", () => {
                 branches: [],
               },
             };
-          if (body._tag === WS_METHODS.worktreesThreadState)
-            return options.threadState?.() ?? { type: "result", result: missingWorktreeState };
-          if (body._tag === WS_METHODS.worktreesRecover)
-            return (
-              options.recover?.() ?? {
-                type: "result",
-                result: {
-                  ...missingWorktreeState,
-                  directoryExists: true,
-                  registration: "matching",
-                },
-              }
-            );
+          if (body._tag === WS_METHODS.nextTurnQueueList)
+            return {
+              type: "result",
+              result: {
+                threadId: THREAD_ID,
+                items: [],
+                revision: ++revision,
+                paused: false,
+                blockedKind: null,
+                reasonCode: null,
+                reasonDetail: null,
+                maxItems: 20,
+                quarantinedCount: 0,
+                workspace,
+              },
+            };
+          if (body._tag === WS_METHODS.worktreesRecover) {
+            const answer = options.recover?.();
+            if (answer) return answer;
+            // The server did what was asked; the queue reports the new status next.
+            workspace = {
+              kind: "ready",
+              location: "worktree",
+              path: "/wt/new",
+              branch: "t3code/1",
+            };
+            return { type: "result", result: workspace };
+          }
           return null;
         };
       },
     });
   };
+  const workspaceCards = () => page.getByRole("region", { name: "Workspace status" });
+  const recoverRequests = () =>
+    wsRequests.filter((request) => request._tag === WS_METHODS.worktreesRecover);
 
-  it("offers to recreate a missing worktree from the header instead of Git initialization", async () => {
+  it("says a cleaned-up worktree restores on send, and asks for nothing", async () => {
     const mounted = await mountMissingWorktree(false);
     try {
-      const recreate = page.getByRole("button", { name: "Recreate worktree", exact: true });
-      await expect.element(recreate).toBeEnabled();
+      await expect
+        .element(page.getByText("Worktree restores on send", { exact: true }))
+        .toHaveAttribute(
+          "title",
+          "This thread's worktree was cleaned up. Your next message restores it.",
+        );
       await expect
         .element(page.getByRole("button", { name: "Initialize Git" }))
         .not.toBeInTheDocument();
-      await recreate.click();
-      await vi.waitFor(() =>
-        expect(
-          wsRequests.find((request) => request._tag === WS_METHODS.worktreesRecover),
-        ).toMatchObject({ threadId: THREAD_ID, action: "recreate" }),
-      );
-
-      await page.getByRole("button", { name: "More recovery options" }).click();
-      await expect
-        .element(page.getByRole("menuitem", { name: "Recreate from main" }))
-        .toBeVisible();
-      await page.getByRole("menuitem", { name: "Continue in Local" }).click();
-      await vi.waitFor(() =>
-        expect(
-          wsRequests.filter((request) => request._tag === WS_METHODS.worktreesRecover).at(-1),
-        ).toMatchObject({ action: "useProjectCheckout" }),
-      );
+      // Nothing to decide: no card, no recovery buttons, and no recovery request.
+      expect(workspaceCards().elements()).toHaveLength(0);
+      for (const name of ["Recreate worktree", "Continue in Local", "Try again"])
+        expect(page.getByRole("button", { name, exact: true }).elements()).toHaveLength(0);
+      expect(recoverRequests()).toHaveLength(0);
     } finally {
       await mounted.cleanup();
     }
@@ -4496,120 +4510,81 @@ describe("ChatView timeline (full app)", () => {
     try {
       await expect
         .element(page.getByText("Worktree removed", { exact: true }))
-        .toHaveAttribute("title", "Unarchive to recreate it");
-      expect(
-        page.getByRole("button", { name: "Recreate worktree", exact: true }).elements(),
-      ).toHaveLength(0);
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  const headerRecovery = () => page.getByRole("group", { name: "Worktree recovery" });
-
-  it("names the default branch on the header button when the thread's branch is gone", async () => {
-    const mounted = await mountMissingWorktree(false, {
-      threadState: () => ({
-        type: "result",
-        result: { ...missingWorktreeState, branchExists: false },
-      }),
-    });
-    try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate from main" });
-      await expect.element(recreate).toBeEnabled();
-      await expect
-        .element(recreate)
-        .toHaveAttribute("title", "Branch fix/gone is gone. Recreate from main.");
-      await recreate.click();
-      await vi.waitFor(() =>
-        expect(
-          wsRequests.find((request) => request._tag === WS_METHODS.worktreesRecover),
-        ).toMatchObject({ action: "recreateFromBase" }),
-      );
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("does not recreate from the default branch while another branch holds the path", async () => {
-    const mounted = await mountMissingWorktree(false, {
-      threadState: () => ({
-        type: "result",
-        result: { ...missingWorktreeState, directoryExists: true, registration: "otherBranch" },
-      }),
-    });
-    try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
-      await expect.element(recreate).toBeDisabled();
-      await expect
-        .element(recreate)
         .toHaveAttribute(
           "title",
-          "This checkout no longer matches the recorded worktree. Choose another workspace to continue.",
+          "This thread's worktree was removed. Unarchive the thread and send a message to restore it.",
         );
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("waits for the worktree state before offering to recreate it", async () => {
-    const pending = createDeferred<WsRequestResolution>();
-    const mounted = await mountMissingWorktree(false, { threadState: () => pending.promise });
+  it("asks once, in the composer, when only the user can decide where the thread continues", async () => {
+    const mounted = await mountMissingWorktree(false, { workspace: branchInUse });
     try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
-      await expect.element(recreate).toBeDisabled();
-      await expect
-        .element(headerRecovery().getByRole("button", { name: "More recovery options" }))
-        .toBeDisabled();
-      pending.resolve({ type: "result", result: missingWorktreeState });
-      await expect.element(recreate).toBeEnabled();
+      await expect.element(workspaceCards()).toHaveTextContent(branchInUse.message);
+      // The card is the only workspace surface, and its buttons are the server's actions.
+      expect(workspaceCards().elements()).toHaveLength(1);
+      expect(
+        [...workspaceCards().element().querySelectorAll("button")].map((button) =>
+          button.textContent?.trim(),
+        ),
+      ).toEqual(["Continue there", "New worktree"]);
+      await workspaceCards().getByRole("button", { name: "New worktree" }).click();
+      await vi.waitFor(() =>
+        expect(recoverRequests().at(-1)).toMatchObject({
+          threadId: THREAD_ID,
+          action: "newWorktree",
+        }),
+      );
+      // The status the queue reports afterwards needs nothing, so the card goes away.
+      await vi.waitFor(() => expect(workspaceCards().elements()).toHaveLength(0));
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("offers only Continue in Local when the worktree state cannot be read", async () => {
+  it("holds the workspace actions while the session is running", async () => {
     const mounted = await mountMissingWorktree(false, {
-      threadState: () => ({ type: "error", message: "state unavailable" }),
+      workspace: branchInUse,
+      sessionStatus: "running",
     });
     try {
-      const local = page.getByRole("button", { name: "Continue in Local", exact: true }).first();
-      await expect.element(local).toBeEnabled();
-      expect(
-        page.getByRole("button", { name: "Recreate worktree", exact: true }).elements(),
-      ).toHaveLength(0);
-    } finally {
-      await mounted.cleanup();
-    }
-  });
-
-  it("keeps header recovery disabled while the session is running", async () => {
-    const mounted = await mountMissingWorktree(false, { sessionStatus: "running" });
-    try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
-      await expect.element(recreate).toBeDisabled();
       await expect
-        .element(recreate)
-        .toHaveAttribute("title", "Available after the current turn finishes.");
-      await expect
-        .element(headerRecovery().getByRole("button", { name: "More recovery options" }))
+        .element(workspaceCards().getByRole("button", { name: "Continue there" }))
         .toBeDisabled();
+      await expect
+        .element(workspaceCards().getByRole("button", { name: "New worktree" }))
+        .toBeDisabled();
+      await expect
+        .element(workspaceCards().getByText("Available after the current turn finishes."))
+        .toBeVisible();
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("reports a failed header recovery in a toast", async () => {
+  it("reports a failed recovery on the card and stays ready for another try", async () => {
     const mounted = await mountMissingWorktree(false, {
+      workspace: {
+        kind: "attention",
+        reason: "restore_failed",
+        message: "The worktree could not be restored.",
+        actions: ["retry", "useProjectFolder"],
+      },
       recover: () => ({ type: "error", message: "Branch fix/gone is locked." }),
     });
     try {
-      const recreate = headerRecovery().getByRole("button", { name: "Recreate worktree" });
-      await expect.element(recreate).toBeEnabled();
-      await recreate.click();
-      await expect.element(page.getByText("Could not recover the worktree")).toBeVisible();
-      await expect.element(page.getByText("Branch fix/gone is locked.")).toBeVisible();
-      await expect.element(recreate).toBeEnabled();
+      const retry = workspaceCards().getByRole("button", { name: "Try again" });
+      await retry.click();
+      await vi.waitFor(() => expect(recoverRequests().at(-1)).toMatchObject({ action: "restore" }));
+      await expect
+        .element(workspaceCards().getByRole("alert"))
+        .toHaveTextContent("Branch fix/gone is locked.");
+      await expect.element(retry).toBeEnabled();
+      await expect
+        .element(workspaceCards().getByRole("button", { name: "Continue in Local" }))
+        .toBeEnabled();
     } finally {
       await mounted.cleanup();
     }
@@ -8713,6 +8688,137 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("inserts an MCP prompt for review and sends a chosen MCP resource's text with the message", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-mcp-composer" as MessageId,
+        targetText: "mcp composer",
+      }),
+      configureFixture: (current) => {
+        current.resolveWsRequest = (body) => {
+          if (body._tag === WS_METHODS.mcpListComposerPrompts)
+            return {
+              type: "result",
+              result: {
+                servers: [
+                  {
+                    serverName: "docs",
+                    prompts: [
+                      {
+                        name: "summarize",
+                        title: "Summarize a topic",
+                        arguments: [{ name: "topic", required: true }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            };
+          if (body._tag === WS_METHODS.mcpCompleteComposerPrompt)
+            return { type: "result", result: { values: ["release notes"] } };
+          if (body._tag === WS_METHODS.mcpGetComposerPrompt)
+            return {
+              type: "result",
+              result: {
+                text: `Summarize ${(body as { arguments?: { topic?: string } }).arguments?.topic}`,
+                omitted: 0,
+              },
+            };
+          if (body._tag === WS_METHODS.mcpListComposerResources)
+            return {
+              type: "result",
+              result: {
+                servers: [
+                  {
+                    serverName: "docs",
+                    resources: [{ uri: "doc://guide", name: "guide", title: "Style guide" }],
+                    truncated: false,
+                  },
+                ],
+              },
+            };
+          if (body._tag === WS_METHODS.mcpReadComposerResource)
+            return {
+              type: "result",
+              result: {
+                contents: [
+                  {
+                    kind: "text",
+                    uri: "doc://guide",
+                    // Larger than a whole message: cut to fit instead of blocking the send.
+                    text: `Use short sentences.\n${"x".repeat(150_000)}`,
+                    truncated: false,
+                  },
+                ],
+                omitted: 0,
+              },
+            };
+          return null;
+        };
+      },
+    });
+
+    try {
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("/docs:sum");
+      const commands = page.getByRole("listbox", { name: "Commands" });
+      await expect.element(commands.getByText("/docs:summarize")).toBeVisible();
+      await commands.getByText("/docs:summarize").click();
+
+      const dialog = page.getByRole("dialog", { name: "/docs:summarize" });
+      await expect.element(dialog).toBeVisible();
+      await dialog.getByLabelText(/topic/).fill("release notes");
+      await vi.waitFor(() =>
+        expect(wsRequests).toContainEqual(
+          expect.objectContaining({
+            _tag: WS_METHODS.mcpCompleteComposerPrompt,
+            serverName: "docs",
+            argument: "topic",
+          }),
+        ),
+      );
+      await dialog.getByRole("button", { name: "Insert prompt" }).click();
+      await expect.element(dialog).not.toBeInTheDocument();
+      // The prompt is put in the composer for review, never sent.
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "Summarize release notes",
+        ),
+      );
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+
+      await page.elementLocator(editor).fill("Follow @sty");
+      const files = page.getByRole("listbox", { name: "Files and folders" });
+      await expect.element(files.getByText("Style guide")).toBeVisible();
+      await files.getByText("Style guide").click();
+      await expect.element(page.getByText("docs: Style guide", { exact: true })).toBeVisible();
+
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false));
+      sendButton.click();
+      await vi.waitFor(
+        () => {
+          const command = getDispatchCommandRequests("thread.turn.start")[0]?.command as
+            | { message?: { text?: string } }
+            | undefined;
+          expect(command?.message?.text).toContain(
+            "Follow [@docs: Style guide](mcp-resource://docs/",
+          );
+          const text = command?.message?.text ?? "";
+          expect(text).toContain(
+            "MCP resource doc://guide from docs:\n```\nUse short sentences.\n",
+          );
+          expect(text).toContain("[Truncated: the rest did not fit in the message.]");
+          expect(text.length).toBeLessThanOrEqual(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("rewrites Codex runtime slash skills to dollar syntax when sending", async () => {
     const typedPrompt = "/review current diff";
 
@@ -9132,6 +9238,13 @@ describe("ChatView timeline (full app)", () => {
     });
 
     try {
+      await expect.element(page.getByTestId("new-thread-button")).toBeInTheDocument();
+      await vi.waitFor(() =>
+        expect(wsRequests.some((request) => request._tag === WS_METHODS.serverGetConfig)).toBe(
+          true,
+        ),
+      );
+      await waitForLayout();
       const useMetaForMod = isMacPlatform(navigator.platform);
       window.dispatchEvent(
         new KeyboardEvent("keydown", {

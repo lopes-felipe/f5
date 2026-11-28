@@ -12,6 +12,10 @@ import type {
   McpProjectConfigResult,
   McpServerStatusesResult,
   McpGetHubAuthStatusResult,
+  McpListActivityResult,
+  McpSearchCatalogResult,
+  McpRepositoryServersResult,
+  McpListToolPinsResult,
   McpGetHubStatusResult,
   McpStartHubSignInResult,
   McpReconnectServerResult,
@@ -22,13 +26,13 @@ import type {
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { noteWsConnectionOpened, noteWsConnectionClosed } from "../../wsConnectionState";
 import { formatMcpServersAsJson } from "@t3tools/shared/mcpConfig";
-import { CODEX_SSE_TRANSPORT_HINT } from "@t3tools/shared/mcpTranslation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import { McpServersSettings } from "./McpServersSettings";
+import { toastManager } from "../ui/toast";
 
 const { copyToClipboard, nativeApiRef } = vi.hoisted(() => ({
   copyToClipboard: vi.fn(),
@@ -181,6 +185,31 @@ function createNativeApiMock() {
     reconnected: 1,
   }));
   const signOutHubServer = vi.fn(async () => ({ signedOut: true }));
+  const listToolPins = vi.fn(async (): Promise<McpListToolPinsResult> => ({ tools: [] }));
+  const acceptToolChanges = vi.fn(async () => ({ accepted: 1 }));
+  const searchCatalog = vi.fn(async (): Promise<McpSearchCatalogResult> => ({ entries: [] }));
+  const getRepositoryServers = vi.fn(
+    async (): Promise<McpRepositoryServersResult> => ({
+      projectId: PROJECT_ID,
+      found: false,
+      servers: [],
+      issues: [],
+    }),
+  );
+  const setRepositoryServerTrust = vi.fn(
+    async (): Promise<McpRepositoryServersResult> => ({
+      projectId: PROJECT_ID,
+      found: false,
+      servers: [],
+      issues: [],
+    }),
+  );
+  const listActivity = vi.fn(
+    async (): Promise<McpListActivityResult> => ({
+      calls: [],
+      last24h: { calls: 0, errors: 0 },
+    }),
+  );
   const reconnectServer = vi.fn(
     async (): Promise<McpReconnectServerResult> => ({
       settingsConnectionReloaded: false,
@@ -261,6 +290,12 @@ function createNativeApiMock() {
       startHubSignIn,
       completeHubSignIn,
       signOutHubServer,
+      listToolPins,
+      acceptToolChanges,
+      listActivity,
+      searchCatalog,
+      getRepositoryServers,
+      setRepositoryServerTrust,
       inspectServer,
       onStatusUpdated,
     },
@@ -277,6 +312,12 @@ function createNativeApiMock() {
     startHubSignIn,
     completeHubSignIn,
     signOutHubServer,
+    listToolPins,
+    acceptToolChanges,
+    listActivity,
+    searchCatalog,
+    getRepositoryServers,
+    setRepositoryServerTrust,
     replaceCommonConfig,
     getCommonConfig,
     getProjectConfig,
@@ -369,6 +410,44 @@ describe("McpServersSettings", () => {
     document.body.innerHTML = "";
   });
 
+  it("sends Codex and Claude sign-in to F5 and says earlier sign-ins are not carried over", async () => {
+    const mocks = createNativeApiMock();
+    mocks.getHubAuthStatus.mockResolvedValue({
+      servers: [{ name: "docs", signedIn: false, refreshable: false }],
+    });
+    mocks.getCommonConfig.mockResolvedValue({
+      version: "common-v1",
+      servers: {
+        ...commonConfig.servers,
+        docs: { type: "http", url: "https://docs.example.test/mcp" },
+        local: { type: "stdio", command: "node", cwd: "/srv" },
+      },
+    });
+    const { screen } = await renderSettings(false);
+    try {
+      // The passthrough switch is gone.
+      expect(document.body.textContent).not.toContain("connect to servers themselves");
+
+      await openServer("docs", "Sign-in");
+      const panel = page.getByRole("region", { name: "F5 sign-in" });
+      await expect.element(panel.getByText(/F5 signs in for every agent/)).toBeVisible();
+      await expect.element(panel.getByText(/Sign-ins Codex and Claude saved before/)).toBeVisible();
+      await expect.element(panel.getByText("Not signed in", { exact: true })).toBeVisible();
+      // The agents' own sign-in is not offered for a server F5 serves them.
+      expect(mocks.startLogin).not.toHaveBeenCalled();
+      expect(document.body.textContent).not.toContain("Codex and Claude sign-in needs a project");
+      await page.getByRole("button", { name: "Close" }).first().click();
+
+      // The hub runs stdio servers in the conversation's folder for Claude too.
+      await openServer("local");
+      const matrix = page.getByRole("region", { name: "Providers" });
+      await expect.element(matrix.getByText("Supported").first()).toBeVisible();
+      expect(matrix.element().textContent).not.toContain("Limited");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("shows hub status in the row and panel, and reconnects a failed hub connection", async () => {
     const mocks = createNativeApiMock();
     mocks.getHubStatus.mockResolvedValue({
@@ -391,7 +470,7 @@ describe("McpServersSettings", () => {
     try {
       // The failure outranks Codex's ready observation, and names where it came from.
       const row = page.getByRole("region", { name: "Project servers" });
-      await expect.element(row.getByText("Failed · Other agents")).toBeVisible();
+      await expect.element(row.getByText("Failed · F5")).toBeVisible();
       await expect.element(row.getByText("Connection refused")).toBeVisible();
       expect(mocks.getHubStatus).toHaveBeenCalledWith({ projectId: PROJECT_ID }, expect.anything());
       await rowAction("project-server", "Reconnect");
@@ -439,7 +518,7 @@ describe("McpServersSettings", () => {
     const { screen, queryClient } = await renderSettings(false);
     try {
       await openServer("docs", "Sign-in");
-      const panel = page.getByRole("region", { name: "Sign-in for other agents" });
+      const panel = page.getByRole("region", { name: "F5 sign-in" });
       await expect.element(panel.getByText("Not signed in", { exact: true })).toBeVisible();
       // Nothing opens until the user asks.
       expect(mocks.openExternal).not.toHaveBeenCalled();
@@ -514,7 +593,7 @@ describe("McpServersSettings", () => {
       await openServer("project-server");
       const live = page.getByRole("region", { name: "Live status" });
       await expect.element(live.getByText("Connecting", { exact: true })).toBeVisible();
-      expect(live.getByText("Other agents", { exact: true }).elements()).toHaveLength(2);
+      expect(live.getByText("F5 connection", { exact: true }).elements()).toHaveLength(2);
       expect(live.getByRole("button", { name: "Reconnect", exact: true }).elements()).toHaveLength(
         1,
       );
@@ -549,22 +628,23 @@ describe("McpServersSettings", () => {
     mocks.getProjectConfig.mockResolvedValue({
       ...projectConfig,
       servers: {
-        "project-server": { type: "stdio", command: "project-command", cwd: "/srv" },
+        "project-server": {
+          type: "stdio",
+          command: "project-command",
+          cwd: "/srv",
+          supportsParallelToolCalls: true,
+        },
       },
     });
     const { screen, queryClient } = await renderSettings();
     try {
       await openServer("project-server");
       const matrix = page.getByRole("region", { name: "Providers" });
-      // Claude ignores the working directory; other providers support every set field.
-      await expect.element(matrix.getByText("Limited", { exact: true })).toBeVisible();
-      await expect
-        .element(
-          matrix.getByText(
-            "Ignores the working directory; the server starts in the conversation's",
-          ),
-        )
-        .toBeVisible();
+      // The hub runs the server, so only what an agent's own client ignores is Limited;
+      // Codex alone honors parallel tool calls.
+      await expect.element(matrix.getByText("Limited", { exact: true }).first()).toBeVisible();
+      await expect.element(matrix.getByText("Ignores parallel tool calls").first()).toBeVisible();
+      expect(matrix.element().textContent).not.toContain("working directory");
       expect(document.body.textContent).not.toContain("Codex only");
       await matrix.getByRole("switch", { name: "Use project-server with Pi" }).click();
       await vi.waitFor(() =>
@@ -575,6 +655,7 @@ describe("McpServersSettings", () => {
                 type: "stdio",
                 command: "project-command",
                 cwd: "/srv",
+                supportsParallelToolCalls: true,
                 disabledProviders: ["pi"],
               },
             },
@@ -634,99 +715,6 @@ describe("McpServersSettings", () => {
       expect(document.body.textContent).not.toContain("Failed");
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(mocks.getServerStatuses.mock.calls.length).toBe(statusCalls);
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
-
-  it("shows the Codex streamable HTTP hint only when editing SSE", async () => {
-    createNativeApiMock();
-    const { screen, queryClient } = await renderSettings();
-    try {
-      await openAddServer();
-      expect(document.body.textContent).not.toContain(CODEX_SSE_TRANSPORT_HINT);
-      await page.getByRole("combobox", { name: "MCP transport type" }).click();
-      await page.getByRole("option", { name: "sse", exact: true }).click();
-      await vi.waitFor(() => expect(document.body.textContent).toContain(CODEX_SSE_TRANSPORT_HINT));
-      await page.getByRole("combobox", { name: "MCP transport type" }).click();
-      await page.getByRole("option", { name: "http", exact: true }).click();
-      await vi.waitFor(() =>
-        expect(document.body.textContent).not.toContain(CODEX_SSE_TRANSPORT_HINT),
-      );
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
-
-  it("never polls login and refreshes it when completion is pushed", async () => {
-    const mocks = createNativeApiMock();
-    let status: McpLoginStatusResult["status"] = "idle";
-    mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
-      target: "server",
-      mode: "cli",
-      provider,
-      projectId,
-      ...(serverName ? { serverName } : {}),
-      status,
-    }));
-    mocks.getServerStatuses.mockResolvedValue({
-      provider: "codex",
-      projectId: PROJECT_ID,
-      support: "supported",
-      configVersion: "effective-v1",
-      statuses: [
-        {
-          name: "project-server",
-          state: "login-required",
-          authStatus: "unauthenticated",
-          toolCount: 0,
-          resourceCount: 0,
-          resourceTemplateCount: 0,
-        },
-      ],
-    });
-    mocks.startLogin.mockImplementation(async () => {
-      status = "pending";
-      return {
-        target: "server",
-        mode: "cli",
-        provider: "codex",
-        projectId: PROJECT_ID,
-        serverName: "project-server",
-        status,
-      };
-    });
-    const { screen, queryClient } = await renderSettings();
-    const interval = () => new Promise((resolve) => setTimeout(resolve, 2_200));
-    try {
-      await openServer("project-server", "Sign-in");
-      await vi.waitFor(() => expect(mocks.getLoginStatus).toHaveBeenCalled());
-      const initial = mocks.getLoginStatus.mock.calls.length;
-      await interval();
-      expect(mocks.getLoginStatus).toHaveBeenCalledTimes(initial);
-      await page.getByRole("button", { name: "Login", exact: true }).click();
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Logging in..."));
-      // Pending sign-in is not polled either: once the login's own refetch settles, not
-      // even one timer-driven read may follow.
-      await vi.waitFor(() => expect(queryClient.isFetching()).toBe(0));
-      const pending = mocks.getLoginStatus.mock.calls.length;
-      await interval();
-      expect(mocks.getLoginStatus).toHaveBeenCalledTimes(pending);
-      status = "completed";
-      const listener = mocks.onStatusUpdated.mock.calls[0]![0];
-      listener({
-        provider: "codex",
-        scope: "project",
-        projectId: PROJECT_ID,
-        reason: "login-completed",
-      });
-      await vi.waitFor(() => expect(document.body.textContent).not.toContain("Logging in..."), {
-        timeout: 3_000,
-      });
-      // One subscription however many views use MCP status.
-      expect(mocks.onStatusUpdated).toHaveBeenCalledTimes(1);
     } finally {
       queryClient.clear();
       await screen.unmount();
@@ -796,170 +784,6 @@ describe("McpServersSettings", () => {
     }
   });
 
-  it("shows Connect for a failed Codex OAuth MCP server and starts OAuth login", async () => {
-    const mocks = createNativeApiMock();
-    const observabilityServer = {
-      type: "http" as const,
-      url: "https://observability.example.test/v1/mcp",
-    };
-
-    mocks.getProjectConfig.mockResolvedValue({
-      ...projectConfig,
-      servers: {
-        ...projectConfig.servers,
-        Observability: observabilityServer,
-      },
-    });
-    mocks.getEffectiveConfig.mockResolvedValue({
-      ...effectiveConfig,
-      servers: {
-        ...effectiveConfig.servers,
-        Observability: observabilityServer,
-      },
-    });
-    mocks.getServerStatuses.mockResolvedValue({
-      provider: "codex",
-      projectId: PROJECT_ID,
-      support: "supported",
-      configVersion: "effective-v1",
-      statuses: [
-        {
-          name: "project-server",
-          state: "ready",
-          authStatus: "authenticated",
-          toolCount: 1,
-          resourceCount: 0,
-          resourceTemplateCount: 0,
-        },
-        {
-          name: "Observability",
-          state: "failed",
-          authStatus: "authenticated",
-          toolCount: 0,
-          resourceCount: 0,
-          resourceTemplateCount: 0,
-          message:
-            "OAuth token refresh failed: Failed to parse server response, when send initialize request",
-        },
-      ],
-    });
-    mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
-      target: serverName ? ("server" as const) : ("provider" as const),
-      mode: serverName === "Observability" ? ("oauth" as const) : ("cli" as const),
-      provider,
-      projectId,
-      ...(serverName ? { serverName } : {}),
-      status: "idle" as const,
-    }));
-    mocks.startLogin.mockResolvedValue({
-      target: "server",
-      mode: "oauth",
-      provider: "codex",
-      projectId: PROJECT_ID,
-      serverName: "Observability",
-      status: "pending",
-      authorizationUrl: "https://auth.example.test",
-    });
-
-    const { screen, queryClient } = await renderSettings();
-
-    try {
-      await vi.waitFor(() => {
-        expect(document.body.textContent).toContain("Observability");
-      });
-      // The row shows the failure; sign-in lives on the panel's Sign-in tab.
-      await expect
-        .element(page.getByText("OAuth token refresh failed", { exact: false }))
-        .toBeVisible();
-      await openServer("Observability", "Sign-in");
-
-      await page.getByRole("button", { name: "Connect", exact: true }).click();
-
-      await vi.waitFor(() => {
-        expect(mocks.startLogin).toHaveBeenCalledWith({
-          provider: "codex",
-          instanceId: "codex",
-          projectId: PROJECT_ID,
-          serverName: "Observability",
-        });
-      });
-      expect(mocks.openExternal).toHaveBeenCalledWith("https://auth.example.test");
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
-
-  it("shows OAuth startup failures without opening the browser", async () => {
-    const mocks = createNativeApiMock();
-    const observabilityServer = {
-      type: "http" as const,
-      url: "https://observability.example.test/v1/mcp",
-    };
-
-    mocks.getProjectConfig.mockResolvedValue({
-      ...projectConfig,
-      servers: {
-        ...projectConfig.servers,
-        Observability: observabilityServer,
-      },
-    });
-    mocks.getEffectiveConfig.mockResolvedValue({
-      ...effectiveConfig,
-      servers: {
-        ...effectiveConfig.servers,
-        Observability: observabilityServer,
-      },
-    });
-    mocks.getServerStatuses.mockResolvedValue({
-      provider: "codex",
-      projectId: PROJECT_ID,
-      support: "supported",
-      configVersion: "effective-v1",
-      statuses: [
-        {
-          name: "Observability",
-          state: "failed",
-          authStatus: "authenticated",
-          toolCount: 0,
-          resourceCount: 0,
-          resourceTemplateCount: 0,
-        },
-      ],
-    });
-    mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
-      target: serverName ? ("server" as const) : ("provider" as const),
-      mode: serverName === "Observability" ? ("oauth" as const) : ("cli" as const),
-      provider,
-      projectId,
-      ...(serverName ? { serverName } : {}),
-      status: "idle" as const,
-    }));
-    mocks.startLogin.mockRejectedValue(
-      new Error("OAuth callback listener is not reachable at http://127.0.0.1:3118/callback."),
-    );
-
-    const { screen, queryClient } = await renderSettings();
-
-    try {
-      await vi.waitFor(() => {
-        expect(document.body.textContent).toContain("Observability");
-      });
-      await openServer("Observability", "Sign-in");
-
-      await page.getByRole("button", { name: "Connect", exact: true }).click();
-
-      await vi.waitFor(() => {
-        expect(document.body.textContent).toContain(
-          "OAuth callback listener is not reachable at http://127.0.0.1:3118/callback.",
-        );
-      });
-      expect(mocks.openExternal).not.toHaveBeenCalled();
-    } finally {
-      queryClient.clear();
-      await screen.unmount();
-    }
-  });
   it("keeps editing, toggling, and removing connected through the extracted components", async () => {
     const mocks = createNativeApiMock();
     const { screen, queryClient } = await renderSettings();
@@ -1801,7 +1625,7 @@ it("shows Claude CLI preflight failures without starting a conversation", async 
   }
 });
 
-it("offers Claude sign-in for managed and external needs-auth servers via the observed conversation", async () => {
+it("offers Claude sign-in for its own needs-auth servers via the observed conversation", async () => {
   const mocks = createNativeApiMock();
   const threadId = ThreadId.make("claude-conversation");
   const needsAuth = {
@@ -1817,10 +1641,7 @@ it("offers Claude sign-in for managed and external needs-auth servers via the ob
     support: "supported",
     configVersion: "effective-v1",
     ...(input.provider === "claudeAgent" ? { source: "conversation" as const, threadId } : {}),
-    statuses: [
-      { name: "project-server", ownership: "managed" as const, ...needsAuth },
-      { name: "linear", ownership: "external" as const, ...needsAuth },
-    ],
+    statuses: [{ name: "linear", ownership: "external" as const, ...needsAuth }],
   }));
   mocks.startLogin.mockImplementation(async (input: { serverName: string }) => ({
     target: "server",
@@ -1834,21 +1655,6 @@ it("offers Claude sign-in for managed and external needs-auth servers via the ob
   const { screen, queryClient } = await renderSettings();
   try {
     await page.getByRole("combobox", { name: "Status account" }).selectOptions("claudeAgent");
-    await openServer("project-server", "Sign-in");
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await vi.waitFor(() =>
-      expect(mocks.startLogin).toHaveBeenCalledWith({
-        provider: "claudeAgent",
-        instanceId: "claudeAgent",
-        projectId: PROJECT_ID,
-        serverName: "project-server",
-        threadId,
-      }),
-    );
-    await vi.waitFor(() =>
-      expect(mocks.openExternal).toHaveBeenCalledWith("https://auth.example.test/project-server"),
-    );
-    await page.getByRole("button", { name: "Close", exact: true }).click();
     await openProviderManaged();
     await page.getByRole("button", { name: "Sign in to linear", exact: true }).click();
     await vi.waitFor(() =>
@@ -2002,7 +1808,7 @@ it("observes only the selected conversation, refreshes on runtime push, and load
     queryClient.clear();
   }
 });
-it("refreshes selected runtime after reconnect and offers reopening pending sign-in", async () => {
+it("refreshes selected runtime after reconnect", async () => {
   const mocks = createNativeApiMock();
   mocks.getServerStatuses.mockResolvedValue({
     provider: "codex",
@@ -2020,22 +1826,10 @@ it("refreshes selected runtime after reconnect and offers reopening pending sign
       },
     ],
   });
-  mocks.getLoginStatus.mockResolvedValue({
-    provider: "codex",
-    projectId: PROJECT_ID,
-    target: "server",
-    mode: "oauth",
-    serverName: "project-server",
-    status: "pending",
-    authorizationUrl: "https://auth.example.test/pending",
-  });
   const { screen, queryClient } = await renderSettings();
   try {
-    await openServer("project-server", "Sign-in");
-    await page.getByRole("button", { name: "Reopen sign-in", exact: true }).click();
-    expect(mocks.openExternal).toHaveBeenCalledWith("https://auth.example.test/pending");
+    await openServer("project-server");
     const before = mocks.getServerStatuses.mock.calls.length;
-    await page.getByRole("tab", { name: "Overview", exact: true }).click();
     await page.getByRole("button", { name: "Reconnect in Codex", exact: true }).click();
     await vi.waitFor(() =>
       expect(mocks.reconnectServer).toHaveBeenCalledWith({
@@ -2207,7 +2001,14 @@ it("masks stored secrets without putting placeholders or resolved values in edit
   }
 });
 
-it("tool switches respect allowlists and save only the denylist", async () => {
+function toolPolicy(tool: string, choice: "Allow" | "Ask" | "Block") {
+  return page.getByRole("group", { name: `Policy for ${tool}` }).getByRole("button", {
+    name: choice,
+    exact: true,
+  });
+}
+
+it("tool policies respect allowlists and store Block as the denylist", async () => {
   const mocks = createNativeApiMock();
   mocks.getProjectConfig.mockResolvedValue({
     ...projectConfig,
@@ -2223,7 +2024,7 @@ it("tool switches respect allowlists and save only the denylist", async () => {
   const { screen, queryClient } = await renderSettings();
   try {
     await openServer("project-server", "Tools");
-    await page.getByRole("switch", { name: "Enable tool read" }).click();
+    await toolPolicy("read", "Allow").click();
     await vi.waitFor(() =>
       expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -2232,7 +2033,6 @@ it("tool switches respect allowlists and save only the denylist", async () => {
               type: "stdio",
               command: "node",
               enabledTools: ["read"],
-              disabledTools: [],
             },
           },
         }),
@@ -2384,6 +2184,305 @@ it("keeps legacy key-only lines intact", async () => {
     await screen.unmount();
   }
 });
+it("sets Ask per tool and as the default, and accepts a changed tool after review", async () => {
+  const mocks = createNativeApiMock();
+  mocks.getProjectConfig.mockResolvedValue({
+    ...projectConfig,
+    servers: { "project-server": { type: "stdio", command: "node" } },
+  });
+  mocks.listToolPins.mockResolvedValue({
+    tools: [
+      {
+        serverName: "project-server",
+        identity: "identity-1",
+        identityLabel: "node",
+        toolName: "read",
+        state: "changed",
+        firstSeenAt: "2026-11-01T00:00:00.000Z",
+        acceptedAt: "2026-11-01T00:00:00.000Z",
+        accepted: '{\n  "description": "Read metadata"\n}',
+        observed: '{\n  "description": "Read metadata and upload it"\n}',
+      },
+    ],
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openServer("project-server", "Tools");
+    const review = page.getByRole("region", { name: "Tools to review" });
+    await expect.element(review).toHaveTextContent("1 tool needs review.");
+    await expect.element(review).toHaveTextContent("Read metadata and upload it");
+    await review.getByRole("button", { name: "Accept change", exact: true }).click();
+    await vi.waitFor(() =>
+      expect(mocks.acceptToolChanges).toHaveBeenCalledWith({
+        serverName: "project-server",
+        identity: "identity-1",
+        // The definition shown, so a tool that changed again since is not accepted.
+        reviewed: [
+          { toolName: "read", definition: '{\n  "description": "Read metadata and upload it"\n}' },
+        ],
+      }),
+    );
+
+    await toolPolicy("read", "Ask").click();
+    await vi.waitFor(() =>
+      expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
+        expect.objectContaining({
+          servers: {
+            "project-server": { type: "stdio", command: "node", toolPolicy: { read: "ask" } },
+          },
+        }),
+      ),
+    );
+    await page
+      .getByRole("group", { name: "Default tool policy" })
+      .getByRole("button", { name: "Ask", exact: true })
+      .click();
+    // Read's own Ask now matches the default, so it keeps no entry of its own.
+    await vi.waitFor(() =>
+      expect(mocks.replaceProjectConfig).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          servers: {
+            "project-server": { type: "stdio", command: "node", defaultToolPolicy: "ask" },
+          },
+        }),
+      ),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("fills the Add form from a catalog entry, asking for its secret before saving", async () => {
+  const mocks = createNativeApiMock();
+  mocks.searchCatalog.mockImplementation(async (input?: { query?: string }) => ({
+    entries: [
+      {
+        name: "io.github.acme/mcp-server-project-server",
+        title: input?.query ? `Notes for ${input.query}` : "Notes",
+        description: "Notes for agents",
+        version: "1.2.0",
+        remotes: [],
+        packages: [
+          {
+            registryType: "npm",
+            identifier: "@acme/notes",
+            version: "1.2.0",
+            environmentVariables: [{ name: "NOTES_TOKEN", required: true, secret: true }],
+            packageArguments: [],
+            runtimeArguments: [],
+          },
+        ],
+      },
+    ],
+  }));
+  const toastAdd = vi.spyOn(toastManager, "add");
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openAddServer("Catalog");
+    await page.getByRole("searchbox", { name: "Search the MCP Registry" }).fill("acme");
+    await vi.waitFor(() =>
+      expect(mocks.searchCatalog).toHaveBeenCalledWith({ query: "acme" }, expect.anything()),
+    );
+    await page.getByRole("button", { name: "Use Notes for acme: npm package" }).click();
+
+    // The scope already has `project-server`, so the catalog's name gets a suffix.
+    await expect.element(page.getByRole("tab", { name: "Form", selected: true })).toBeVisible();
+    await expect
+      .element(page.getByLabelText("Name", { exact: true }))
+      .toHaveValue("project-server-2");
+    await expect.element(page.getByLabelText("Command", { exact: true })).toHaveValue("npx");
+    await expect
+      .element(page.getByLabelText("Argument 2", { exact: true }))
+      .toHaveValue("@acme/notes@1.2.0");
+    await expect
+      .element(page.getByLabelText("Environment key 1", { exact: true }))
+      .toHaveValue("NOTES_TOKEN");
+    await expect.element(page.getByRole("checkbox", { name: "Secret" })).toBeChecked();
+    expect(toastAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Review project-server-2 before saving",
+        description: "Store a secret for NOTES_TOKEN. Nothing runs until you save.",
+      }),
+    );
+    expect(mocks.replaceProjectConfig).not.toHaveBeenCalled();
+
+    // Choosing again over unsaved edits asks first; Keep editing keeps them.
+    const toastsBefore = toastAdd.mock.calls.length;
+    await page.getByLabelText("Name", { exact: true }).fill("my-notes");
+    await page.getByRole("tab", { name: "Catalog", exact: true }).click();
+    await page.getByRole("searchbox", { name: "Search the MCP Registry" }).fill("acme");
+    await page.getByRole("button", { name: "Use Notes for acme: npm package" }).click();
+    await expect
+      .element(page.getByRole("alertdialog"))
+      .toHaveTextContent("Discard unsaved MCP changes?");
+    await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+    expect(toastAdd.mock.calls.length).toBe(toastsBefore);
+    await page.getByRole("tab", { name: "Form", exact: true }).click();
+    await expect.element(page.getByLabelText("Name", { exact: true })).toHaveValue("my-notes");
+  } finally {
+    toastAdd.mockRestore();
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("lists .mcp.json servers and approves the reviewed definition", async () => {
+  const mocks = createNativeApiMock();
+  const pending = {
+    name: "repo-docs",
+    server: { type: "stdio" as const, command: "npx", args: ["-y", "docs-mcp"] },
+    definitionHash: "hash-1",
+    state: "needs-approval" as const,
+    overridden: false,
+    disabled: false,
+  };
+  mocks.getRepositoryServers.mockResolvedValue({
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [
+      pending,
+      { ...pending, name: "old-tool", definitionHash: "hash-2", state: "changed" },
+    ],
+    issues: ["leak: Secret references cannot be imported."],
+  });
+  const approved = {
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [{ ...pending, state: "approved" as const }],
+    issues: [],
+  };
+  mocks.setRepositoryServerTrust.mockImplementation(async () => {
+    mocks.getRepositoryServers.mockResolvedValue(approved);
+    return approved;
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    const section = page.getByRole("region", { name: "Repository servers" });
+    await expect.element(section).toHaveTextContent("/repo/.mcp.json");
+    await expect.element(section).toHaveTextContent("Needs approval");
+    await expect.element(section).toHaveTextContent("Changed");
+    await expect.element(section).toHaveTextContent("leak: Secret references cannot be imported.");
+
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Approve repo-docs?" });
+    await expect.element(dialog).toHaveTextContent("npx");
+    await expect.element(dialog).toHaveTextContent("-y");
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    expect(mocks.setRepositoryServerTrust).toHaveBeenCalledWith({
+      projectId: PROJECT_ID,
+      serverName: "repo-docs",
+      trusted: true,
+      definitionHash: "hash-1",
+    });
+    await expect.element(section).toHaveTextContent("Approved");
+    await expect.element(section.getByRole("button", { name: "Revoke" })).toBeVisible();
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("closes a stale review when .mcp.json changed under it", async () => {
+  const mocks = createNativeApiMock();
+  const pending = {
+    name: "repo-docs",
+    server: { type: "stdio" as const, command: "npx", args: ["-y", "docs-mcp"] },
+    definitionHash: "hash-1",
+    state: "needs-approval" as const,
+    overridden: false,
+    disabled: false,
+  };
+  const listing = (
+    server: Omit<typeof pending, "state"> & { state: "needs-approval" | "approved" },
+  ) => ({
+    projectId: PROJECT_ID,
+    path: "/repo/.mcp.json",
+    found: true,
+    servers: [server],
+    issues: [],
+  });
+  mocks.getRepositoryServers.mockResolvedValue(listing(pending));
+  mocks.setRepositoryServerTrust.mockImplementation(async () => {
+    mocks.getRepositoryServers.mockResolvedValue(
+      listing({
+        ...pending,
+        server: { ...pending.server, args: ["--write"] },
+        definitionHash: "hash-2",
+      }),
+    );
+    throw new Error("'repo-docs' changed in .mcp.json since you reviewed it. Review it again.");
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    const section = page.getByRole("region", { name: "Repository servers" });
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Approve repo-docs?" });
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    await expect.element(dialog).not.toBeInTheDocument();
+    await expect.element(section).toHaveTextContent("since you reviewed it");
+    await expect.element(section).toHaveTextContent("--write");
+
+    // A new review shows the refreshed definition and approves its hash.
+    await section.getByRole("button", { name: "Review", exact: true }).click();
+    await expect.element(dialog).toHaveTextContent("--write");
+    mocks.setRepositoryServerTrust.mockResolvedValue(
+      listing({ ...pending, state: "approved" as const }),
+    );
+    await dialog.getByRole("button", { name: "Approve" }).click();
+    expect(mocks.setRepositoryServerTrust).toHaveBeenLastCalledWith(
+      expect.objectContaining({ definitionHash: "hash-2" }),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
+it("shows a server's recent calls, error rate, latency and stderr", async () => {
+  const mocks = createNativeApiMock();
+  mocks.listActivity.mockResolvedValue({
+    calls: [
+      {
+        id: "call-1",
+        createdAt: "2026-11-25T10:00:00.000Z",
+        threadId: ThreadId.make("thread-1"),
+        provider: "codex",
+        serverName: "project-server",
+        toolName: "read",
+        outcome: "error",
+        durationMs: 1500,
+        approval: "asked",
+        errorSummary: "Rate limited",
+      },
+    ],
+    last24h: { calls: 4, errors: 1, p50Ms: 120, p95Ms: 1500 },
+    stderrTail: "server started",
+  });
+  const { screen, queryClient } = await renderSettings();
+  try {
+    await openServer("project-server", "Activity");
+    const summary = page.getByRole("definition").first();
+    await expect.element(summary).toHaveTextContent("4");
+    await expect.element(page.getByText("25%", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("120 ms", { exact: true })).toBeVisible();
+    const calls = page.getByRole("list", { name: "Recent calls" });
+    await expect.element(calls).toHaveTextContent("Error · 1.5 s");
+    await expect.element(calls).toHaveTextContent("Rate limited");
+    await expect.element(calls).toHaveTextContent("Asked");
+    await expect.element(page.getByText("Server output (stderr)")).toBeVisible();
+    expect(mocks.listActivity).toHaveBeenCalledWith(
+      { serverName: "project-server", projectId: PROJECT_ID },
+      expect.anything(),
+    );
+  } finally {
+    queryClient.clear();
+    await screen.unmount();
+  }
+});
+
 it("retains disabled tools in a single list when the live listing omits them", async () => {
   const mocks = createNativeApiMock();
   mocks.getProjectConfig.mockResolvedValue({
@@ -2395,16 +2494,14 @@ it("retains disabled tools in a single list when the live listing omits them", a
   const { screen, queryClient } = await renderSettings();
   try {
     await openServer("project-server", "Tools");
-    await expect
-      .element(page.getByRole("switch", { name: "Enable tool hidden" }))
-      .not.toBeChecked();
+    await expect.element(toolPolicy("hidden", "Block")).toHaveAttribute("aria-pressed", "true");
     await expect.element(page.getByText("read", { exact: true })).toBeVisible();
-    await page.getByRole("switch", { name: "Enable tool hidden" }).click();
+    await toolPolicy("hidden", "Allow").click();
     await vi.waitFor(() =>
       expect(mocks.replaceProjectConfig).toHaveBeenCalledWith(
         expect.objectContaining({
           servers: {
-            "project-server": { type: "stdio", command: "node", disabledTools: [] },
+            "project-server": { type: "stdio", command: "node" },
           },
         }),
       ),
@@ -2430,7 +2527,7 @@ it("opens probe tools and saves switches in common settings without a project", 
     await openServer("common-server");
     await page.getByRole("button", { name: "Test", exact: true }).click();
     await page.getByRole("button", { name: "1 tools", exact: true }).click();
-    await page.getByRole("switch", { name: "Enable tool probe-tool" }).click();
+    await toolPolicy("probe-tool", "Block").click();
     await vi.waitFor(() =>
       expect(mocks.replaceCommonConfig).toHaveBeenCalledWith(
         expect.objectContaining({

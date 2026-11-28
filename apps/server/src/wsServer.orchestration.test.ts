@@ -22,10 +22,16 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
+import { acquireInstanceLock } from "./profiles/InstanceLock.ts";
+import { repositoryLockPath } from "./project/Layers/WorktreeLifecycleCoordinator.ts";
 import WebSocket from "ws";
 import { AGENT_BRIDGE_LISTENER_AVAILABLE } from "./agentBridge/AgentBridgeService.ts";
 import { runAgentBridgeStdio } from "./agentBridge/stdioShim.ts";
 import { makeSqlitePersistenceLive } from "./persistence/Layers/Sqlite";
+import {
+  SETUP_SCRIPT_INTERRUPTED,
+  SUBMODULES_INITIALIZING,
+} from "./persistence/Services/WorktreePreparations.ts";
 import type { ProviderInstance } from "./provider/ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
@@ -1541,10 +1547,6 @@ describe("WebSocket Server", () => {
         });
         expect(switched.error).toMatchObject({ code: "WorkspaceRequiresNewWorktree" });
 
-        const settings = await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
-          followWorktreeBranchChanges: true,
-        });
-        expect(settings.error).toBeUndefined();
         const observedThread = async () => {
           const model = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
           return (model.result as OrchestrationReadModel).threads.find(
@@ -2313,52 +2315,499 @@ describe("WebSocket Server", () => {
         );
       });
 
-      it("marks a setup that was running at shutdown as failed and removes nothing", async () => {
-        const repo = makeGitRepo("t3code-ws-setup-restart-");
-        const stateDir = makeTempDir("t3code-ws-setup-restart-state-");
-        const dbPath = path.join(stateDir, "state.sqlite");
-        const persistence = () =>
-          makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer));
-        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
-        let ws = await startServer({ repo, stateDir, persistenceLayer: persistence(), sentTurns });
-        await createProject(ws, repo, {
-          command: nodeSetupCommand("setTimeout(() => {}, 30000)"),
-          async: false,
-        });
-        await sendRequest(
-          ws,
-          WS_METHODS.nextTurnQueueSubmit,
-          firstSend({ repo, threadId: "thread-restart" }),
-        );
-        const running = await waitForSetup(
-          ws,
-          "thread-restart",
-          (entry) =>
-            entry?.stages.find((stage) => stage.id === "setup-script")?.status === "running",
-        );
-        // Let the throttled activity write land before the restart.
-        await new Promise((resolve) => setTimeout(resolve, 700));
-        for (const socket of connections.splice(0)) socket.close();
-        await closeTestServer();
-        h.server = null;
+      describe("after a restart", () => {
+        /**
+         * A setup script that hangs the first time it runs and finishes at once
+         * the second time, leaving a file behind for each run.
+         */
+        function interruptibleScript(options: { readonly hangsUntilReleased?: boolean } = {}) {
+          const dir = makeTempDir("t3code-ws-setup-marker-").replaceAll("\\", "/");
+          const first = `${dir}/first`;
+          const again = `${dir}/again`;
+          /** With `hangsUntilReleased`, later runs hang too until this file exists. */
+          const release = `${dir}/release`;
+          const finishes = options.hangsUntilReleased
+            ? `fs.existsSync('${release}')`
+            : `fs.existsSync('${first}')`;
+          return {
+            first,
+            again,
+            release,
+            command: nodeSetupCommand(
+              `const fs=require('fs');if(${finishes}){fs.writeFileSync('${again}','1');process.exit(0)}fs.appendFileSync('${first}','1');setTimeout(()=>{},30000)`,
+            ),
+          };
+        }
+        const scriptStage = (entry: WorktreeSetupSnapshot | null) =>
+          entry?.stages.find((stage) => stage.id === "setup-script");
 
-        ws = await startServer({ repo, stateDir, persistenceLayer: persistence(), sentTurns });
-        const failed = await waitForSetup(
-          ws,
-          "thread-restart",
-          (entry) => entry?.phase === "failed",
+        /** First send, then a restart while the setup script is still running. */
+        async function restartDuringScript(options: {
+          readonly async?: boolean;
+          /** Wait until the agent has the turn, as with a background script. */
+          readonly agentStarted?: boolean;
+          /** Change the project between the two runs. */
+          readonly beforeRestart?: (ws: WebSocket, command: string) => Promise<void>;
+          readonly hangsUntilReleased?: boolean;
+          /**
+           * Rewrites the worktree's receipt while the server is down, to the
+           * state another point of interruption would have left behind.
+           */
+          readonly receiptWhileStopped?: {
+            readonly phase: string;
+            readonly result?: string | null;
+            readonly error?: string | null;
+          };
+          /** A project folder that is not a repository itself and holds two. */
+          readonly plainGroup?: boolean;
+        }) {
+          const repo = options.plainGroup
+            ? makeTempDir("t3code-ws-setup-restart-plain-")
+            : makeGitRepo("t3code-ws-setup-restart-");
+          if (options.plainGroup)
+            for (const name of ["api", "web"]) {
+              const member = path.join(repo, name);
+              fs.mkdirSync(member);
+              execFileSync("git", ["init", "--initial-branch=main"], {
+                cwd: member,
+                stdio: "pipe",
+              });
+              execFileSync(
+                "git",
+                [
+                  "-c",
+                  "user.email=test@example.com",
+                  "-c",
+                  "user.name=Test",
+                  "commit",
+                  "--allow-empty",
+                  "-m",
+                  "Initial",
+                ],
+                { cwd: member, stdio: "pipe" },
+              );
+            }
+          const stateDir = makeTempDir("t3code-ws-setup-restart-state-");
+          const dbPath = path.join(stateDir, "state.sqlite");
+          const persistence = () =>
+            makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer));
+          const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+          const script = interruptibleScript(
+            options.hangsUntilReleased ? { hangsUntilReleased: true } : {},
+          );
+          let ws = await startServer({
+            repo,
+            stateDir,
+            persistenceLayer: persistence(),
+            sentTurns,
+          });
+          await createProject(ws, repo, {
+            command: script.command,
+            ...(options.async === undefined ? {} : { async: options.async }),
+          });
+          await sendRequest(
+            ws,
+            WS_METHODS.nextTurnQueueSubmit,
+            firstSend({
+              repo,
+              threadId: "thread-restart",
+              ...(options.plainGroup ? { requireWorktree: true } : {}),
+            }),
+          );
+          const running = await waitForSetup(
+            ws,
+            "thread-restart",
+            (entry) =>
+              scriptStage(entry)?.status === "running" &&
+              (!options.agentStarted || entry!.agentStarted),
+          );
+          await vi.waitFor(() => expect(fs.existsSync(script.first)).toBe(true), SLOW_WAIT);
+          await options.beforeRestart?.(ws, script.command);
+          // Let the throttled activity write land before the restart.
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          // "Started" is the turn being accepted. Wait until the provider has
+          // it too: a turn caught between the two waits out the queue's
+          // five-minute pending-turn rule after a restart, which is not what
+          // these cases are about.
+          if (options.agentStarted)
+            await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+          for (const socket of connections.splice(0)) socket.close();
+          await closeTestServer();
+          h.server = null;
+          if (options.receiptWhileStopped) {
+            const database = new DatabaseSync(dbPath);
+            try {
+              const changed = database
+                .prepare(
+                  "UPDATE worktree_preparations SET phase = ?, result_json = ?, error = ?, version = version + 1",
+                )
+                .run(
+                  options.receiptWhileStopped.phase,
+                  options.receiptWhileStopped.result ?? null,
+                  options.receiptWhileStopped.error ?? null,
+                );
+              expect(changed.changes).toBe(1);
+            } finally {
+              database.close();
+            }
+          }
+
+          const restart = async () => {
+            for (const socket of connections.splice(0)) socket.close();
+            await closeTestServer();
+            h.server = null;
+            return startServer({ repo, stateDir, persistenceLayer: persistence(), sentTurns });
+          };
+          ws = await startServer({ repo, stateDir, persistenceLayer: persistence(), sentTurns });
+          const settled = await waitForSetup(
+            ws,
+            "thread-restart",
+            (entry) => entry?.phase !== "running" && entry?.generation !== running!.generation,
+          );
+          const queue = (
+            await sendRequest(ws, WS_METHODS.nextTurnQueueList, { threadId: "thread-restart" })
+          ).result as { readonly paused: boolean; readonly reasonCode: string | null };
+          return { ws, script, running: running!, settled: settled!, queue, sentTurns, restart };
+        }
+
+        it("carries on with the setup and runs a script the agent waits for again", async () => {
+          const { script, running, settled, queue, sentTurns } = await restartDuringScript({
+            async: false,
+          });
+          // Nothing failed and nothing asks: the same worktree, the script run
+          // again because the agent needs what it produces, then the turn.
+          expect(settled.phase).toBe("done");
+          expect(settled.error).toBeNull();
+          expect(settled.worktreePath).toBe(running.worktreePath);
+          expect(settled.sequence).toBeGreaterThan(running.sequence);
+          expect(scriptStage(settled)?.status).toBe("done");
+          expect(fs.existsSync(script.again)).toBe(true);
+          expect(queue).toEqual(expect.objectContaining({ paused: false }));
+          await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+        });
+
+        it("starts the agent without running a background script again, and reruns it when asked", async () => {
+          const { ws, script, settled, queue, sentTurns } = await restartDuringScript({
+            async: false,
+            // The agent had not started. By the restart the script is a
+            // background one, which is not run again unasked.
+            beforeRestart: async (socket, command) => {
+              await sendRequest(socket, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+                type: "project.meta.update",
+                commandId: `command-setup-scripts-${crypto.randomUUID()}`,
+                projectId: "project-setup",
+                scripts: [
+                  { id: "setup", name: "Setup", command, icon: "play", runOnWorktreeCreate: true },
+                ],
+              });
+            },
+          });
+          expect(settled.phase).toBe("done");
+          expect(scriptStage(settled)).toEqual(
+            expect.objectContaining({ status: "warning", detail: "interrupted by a restart" }),
+          );
+          expect(fs.existsSync(script.again)).toBe(false);
+          expect(queue).toEqual(expect.objectContaining({ paused: false }));
+          await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+
+          const rerun = await sendSetupAction(ws, WS_METHODS.worktreeSetupRerunScript, {
+            threadId: "thread-restart",
+          });
+          expect(rerun.error).toBeUndefined();
+          const finished = await waitForSetup(
+            ws,
+            "thread-restart",
+            (entry) => scriptStage(entry)?.status === "done",
+          );
+          expect(finished?.phase).toBe("done");
+          expect(fs.existsSync(script.again)).toBe(true);
+          // Nothing is left to run again.
+          const second = await sendSetupAction(ws, WS_METHODS.worktreeSetupRerunScript, {
+            threadId: "thread-restart",
+          });
+          expect(second.error?.message).toContain("no interrupted or failed setup script");
+        });
+
+        /** The project's setup script becomes a background one, with the same command. */
+        const makeBackground = async (socket: WebSocket, command: string) => {
+          await sendRequest(socket, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+            type: "project.meta.update",
+            commandId: `command-setup-scripts-${crypto.randomUUID()}`,
+            projectId: "project-setup",
+            scripts: [
+              { id: "setup", name: "Setup", command, icon: "play", runOnWorktreeCreate: true },
+            ],
+          });
+        };
+
+        it("does not run a setup command that changed while nobody was looking", async () => {
+          const other = `${makeTempDir("t3code-ws-setup-changed-").replaceAll("\\", "/")}/ran`;
+          const { script, settled, queue, sentTurns } = await restartDuringScript({
+            async: false,
+            // The command is edited before the server comes back. Resuming is
+            // not a retry anyone asked for, so the new command was never seen.
+            beforeRestart: async (socket) => {
+              await sendRequest(socket, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+                type: "project.meta.update",
+                commandId: `command-setup-scripts-${crypto.randomUUID()}`,
+                projectId: "project-setup",
+                scripts: [
+                  {
+                    id: "setup",
+                    name: "Setup",
+                    command: nodeSetupCommand(`require('fs').writeFileSync('${other}','1')`),
+                    icon: "play",
+                    runOnWorktreeCreate: true,
+                    async: false,
+                  },
+                ],
+              });
+            },
+          });
+          expect(settled.phase).toBe("failed");
+          expect(settled.error).toContain("The setup script changed");
+          expect(fs.existsSync(other)).toBe(false);
+          expect(fs.existsSync(script.again)).toBe(false);
+          // The message waits for a retry, which is what accepts the new command.
+          expect(queue).toEqual(expect.objectContaining({ paused: true }));
+          expect(sentTurns).toHaveLength(0);
+        });
+
+        it("still leaves a background script alone when the server stops again before the agent starts", async () => {
+          const { script, settled, queue, sentTurns } = await restartDuringScript({
+            async: false,
+            beforeRestart: makeBackground,
+            // An earlier resume had already left the script alone and written
+            // that down, and the server stopped before it handed the turn over.
+            receiptWhileStopped: {
+              phase: "setup_failed",
+              error: SETUP_SCRIPT_INTERRUPTED,
+            },
+          });
+          expect(settled.phase).toBe("done");
+          expect(scriptStage(settled)).toEqual(
+            expect.objectContaining({ status: "warning", detail: "interrupted by a restart" }),
+          );
+          expect(fs.existsSync(script.again)).toBe(false);
+          expect(queue).toEqual(expect.objectContaining({ paused: false }));
+          await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+        });
+
+        it("finishes the submodules a restart cut off, and does not take that for an interrupted script", async () => {
+          const { script, settled, queue, sentTurns } = await restartDuringScript({
+            async: false,
+            beforeRestart: makeBackground,
+            // The restart came while the checkout's submodules were being
+            // initialized: the same phase a running script has, told apart by its mark.
+            receiptWhileStopped: { phase: "setup_running", result: SUBMODULES_INITIALIZING },
+          });
+          expect(settled.phase).toBe("done");
+          expect(settled.error).toBeNull();
+          // Initialized again, not skipped as already prepared.
+          expect(settled.stages.find((stage) => stage.id === "submodules")).toEqual(
+            expect.objectContaining({ status: "done" }),
+          );
+          // The script had not run, so it runs now as on any first send.
+          expect(scriptStage(settled)?.status).not.toBe("warning");
+          await vi.waitFor(() => expect(fs.existsSync(script.again)).toBe(true), SLOW_WAIT);
+          expect(queue).toEqual(expect.objectContaining({ paused: false }));
+          await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+        });
+
+        // A group without a checkout of its own keeps no receipt, so nothing
+        // counts how often its script was run again: it is never rerun unasked.
+        it("leaves a worktree group's background script alone after a restart, and says how to run it again", async () => {
+          const { ws, script, settled, queue, sentTurns } = await restartDuringScript({
+            plainGroup: true,
+            async: false,
+            beforeRestart: makeBackground,
+          });
+          expect(settled.phase).toBe("done");
+          expect(scriptStage(settled)).toEqual(
+            expect.objectContaining({ status: "warning", detail: "interrupted by a restart" }),
+          );
+          expect(fs.existsSync(script.again)).toBe(false);
+          expect(queue).toEqual(expect.objectContaining({ paused: false }));
+          await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+          // Nothing recorded this setup, so the rerun says so instead of
+          // reporting a run that never happened.
+          const rerun = await sendSetupAction(ws, WS_METHODS.worktreeSetupRerunScript, {
+            threadId: "thread-restart",
+          });
+          expect(rerun.error?.message).toContain("keeps no record of its setup");
+          expect(fs.existsSync(script.again)).toBe(false);
+          expect(scriptStage(await readSetup(ws, "thread-restart"))?.status).toBe("warning");
+        });
+
+        it("asks before running a worktree group's script the agent waits for again", async () => {
+          const { ws, script, settled, queue, sentTurns } = await restartDuringScript({
+            plainGroup: true,
+            async: false,
+          });
+          expect(settled.phase).toBe("failed");
+          expect(settled.error).toContain("interrupted by a restart. Retry to run it again");
+          expect(fs.existsSync(script.again)).toBe(false);
+          expect(queue).toEqual(expect.objectContaining({ paused: true }));
+          expect(sentTurns).toHaveLength(0);
+          // Retry is the acknowledgement: the script runs, then the turn.
+          const retried = await sendSetupAction(ws, WS_METHODS.worktreeSetupRetry, {
+            threadId: "thread-restart",
+          });
+          expect(retried.error).toBeUndefined();
+          const finished = await waitForSetup(
+            ws,
+            "thread-restart",
+            (entry) => entry?.phase === "done" || entry?.phase === "failed",
+          );
+          expect(finished?.phase, JSON.stringify(finished)).toBe("done");
+          expect(fs.existsSync(script.again)).toBe(true);
+          await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+        });
+
+        it("stops a rerun that hangs, and offers the script again", async () => {
+          const { ws, script } = await restartDuringScript({
+            agentStarted: true,
+            hangsUntilReleased: true,
+          });
+          const rerun = await sendSetupAction(ws, WS_METHODS.worktreeSetupRerunScript, {
+            threadId: "thread-restart",
+          });
+          expect(rerun.error).toBeUndefined();
+          await waitForSetup(
+            ws,
+            "thread-restart",
+            (entry) => scriptStage(entry)?.status === "running",
+          );
+          await vi.waitFor(
+            () => expect(fs.readFileSync(script.first, "utf8")).toBe("11"),
+            SLOW_WAIT,
+          );
+          // The agent has the worktree, so only the script is stopped.
+          const stopped = await sendSetupAction(ws, WS_METHODS.worktreeSetupCancel, {
+            threadId: "thread-restart",
+          });
+          expect(stopped.error).toBeUndefined();
+          const after = await waitForSetup(
+            ws,
+            "thread-restart",
+            (entry) => scriptStage(entry)?.status !== "running",
+          );
+          expect(after?.phase).toBe("done");
+          expect(after?.agentStarted).toBe(true);
+          expect(scriptStage(after)).toEqual(
+            expect.objectContaining({
+              status: "failed",
+              detail: "The setup script was stopped before it finished.",
+            }),
+          );
+          fs.writeFileSync(script.release, "1");
+          const again = await sendSetupAction(ws, WS_METHODS.worktreeSetupRerunScript, {
+            threadId: "thread-restart",
+          });
+          expect(again.error).toBeUndefined();
+          const finished = await waitForSetup(
+            ws,
+            "thread-restart",
+            (entry) => scriptStage(entry)?.status === "done",
+          );
+          expect(finished?.phase).toBe("done");
+          expect(fs.existsSync(script.again)).toBe(true);
+        });
+
+        it("reports a background script that was cut off while the agent was already working", async () => {
+          const { script, settled, queue, sentTurns } = await restartDuringScript({
+            agentStarted: true,
+          });
+          expect(settled.phase).toBe("done");
+          expect(settled.agentStarted).toBe(true);
+          expect(scriptStage(settled)).toEqual(
+            expect.objectContaining({ status: "warning", detail: "interrupted by a restart" }),
+          );
+          expect(fs.existsSync(script.again)).toBe(false);
+          expect(queue).toEqual(expect.objectContaining({ paused: false }));
+          // The turn the agent already had is not sent a second time.
+          expect(sentTurns).toHaveLength(1);
+        });
+
+        it("reports a rerun that a restart cut off too, and offers it again", async () => {
+          const { ws, script, restart } = await restartDuringScript({
+            agentStarted: true,
+            hangsUntilReleased: true,
+          });
+          const rerun = await sendSetupAction(ws, WS_METHODS.worktreeSetupRerunScript, {
+            threadId: "thread-restart",
+          });
+          expect(rerun.error).toBeUndefined();
+          await waitForSetup(
+            ws,
+            "thread-restart",
+            (entry) => scriptStage(entry)?.status === "running",
+          );
+          await vi.waitFor(
+            () => expect(fs.readFileSync(script.first, "utf8")).toBe("11"),
+            SLOW_WAIT,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 700));
+
+          const after = await restart();
+          const cutOff = await waitForSetup(
+            after,
+            "thread-restart",
+            (entry) => scriptStage(entry)?.status !== "running",
+          );
+          // Not left spinning: the setup stays finished and the script can be asked for again.
+          expect(cutOff?.phase).toBe("done");
+          expect(scriptStage(cutOff)).toEqual(
+            expect.objectContaining({ status: "warning", detail: "interrupted by a restart" }),
+          );
+          fs.writeFileSync(script.release, "1");
+          const again = await sendSetupAction(after, WS_METHODS.worktreeSetupRerunScript, {
+            threadId: "thread-restart",
+          });
+          expect(again.error).toBeUndefined();
+          const finished = await waitForSetup(
+            after,
+            "thread-restart",
+            (entry) => scriptStage(entry)?.status === "done",
+          );
+          expect(finished?.phase).toBe("done");
+          expect(fs.existsSync(script.again)).toBe(true);
+        });
+      });
+
+      it("waits out a repository another F5 window is using instead of failing the setup", async () => {
+        const repo = makeGitRepo("t3code-ws-setup-busy-");
+        const stateDir = makeTempDir("t3code-ws-setup-busy-state-");
+        const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+        const ws = await startServer({ repo, stateDir, sentTurns });
+        await createProject(ws, repo);
+        const lock = await acquireInstanceLock(
+          repositoryLockPath(path.dirname(stateDir), fs.realpathSync(path.join(repo, ".git"))),
         );
-        expect(failed?.error).toContain("restart");
-        expect(failed!.generation).toBeGreaterThan(running!.generation);
-        expect(failed!.sequence).toBeGreaterThan(running!.sequence);
-        expect(fs.existsSync(running!.worktreePath!)).toBe(true);
-        const queue = (
-          await sendRequest(ws, WS_METHODS.nextTurnQueueList, { threadId: "thread-restart" })
-        ).result as { readonly paused: boolean; readonly reasonCode: string | null };
-        expect(queue).toEqual(
-          expect.objectContaining({ paused: true, reasonCode: "worktree_setup_failed" }),
-        );
-        expect(sentTurns).toHaveLength(0);
+        try {
+          // A generated branch name: reserving a chosen one needs the
+          // repository before the send is even accepted.
+          const send = firstSend({ repo, threadId: "thread-busy" });
+          const { branch: _chosen, ...prepareWorktree } = send.command.bootstrap.prepareWorktree;
+          const accepted = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+            ...send,
+            command: { ...send.command, bootstrap: { ...send.command.bootstrap, prepareWorktree } },
+          });
+          expect(accepted.error).toBeUndefined();
+          // Longer than one attempt at the lock waits, shorter than all of them.
+          await new Promise((resolve) => setTimeout(resolve, 900));
+          lock.release();
+          const settled = await waitForSetup(
+            ws,
+            "thread-busy",
+            (entry) => entry !== null && entry.phase !== "running",
+          );
+          expect(settled?.error).toBeNull();
+          expect(settled?.phase).toBe("done");
+          await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
+        } finally {
+          lock.release();
+        }
       });
     });
 

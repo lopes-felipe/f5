@@ -83,10 +83,19 @@ import {
   WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "../workflowSharedUtils.ts";
 import {
+  prepareCondenseTurn,
   prepareRevisionTurn,
   WorkflowServiceLive,
   workflowPlanMergeChars,
+  workflowPlanMergeFit,
 } from "./WorkflowService.ts";
+import {
+  markBranchCondensing,
+  markMergeStarted,
+  workflowPlanEvenShare,
+  workflowPlanMergeRoom,
+  workflowPlanSoftTarget,
+} from "../workflowEngine/PlanningWorkflowTransitions.ts";
 
 const NOW = "2026-03-26T12:00:00.000Z";
 
@@ -9557,7 +9566,7 @@ describe("WorkflowService", () => {
     };
   };
 
-  it("keeps reviewing the pinned plan when a newer reply is over the per-plan limit", async () => {
+  it("reviews a newer replacement plan even when it is longer than an even merge share", async () => {
     const fixture = meshSavedPlans();
     const repliedAt = "2026-08-31T17:03:00.000Z";
     const threads = fixture.threads.map((thread) =>
@@ -9591,15 +9600,14 @@ describe("WorkflowService", () => {
     harness = await createHarness(makeReadModel({ ...fixture, threads }));
 
     await harness.start();
-    // Reviews start only once every author's plan resolves, so the rejected replacement must
-    // leave Author C's pinned plan usable.
+    // Length is measured only before the merge: the long replacement is Author C's plan.
     await waitFor(
       () =>
         harness!.dispatched.filter((command) => command.type === "thread.turn.start").length === 4,
     );
 
     const current = harness.getSnapshot().planningWorkflows[0]!;
-    expect(current.additionalBranches![0]!.planTurnId).toBe("plan-turn-c");
+    expect(current.additionalBranches![0]!.planTurnId).toBe("replacement-turn-c");
     const turnStarts = () =>
       harness!.dispatched.filter(
         (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
@@ -9661,17 +9669,22 @@ describe("WorkflowService", () => {
       .filter((command) => reviewsOfC.has(command.threadId))
       .map((command) => command.message.text);
     for (const prompt of promptsForC) {
-      expect(prompt).toContain("PLAN_C");
-      expect(prompt).not.toContain("OVERSIZED_");
+      expect(prompt).toContain("OVERSIZED_");
     }
-    expect(turnStarts().some((command) => command.message.text.includes("OVERSIZED_"))).toBe(false);
   });
 
-  it("repairs an over-limit plan synthesized from a wrapped reply instead of saving it", async () => {
+  it.each([
+    { name: "saves a long plan that fits its reviews", length: 60_000, saved: true },
+    {
+      name: "asks again for a plan too long for any review",
+      length: WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
+      saved: false,
+    },
+  ])("$name, synthesized from a wrapped reply", async ({ length, saved }) => {
     const fixture = meshSavedPlans();
     const repliedAt = "2026-08-31T17:03:00.000Z";
     const turnId = TurnId.makeUnsafe("authoring-turn-c");
-    const reply = `<proposed_plan>\nOVERSIZED_${"x".repeat(60_000)}\n</proposed_plan>`;
+    const reply = `<proposed_plan>\nOVERSIZED_${"x".repeat(length)}\n</proposed_plan>`;
     const workflow: PlanningWorkflow = {
       ...fixture.workflow,
       additionalBranches: [
@@ -9736,25 +9749,60 @@ describe("WorkflowService", () => {
       }),
     );
 
-    const repairTurn = () =>
-      harness!.dispatched.find(
+    const authorTurns = () =>
+      harness!.dispatched.filter(
         (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
           command.type === "thread.turn.start" && command.threadId === "author-c",
       );
-    // The author is asked again, within the length limit, instead of the plan being saved.
-    await waitFor(() => repairTurn() !== undefined);
-    expect(repairTurn()!.message.text).toContain("## Length Limit");
+    if (!saved) {
+      // No review could hold it, so it would block the run before the merge: repair it.
+      await waitFor(() => authorTurns().length === 1);
+      expect(authorTurns()[0]!.message.text).toContain("too long to review");
+      const branchC = harness.getSnapshot().planningWorkflows[0]!.additionalBranches![0]!;
+      expect(branchC).toMatchObject({ status: "authoring", planTurnId: null });
+      expect(branchC.authorFormatRepairAttempts).toBe(1);
+      return;
+    }
+    // Length is otherwise measured only before the merge: the reply is Author C's plan.
+    await waitFor(
+      () =>
+        harness!.getSnapshot().planningWorkflows[0]!.additionalBranches![0]!.planTurnId === turnId,
+    );
     const branchC = harness.getSnapshot().planningWorkflows[0]!.additionalBranches![0]!;
-    expect(branchC.status).toBe("authoring");
-    expect(branchC.planTurnId).toBeNull();
-    expect(branchC.authorFormatRepairAttempts).toBe(1);
-    // The over-long reply was not kept as a plan for its turn.
+    expect(branchC.authorFormatRepairAttempts ?? 0).toBe(0);
     expect(
       harness
         .getSnapshot()
         .threads.find((thread) => thread.id === "author-c")!
         .proposedPlans.some((plan) => plan.turnId === turnId),
+    ).toBe(true);
+    // No repair turn was sent to the author.
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.turn.start" && command.threadId === "author-c",
+      ),
     ).toBe(false);
+  });
+
+  it("asks a two-author revision for the soft length target", () => {
+    const workflow = makeWorkflow();
+    const prepared = prepareRevisionTurn({
+      workflow,
+      branch: workflow.branchA,
+      originalPlanMarkdown: "PLAN_A",
+      reviews: [
+        {
+          reviewerLabel: "Reviewer B",
+          reviewMarkdown: "Findings",
+          source: { workflowId: workflow.id, stage: "review-b" },
+        },
+      ],
+      createdAt: "2026-08-31T17:05:00.000Z",
+    });
+    if (!("command" in prepared)) throw new Error(prepared.rejection);
+    expect(prepared.command.message.text).toContain(
+      `Aim to keep the complete plan under ${workflowPlanSoftTarget(workflow)} characters`,
+    );
   });
 
   it("excerpts long reviews to fit a four-author revision, and keeps short ones whole", () => {
@@ -10188,66 +10236,435 @@ describe("WorkflowService", () => {
     expect(reviewTurnStarts()).toHaveLength(2);
   });
 
-  it("records a merge error instead of starting a merge whose inputs can't fit", async () => {
+  describe("merge fit and condense turns", () => {
     const revisedAt = "2026-08-31T17:20:00.000Z";
-    const revisedBranch = (branch: PlanningWorkflow["branchA"], id: "a" | "b") => ({
-      ...branch,
-      status: "revised" as const,
-      revisionTurnId: TurnId.makeUnsafe(`revision-turn-${id}`),
-      updatedAt: revisedAt,
-    });
-    const base = makeWorkflow();
-    const workflow = makeWorkflow({
-      branchA: revisedBranch(base.branchA, "a"),
-      branchB: revisedBranch(base.branchB, "b"),
-      merge: {
-        ...base.merge,
-        threadId: null,
-        outputFilePath: null,
-        turnId: null,
-        approvedPlanId: null,
-        status: "not_started",
-      },
-    });
-    const revisedThread = (id: "a" | "b") =>
-      makeThread({
-        id: ThreadId.makeUnsafe(`author-${id}`),
-        latestTurn: {
-          turnId: TurnId.makeUnsafe(`revision-turn-${id}`),
-          state: "completed",
-          requestedAt: revisedAt,
-          startedAt: revisedAt,
-          completedAt: revisedAt,
-          processingQuiescedAt: revisedAt,
-          assistantMessageId: MessageId.makeUnsafe(`assistant-revision-${id}`),
-        },
-        proposedPlans: [
-          {
-            id: OrchestrationProposedPlanId.makeUnsafe(`revised-plan-${id}`),
-            turnId: TurnId.makeUnsafe(`revision-turn-${id}`),
-            // Each plan fits on its own; together they exceed one merge prompt.
-            planMarkdown: `# Plan ${id}\n${"Step detail. ".repeat(6_000)}`,
-            implementedAt: null,
-            implementationThreadId: null,
-            createdAt: revisedAt,
-            updatedAt: revisedAt,
-          },
-        ],
+    // Each plan fits on its own; together they exceed one merge prompt.
+    const longPlan = (id: string) => `# Plan ${id}\n${"Step detail. ".repeat(6_000)}`;
+    const revisedFixture = (
+      plans: { readonly a: string; readonly b: string },
+      branchPatch: Partial<PlanningWorkflow["branchA"]> = {},
+    ) => {
+      const revisedBranch = (branch: PlanningWorkflow["branchA"], id: "a" | "b") => ({
+        ...branch,
+        status: "revised" as const,
+        revisionTurnId: TurnId.makeUnsafe(`revision-turn-${id}`),
+        updatedAt: revisedAt,
+        ...branchPatch,
       });
-    harness = await createHarness(
-      makeReadModel({ workflow, threads: [revisedThread("a"), revisedThread("b")] }),
+      const base = makeWorkflow();
+      const workflow = makeWorkflow({
+        branchA: revisedBranch(base.branchA, "a"),
+        branchB: revisedBranch(base.branchB, "b"),
+        merge: {
+          ...base.merge,
+          threadId: null,
+          outputFilePath: null,
+          turnId: null,
+          approvedPlanId: null,
+          status: "not_started",
+        },
+      });
+      const revisedThread = (id: "a" | "b") =>
+        makeThread({
+          id: ThreadId.makeUnsafe(`author-${id}`),
+          latestTurn: {
+            turnId: TurnId.makeUnsafe(`revision-turn-${id}`),
+            state: "completed",
+            requestedAt: revisedAt,
+            startedAt: revisedAt,
+            completedAt: revisedAt,
+            processingQuiescedAt: revisedAt,
+            assistantMessageId: MessageId.makeUnsafe(`assistant-revision-${id}`),
+          },
+          proposedPlans: [
+            {
+              id: OrchestrationProposedPlanId.makeUnsafe(`revised-plan-${id}`),
+              turnId: TurnId.makeUnsafe(`revision-turn-${id}`),
+              planMarkdown: plans[id],
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: revisedAt,
+              updatedAt: revisedAt,
+            },
+          ],
+        });
+      return { workflow, threads: [revisedThread("a"), revisedThread("b")] };
+    };
+    const turnStartsTo = (threadId: string) =>
+      harness!.dispatched.filter(
+        (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+          command.type === "thread.turn.start" && command.threadId === threadId,
+      );
+    const branchOf = (id: "a" | "b") =>
+      harness!.getSnapshot().planningWorkflows[0]![id === "a" ? "branchA" : "branchB"];
+    /** Finishes a condense turn in an author thread with `planMarkdown` as its captured plan. */
+    const finishCondenseTurn = async (
+      id: "a" | "b",
+      attempt: number,
+      planMarkdown: string | null,
+    ) => {
+      const finishedAt = `2099-01-01T00:0${attempt}:00.000Z`;
+      const turnId = TurnId.makeUnsafe(`condense-turn-${id}-${attempt}`);
+      const messageId = MessageId.makeUnsafe(`assistant-condense-${id}-${attempt}`);
+      const threadId = ThreadId.makeUnsafe(`author-${id}`);
+      harness!.setSnapshot({
+        ...harness!.getSnapshot(),
+        threads: harness!.getSnapshot().threads.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                latestTurn: {
+                  turnId,
+                  state: "completed" as const,
+                  requestedAt: finishedAt,
+                  startedAt: finishedAt,
+                  completedAt: finishedAt,
+                  processingQuiescedAt: finishedAt,
+                  assistantMessageId: messageId,
+                },
+                proposedPlans:
+                  planMarkdown === null
+                    ? thread.proposedPlans
+                    : [
+                        ...thread.proposedPlans,
+                        {
+                          id: OrchestrationProposedPlanId.makeUnsafe(
+                            `condensed-plan-${id}-${attempt}`,
+                          ),
+                          turnId,
+                          planMarkdown,
+                          implementedAt: null,
+                          implementationThreadId: null,
+                          createdAt: finishedAt,
+                          updatedAt: finishedAt,
+                        },
+                      ],
+              }
+            : thread,
+        ),
+      });
+      await harness!.emit(
+        makeEvent(
+          "thread.turn-diff-completed",
+          {
+            threadId,
+            turnId,
+            checkpointTurnCount: attempt + 1,
+            checkpointRef: CheckpointRef.makeUnsafe(`checkpoint-condense-${id}-${attempt}`),
+            status: "ready",
+            files: [],
+            assistantMessageId: messageId,
+            completedAt: finishedAt,
+          },
+          finishedAt,
+        ),
+      );
+    };
+
+    it("condenses only the plans over their share, then merges the condensed plans", async () => {
+      // Plan A fits an even share; plan B overflows what A leaves.
+      const planA = `# Plan a\nSHORT_A\n${"Alpha. ".repeat(6_000)}`;
+      const planB = `# Plan b\n${"Step detail. ".repeat(7_000)}`;
+      const fixture = revisedFixture({ a: planA, b: planB });
+      harness = await createHarness(makeReadModel(fixture));
+
+      await harness.start();
+      await waitFor(() => turnStartsTo("author-b").length === 1);
+      expect(turnStartsTo("author-a")).toHaveLength(0);
+      const fit = workflowPlanMergeFit(fixture.workflow, [
+        { planMarkdown: planA, turnId: "revision-turn-a" },
+        { planMarkdown: planB, turnId: "revision-turn-b" },
+      ]);
+      const allowanceB = fit.perBranch[1]!.allowanceChars;
+      // Water-fill: A keeps its whole length and B gets the rest of the room.
+      expect(fit.perBranch[0]!.allowanceChars).toBe(fit.perBranch[0]!.renderedChars);
+      expect(allowanceB).toBeGreaterThan(60_000);
+      expect(branchOf("b")).toMatchObject({
+        status: "revising",
+        condenseAttempts: 1,
+        condenseTargetChars: allowanceB,
+      });
+      expect(branchOf("a").status).toBe("revised");
+      const prompt = turnStartsTo("author-b")[0]!.message.text;
+      expect(prompt).toContain("Condense your revised plan below.");
+      expect(prompt).toContain(
+        `the merge has room for ${allowanceB.toLocaleString("en-US")} from you`,
+      );
+      expect(prompt).toContain(
+        `under ${Math.floor(allowanceB * 0.85).toLocaleString("en-US")} characters`,
+      );
+      // The merge waits for the condensed plan.
+      expect(harness.getSnapshot().planningWorkflows[0]!.merge.status).toBe("not_started");
+      expect(harness.dispatched.some((command) => command.type === "thread.create")).toBe(false);
+
+      await finishCondenseTurn("b", 1, "# Plan b\nSHORT_B");
+      await waitFor(
+        () => harness!.getSnapshot().planningWorkflows[0]!.merge.status === "in_progress",
+      );
+      expect(branchOf("b")).toMatchObject({
+        status: "revised",
+        revisionTurnId: "condense-turn-b-1",
+        planTurnId: fixture.workflow.branchB.planTurnId,
+        condenseTargetChars: null,
+      });
+      const mergeThreadId = harness.getSnapshot().planningWorkflows[0]!.merge.threadId!;
+      await waitFor(() => turnStartsTo(mergeThreadId).length === 1);
+      const mergePrompt = turnStartsTo(mergeThreadId)[0]!.message.text;
+      expect(mergePrompt).toContain("SHORT_A");
+      expect(mergePrompt).toContain("SHORT_B");
+      expect(mergePrompt).not.toContain("Step detail.");
+    });
+
+    it("fails a branch after two condense attempts and condenses again on Retry", async () => {
+      const fixture = revisedFixture({ a: longPlan("a"), b: longPlan("b") });
+      harness = await createHarness(makeReadModel(fixture));
+
+      await harness.start();
+      await waitFor(
+        () => turnStartsTo("author-a").length === 1 && turnStartsTo("author-b").length === 1,
+      );
+      // B condenses to its share; A comes back still too long, twice.
+      await finishCondenseTurn("b", 1, `# Plan b\nSHORT_B\n${"Beta. ".repeat(8_000)}`);
+      await finishCondenseTurn("a", 1, longPlan("a"));
+      await waitFor(() => turnStartsTo("author-a").length === 2);
+      expect(branchOf("a")).toMatchObject({ status: "revising", condenseAttempts: 2 });
+      // The second attempt is a new command, aimed at the plan the first attempt produced.
+      expect(turnStartsTo("author-a")[1]!.commandId).not.toBe(
+        turnStartsTo("author-a")[0]!.commandId,
+      );
+      await finishCondenseTurn("a", 2, longPlan("a"));
+      await waitFor(() => branchOf("a").status === "error");
+      expect(branchOf("a")).toMatchObject({ errorStage: "revision", condenseAttempts: 2 });
+      expect(branchOf("a").error).toContain("after 2 condense attempts it still exceeds its");
+      expect(branchOf("a").error).toContain("Retry to condense again.");
+      expect(turnStartsTo("author-a")).toHaveLength(2);
+      expect(harness.getSnapshot().planningWorkflows[0]!.merge.status).toBe("not_started");
+
+      await Effect.runPromise(
+        harness.service.retryWorkflow({
+          workflowId: harness.getSnapshot().planningWorkflows[0]!.id,
+        }),
+      );
+      // Retry measures the plans again and starts a fresh first attempt.
+      await waitFor(() => turnStartsTo("author-a").length === 3);
+      expect(branchOf("a")).toMatchObject({
+        status: "revising",
+        condenseAttempts: 1,
+        error: null,
+      });
+      expect(turnStartsTo("author-a")[2]!.message.text).toContain("Condense your revised plan");
+      await finishCondenseTurn("a", 3, "# Plan a\nSHORT_A");
+      await waitFor(
+        () => harness!.getSnapshot().planningWorkflows[0]!.merge.status === "in_progress",
+      );
+    });
+
+    // A condense intent saved after the revision turn, whose condense turn never started.
+    const condensingPatch = {
+      status: "revising" as const,
+      condenseAttempts: 1,
+      condenseTargetChars: 50_000,
+      updatedAt: "2026-08-31T17:30:00.000Z",
+    };
+
+    it("resumes an in-flight condense once after a restart, with the same command", async () => {
+      const fixture = revisedFixture({ a: longPlan("a"), b: longPlan("b") }, condensingPatch);
+      harness = await createHarness(makeReadModel(fixture));
+      await harness.start();
+      await waitFor(
+        () => turnStartsTo("author-a").length === 1 && turnStartsTo("author-b").length === 1,
+      );
+      const firstCommandId = turnStartsTo("author-a")[0]!.commandId;
+      expect(turnStartsTo("author-a")[0]!.message.text).toContain(
+        "the merge has room for 50,000 from you",
+      );
+      // The attempt was already counted when its intent was saved.
+      expect(branchOf("a").condenseAttempts).toBe(1);
+      await harness.dispose();
+
+      harness = await createHarness(makeReadModel(fixture));
+      await harness.start();
+      await waitFor(() => turnStartsTo("author-a").length === 1);
+      expect(turnStartsTo("author-a")[0]!.commandId).toBe(firstCommandId);
+    });
+
+    it("repairs a condense reply with no plan by resending the condense prompt", async () => {
+      // No reviews exist: a repair that rebuilt the revision would fail with "Revision inputs
+      // could not be reconstructed".
+      const fixture = revisedFixture({ a: longPlan("a"), b: longPlan("b") }, condensingPatch);
+      harness = await createHarness(makeReadModel(fixture));
+      await harness.start();
+      await waitFor(() => turnStartsTo("author-a").length === 1);
+
+      await finishCondenseTurn("a", 1, null);
+      await waitFor(() => turnStartsTo("author-a").length === 2);
+      const repair = turnStartsTo("author-a")[1]!.message.text;
+      expect(repair).toContain("Condense your revised plan below.");
+      expect(repair).toContain("## Retry Context");
+      expect(branchOf("a")).toMatchObject({
+        status: "revising",
+        condenseAttempts: 1,
+        revisionFormatRepairAttempts: 1,
+        error: null,
+      });
+    });
+
+    it("does not take the plan being condensed as the condense reply", async () => {
+      // The condense intent was saved at the revision turn's own completion time, as the
+      // diff-completed event that started it stamps both.
+      const fixture = revisedFixture(
+        { a: longPlan("a"), b: longPlan("b") },
+        { ...condensingPatch, updatedAt: revisedAt },
+      );
+      harness = await createHarness(makeReadModel(fixture));
+      await harness.start();
+      // Resumed, not mistaken for a turn already in flight.
+      await waitFor(() => turnStartsTo("author-a").length === 1);
+      // A later event for the revision turn itself must not complete the condense.
+      await harness.emit(
+        makeEvent(
+          "thread.turn-processing-quiesced",
+          {
+            threadId: ThreadId.makeUnsafe("author-a"),
+            turnId: TurnId.makeUnsafe("revision-turn-a"),
+            processingQuiescedAt: revisedAt,
+          },
+          revisedAt,
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(branchOf("a")).toMatchObject({
+        status: "revising",
+        condenseAttempts: 1,
+        condenseTargetChars: 50_000,
+        revisionTurnId: "revision-turn-a",
+      });
+      expect(turnStartsTo("author-a")).toHaveLength(1);
+    });
+
+    it.each([
+      {
+        name: "attempts used up",
+        attempts: 2,
+        error: "The plan takes 70,000 characters in the merge; after 2 condense attempts...",
+      },
+      { name: "a session error with no capture", attempts: 1, error: "Provider session crashed." },
+    ])(
+      "condenses again on Retry after $name, past a settled accepted delivery",
+      async ({ attempts, error }) => {
+        const previousKey = `condense:${attempts}:2026-08-31T17:30:00.000Z`;
+        const fixture = revisedFixture(
+          { a: longPlan("a"), b: longPlan("b") },
+          {
+            status: "error",
+            error,
+            errorStage: "revision",
+            condenseAttempts: attempts,
+            condenseTargetChars: null,
+            condenseCommandKey: previousKey,
+            updatedAt: "2026-08-31T17:30:00.000Z",
+          },
+        );
+        // Production rechecks find the failed condense turn's accepted delivery.
+        harness = await createHarness(makeReadModel(fixture), {
+          recheckDelivery: (threadId) =>
+            Effect.succeed(makeProviderTurnDelivery(threadId, "accepted")),
+        });
+        await Effect.runPromise(harness.service.retryWorkflow({ workflowId: fixture.workflow.id }));
+        await waitFor(() => turnStartsTo("author-a").length === 1);
+        expect(branchOf("a")).toMatchObject({
+          status: "revising",
+          condenseAttempts: 1,
+          error: null,
+        });
+        const previous = prepareCondenseTurn({
+          workflow: fixture.workflow,
+          branch: {
+            ...fixture.workflow.branchA,
+            condenseTargetChars: 50_000,
+            condenseCommandKey: previousKey,
+          },
+          planMarkdown: longPlan("a"),
+          createdAt: NOW,
+        });
+        if ("rejection" in previous) throw new Error(previous.rejection);
+        // A new command, even with the plan being condensed unchanged.
+        expect(turnStartsTo("author-a")[0]!.commandId).not.toBe(previous.command.commandId);
+      },
     );
 
-    await harness.start();
-    await waitFor(() => harness!.getSnapshot().planningWorkflows[0]!.merge.status === "error");
-    const merge = harness.getSnapshot().planningWorkflows[0]!.merge;
-    expect(merge.threadId).toBeNull();
-    expect(merge.error).toContain("Merge inputs");
-    expect(
-      harness.dispatched.filter(
-        (command) => command.type === "thread.create" || command.type === "thread.turn.start",
-      ),
-    ).toEqual([]);
+    it("resends a saved format repair after a restart, not the original condense", async () => {
+      const failedAt = "2099-01-01T00:00:00.000Z";
+      const repairKey = "condense:1:2026-08-31T17:30:00.000Z:repair:1";
+      const fixture = revisedFixture(
+        { a: longPlan("a"), b: longPlan("b") },
+        {
+          ...condensingPatch,
+          revisionFormatRepairAttempts: 1,
+          condenseCommandKey: repairKey,
+          updatedAt: "2099-01-01T00:01:00.000Z",
+        },
+      );
+      // The malformed condense reply was already rejected; the repair was saved, not sent.
+      const workflow: PlanningWorkflow = {
+        ...fixture.workflow,
+        branchA: {
+          ...fixture.workflow.branchA,
+          rejectedDocumentTurnId: TurnId.makeUnsafe("malformed-condense-a"),
+        },
+      };
+      const threads = fixture.threads.map((thread) =>
+        thread.id === "author-a"
+          ? {
+              ...thread,
+              latestTurn: {
+                turnId: TurnId.makeUnsafe("malformed-condense-a"),
+                state: "completed" as const,
+                requestedAt: failedAt,
+                startedAt: failedAt,
+                completedAt: failedAt,
+                processingQuiescedAt: failedAt,
+                assistantMessageId: MessageId.makeUnsafe("assistant-malformed-a"),
+              },
+            }
+          : thread,
+      );
+      harness = await createHarness(makeReadModel({ workflow, threads }));
+      await harness.start();
+      await waitFor(() => turnStartsTo("author-a").length === 1);
+      const repair = prepareCondenseTurn({
+        workflow,
+        branch: workflow.branchA,
+        planMarkdown: longPlan("a"),
+        createdAt: NOW,
+      });
+      if ("rejection" in repair) throw new Error(repair.rejection);
+      const sent = turnStartsTo("author-a")[0]!;
+      expect(sent.commandId).toBe(repair.command.commandId);
+      expect(sent.message.text).toContain("## Retry Context");
+    });
+
+    it("does not resend a condense turn that already started", async () => {
+      const startedAt = "2099-01-01T00:00:00.000Z";
+      const fixture = revisedFixture({ a: longPlan("a"), b: longPlan("b") }, condensingPatch);
+      const threads = fixture.threads.map((thread) => ({
+        ...thread,
+        latestTurn: {
+          turnId: TurnId.makeUnsafe(`condense-turn-${thread.id}`),
+          state: "running" as const,
+          requestedAt: startedAt,
+          startedAt,
+          completedAt: null,
+          processingQuiescedAt: null,
+          assistantMessageId: null,
+        },
+      }));
+      harness = await createHarness(makeReadModel({ ...fixture, threads }));
+      await harness.start();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(turnStartsTo("author-a")).toHaveLength(0);
+      expect(turnStartsTo("author-b")).toHaveLength(0);
+    });
   });
 
   it("waits for a newer no-plan follow-up to quiesce before starting reviews", async () => {
@@ -12199,6 +12616,197 @@ describe("WorkflowService", () => {
         ],
       });
       expect(workflowPlanMergeChars(workflow, "c", "PLAN_C", "turn-c")).toBe("PLAN_C".length);
+    });
+
+    const threeAuthors = () => {
+      const base = makeWorkflow();
+      return makeWorkflow({
+        additionalBranches: [
+          { ...base.branchA, branchId: "c", authorThreadId: ThreadId.makeUnsafe("author-c") },
+        ],
+      });
+    };
+    const plansOf = (...lengths: number[]) =>
+      lengths.map((length, index) => ({
+        planMarkdown: "x".repeat(length),
+        turnId: `turn-${index}`,
+      }));
+
+    it("fits three plans of different lengths that an even share would have rejected", () => {
+      const workflow = threeAuthors();
+      // 50k is over an even third of the room, but the shorter plans leave it enough.
+      expect(workflowPlanEvenShare(workflow)).toBeLessThan(50_000);
+      const fit = workflowPlanMergeFit(workflow, plansOf(20_000, 30_000, 50_000));
+      expect(fit.fits).toBe(true);
+      expect(fit.perBranch.map((entry) => entry.allowanceChars)).toEqual([20_000, 30_000, 50_000]);
+    });
+
+    it("splits the room evenly when every plan is too long", () => {
+      const workflow = threeAuthors();
+      const fit = workflowPlanMergeFit(workflow, plansOf(50_000, 50_000, 50_000));
+      expect(fit.fits).toBe(false);
+      const room = workflowPlanMergeRoom(workflow);
+      const share = Math.floor(room / 3);
+      const allowances = fit.perBranch.map((entry) => entry.allowanceChars);
+      // Every plan gets an even share (the last one picks up the rounding remainder), and
+      // together they use the whole room.
+      for (const allowance of allowances) {
+        expect(allowance).toBeGreaterThanOrEqual(share);
+        expect(allowance).toBeLessThanOrEqual(share + 1);
+      }
+      expect(allowances.reduce((sum, allowance) => sum + allowance, 0)).toBe(room);
+      expect(share).toBeGreaterThan(35_000);
+    });
+
+    it("gives one plan of a two-author run more than 60,000 characters", () => {
+      const workflow = makeWorkflow();
+      expect(workflowPlanMergeFit(workflow, plansOf(80_000, 20_000)).fits).toBe(true);
+      const fit = workflowPlanMergeFit(workflow, plansOf(90_000, 40_000));
+      expect(fit.fits).toBe(false);
+      expect(fit.perBranch[1]!.allowanceChars).toBe(40_000);
+      expect(fit.perBranch[0]!.allowanceChars).toBe(workflowPlanMergeRoom(workflow) - 40_000);
+      expect(fit.perBranch[0]!.allowanceChars).toBeGreaterThan(60_000);
+    });
+
+    it("asks authors of any run for 85% of an even share", () => {
+      for (const workflow of [makeWorkflow(), threeAuthors()]) {
+        expect(workflowPlanSoftTarget(workflow)).toBe(
+          Math.floor(workflowPlanEvenShare(workflow) * 0.85),
+        );
+      }
+    });
+  });
+
+  describe("condense prompt", () => {
+    const condensingBranch = (workflow: PlanningWorkflow) => ({
+      ...workflow.branchA,
+      status: "revising" as const,
+      revisionTurnId: TurnId.makeUnsafe("revision-turn-a"),
+      condenseAttempts: 1,
+      condenseTargetChars: 40_000,
+    });
+    const promptOf = (result: ReturnType<typeof prepareCondenseTurn>) => {
+      if ("rejection" in result) throw new Error(result.rejection);
+      return result.command.message.text;
+    };
+
+    it("carries the plan, its size in the merge, its share and an 85% target", () => {
+      const workflow = makeWorkflow();
+      const planMarkdown = `# Plan\n${"Step. ".repeat(10_000)}`;
+      const prompt = promptOf(
+        prepareCondenseTurn({
+          workflow,
+          branch: condensingBranch(workflow),
+          planMarkdown,
+          createdAt: NOW,
+        }),
+      );
+      expect(prompt).toContain(planMarkdown);
+      expect(prompt).toContain(
+        `takes ${workflowPlanMergeChars(workflow, "a", planMarkdown, "revision-turn-a").toLocaleString("en-US")} characters in the merge`,
+      );
+      expect(prompt).toContain("the merge has room for 40,000 from you");
+      expect(prompt).toContain("under 34,000 characters (about 5,666 words)");
+      expect(prompt).toContain("<proposed_plan>");
+    });
+
+    it("refers to the last complete plan when the plan can't travel in the message", () => {
+      const workflow = makeWorkflow();
+      const planMarkdown = "x".repeat(WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT);
+      const prompt = promptOf(
+        prepareCondenseTurn({
+          workflow,
+          branch: condensingBranch(workflow),
+          planMarkdown,
+          createdAt: NOW,
+        }),
+      );
+      // Not "the previous response": on a repair that is the malformed reply.
+      expect(prompt).toContain("Condense the most recent complete plan you submitted");
+      expect(prompt).toContain("did not contain a complete submission");
+      expect(prompt).not.toContain("previous response");
+      expect(prompt).not.toContain(planMarkdown);
+      expect(prompt.length).toBeLessThanOrEqual(WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT);
+    });
+
+    it("refuses to refer to a plan the thread was compacted past", () => {
+      const workflow = makeWorkflow();
+      const result = prepareCondenseTurn({
+        workflow,
+        branch: condensingBranch(workflow),
+        planMarkdown: "x".repeat(WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT),
+        planCreatedAt: "2026-03-26T10:00:00.000Z",
+        thread: { compaction: { createdAt: "2026-03-26T11:00:00.000Z" } },
+        createdAt: NOW,
+      });
+      expect("rejection" in result && result.rejection).toContain("Condense input");
+    });
+
+    it("wraps a document draft in its envelope and keeps the document format", () => {
+      const workflow = makeWorkflow({
+        templateId: "builtin.document.dual",
+        templateVersion: 2,
+        documentType: "rfc",
+      });
+      const prompt = promptOf(
+        prepareCondenseTurn({
+          workflow,
+          branch: condensingBranch(workflow),
+          planMarkdown: "# RFC\n\nBody",
+          createdAt: NOW,
+        }),
+      );
+      expect(prompt).toContain("Your revised draft");
+      expect(prompt).toContain("Your revised document takes");
+      expect(prompt).toContain("## Output Format");
+    });
+
+    it("sends the saved command key, so a restart resends the same command", () => {
+      const workflow = makeWorkflow();
+      const command = (condenseCommandKey: string) => {
+        const result = prepareCondenseTurn({
+          workflow,
+          branch: { ...condensingBranch(workflow), condenseCommandKey },
+          planMarkdown: "# Plan",
+          createdAt: NOW,
+        });
+        if ("rejection" in result) throw new Error(result.rejection);
+        return result.command.commandId;
+      };
+      const first = command("condense:1:2026-03-26T12:00:00.000Z");
+      expect(command("condense:1:2026-03-26T12:00:00.000Z")).toBe(first);
+      // A fresh intent after Retry has attempt 1 again but a new save time.
+      expect(command("condense:1:2026-03-26T12:30:00.000Z")).not.toBe(first);
+      expect(command("condense:1:2026-03-26T12:00:00.000Z:repair:1")).not.toBe(first);
+    });
+
+    it("stamps each fresh condense intent with its own command key", () => {
+      const workflow = makeWorkflow({
+        branchA: { ...makeWorkflow().branchA, status: "revised", condenseAttempts: 0 },
+      });
+      const first = markBranchCondensing(workflow, "a", {
+        allowanceChars: 40_000,
+        updatedAt: "2026-03-26T12:00:00.000Z",
+      }).branchA;
+      expect(first).toMatchObject({ condenseAttempts: 1, condenseTargetChars: 40_000 });
+      // Retry resets the count to 0; the next intent has attempt 1 again, under a new key.
+      const again = markBranchCondensing(workflow, "a", {
+        allowanceChars: 40_000,
+        updatedAt: "2026-03-26T12:30:00.000Z",
+      }).branchA;
+      expect(again.condenseAttempts).toBe(1);
+      expect(again.condenseCommandKey).not.toBe(first.condenseCommandKey);
+    });
+
+    it("lets the merge start reset condense attempts", () => {
+      const base = makeWorkflow();
+      const workflow = makeWorkflow({
+        branchA: { ...base.branchA, status: "revised", condenseAttempts: 2 },
+        branchB: { ...base.branchB, status: "revised", condenseAttempts: 1 },
+      });
+      const started = markMergeStarted(workflow, ThreadId.makeUnsafe("merge"), NOW);
+      expect(started.branchA.condenseAttempts).toBe(0);
+      expect(started.branchB.condenseAttempts).toBe(0);
     });
   });
 

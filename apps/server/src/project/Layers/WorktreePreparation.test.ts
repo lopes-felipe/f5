@@ -6,6 +6,10 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { makeFakeGitCore } from "../../git/testDoubles.ts";
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
 import {
+  INTERRUPTED_SCRIPT_RERUN,
+  SETUP_SCRIPT_INTERRUPTED,
+  SETUP_SCRIPT_STOPPED,
+  SUBMODULES_INITIALIZING,
   WorktreePreparations,
   type PreparationPhase,
 } from "../../persistence/Services/WorktreePreparations.ts";
@@ -40,8 +44,11 @@ const fixture = (
     owner?: string;
     branchExists?: boolean;
     resolvedBase?: string;
+    /** The branch the checkout's HEAD is on, when not the recorded one; null is detached. */
+    head?: string | null;
   } = {},
 ) => {
+  const head = options.head === undefined ? input.branch : options.head;
   const world = makeWorld();
   world.projects.push({
     ...project("project", projectRoot),
@@ -72,16 +79,16 @@ const fixture = (
           ...status,
           canonicalRoot: input.worktreePath,
           commonDir: Path.join(projectRoot, ".git"),
-          branch: input.branch,
+          branch: head,
           headSha: "base",
           ignoredTruncated: options.ignoredTruncated ?? false,
           registration: {
             path,
             canonicalPath: path,
-            branch: input.branch,
+            branch: head,
             headSha: "base",
             isMain: false,
-            detached: false,
+            detached: head === null,
             bare: false,
             locked: null,
             prunable: null,
@@ -166,6 +173,16 @@ const waitForPhase = (receipts: typeof WorktreePreparations.Service, phase: Prep
     }
     throw new Error(`Preparation did not reach ${phase}`);
   });
+
+// The receipt reads `setup_running` from submodule initialization onwards, so
+// that phase alone does not say the script has been started.
+const waitForScriptStart = Effect.gen(function* () {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (vi.mocked(startOwnedSetupScript).mock.calls.length > 0) return;
+    yield* Effect.sleep("1 millis");
+  }
+  throw new Error("The setup script was not started");
+});
 
 describe("durable thread worktree preparation", () => {
   it("starts default async scripts without waiting, deduplicates subsequent sends, and records completion", async () => {
@@ -267,15 +284,133 @@ describe("durable thread worktree preparation", () => {
       }),
     );
   });
-  it("requires acknowledgment after restart during an async script", async () => {
+  it("leaves a background script that a restart cut off alone, without holding the turn, until it is asked for", async () => {
+    const { run, activity } = fixture({ phase: "setup_running" });
+    await run(({ service, receipts, exited }) =>
+      Effect.gen(function* () {
+        yield* service.startup;
+        expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("setup_indeterminate");
+        // The next send prepares without a retry: the script may have had
+        // effects outside the worktree, so it is not run again on its own.
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).not.toHaveBeenCalled();
+        const reported = (yield* receipts.latest(input.worktreePath))!;
+        expect(reported.phase).toBe("setup_failed");
+        expect(reported.error).toBe(SETUP_SCRIPT_INTERRUPTED);
+        expect(activity).toHaveBeenCalledWith(
+          expect.objectContaining({
+            activity: expect.objectContaining({
+              tone: "error",
+              payload: expect.objectContaining({ error: SETUP_SCRIPT_INTERRUPTED }),
+            }),
+          }),
+        );
+        // A reported failure does not hold later sends either.
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).not.toHaveBeenCalled();
+        // Asking for it acknowledges what the first run may have done.
+        yield* service.prepare({ ...input, retry: true });
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        yield* Deferred.succeed(exited, 0);
+        yield* waitForPhase(receipts, "completed");
+      }),
+    );
+  });
+  it("runs a script the agent waits for again after a restart, but only once", async () => {
     await fixture({ phase: "setup_running", async: false }).run(({ service, receipts, exited }) =>
       Effect.gen(function* () {
         yield* service.startup;
         expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("setup_indeterminate");
-        expect((yield* service.prepare(input).pipe(Effect.exit))._tag).toBe("Failure");
+        // The agent needs what this script produces, so the send runs it again.
+        const preparing = yield* service.prepare(input).pipe(Effect.forkChild);
+        yield* waitForPhase(receipts, "setup_running");
+        yield* waitForScriptStart;
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        expect((yield* receipts.latest(input.worktreePath))?.result).toBe(INTERRUPTED_SCRIPT_RERUN);
+        // The server shuts down in the middle of that rerun. The script's own
+        // completion writes the receipt, before any startup reconciles it, and
+        // the mark has to survive that write.
+        yield* Fiber.interrupt(preparing);
+        const interruptedAgain = (yield* receipts.latest(input.worktreePath))!;
+        expect(interruptedAgain.phase).toBe("setup_indeterminate");
+        expect(interruptedAgain.result).toBe(INTERRUPTED_SCRIPT_RERUN);
+        yield* service.startup;
+        expect((yield* receipts.latest(input.worktreePath))?.result).toBe(INTERRUPTED_SCRIPT_RERUN);
+        // Not a third run: it is reported, and the turn is not held.
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("setup_failed");
         yield* Deferred.succeed(exited, 0);
+      }),
+    );
+  });
+  it("does not take a restart during submodule initialization for a script that was cut off", async () => {
+    await fixture({ phase: "setup_running" }).run(({ service, receipts, exited }) =>
+      Effect.gen(function* () {
+        // What a checkout records while its submodules are being initialized.
+        yield* receipts.update((yield* receipts.latest(input.worktreePath))!, {
+          result: SUBMODULES_INITIALIZING,
+        });
+        yield* service.startup;
+        const cutOff = (yield* receipts.latest(input.worktreePath))!;
+        expect(cutOff.phase).toBe("setup_indeterminate");
+        expect(cutOff.result).toBe(SUBMODULES_INITIALIZING);
+        // The script never ran, so nothing is left alone: the submodules are
+        // initialized again and the background script starts as on a first run.
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        const running = (yield* receipts.latest(input.worktreePath))!;
+        expect(running.phase).toBe("setup_running");
+        expect(running.result).toBe('{"async":true}');
+        yield* Deferred.succeed(exited, 0);
+        yield* waitForPhase(receipts, "completed");
+      }),
+    );
+  });
+  it("stops a running script when asked, and records it as stopped", async () => {
+    const { run, killed } = fixture();
+    await run(({ service, receipts }) =>
+      Effect.gen(function* () {
+        expect(yield* service.stopScript(input.worktreePath)).toBe(false);
+        yield* service.prepare(input);
+        expect(yield* service.scriptRunning(input.worktreePath)).toBe(true);
+        expect(yield* service.stopScript(input.worktreePath)).toBe(true);
+        expect(killed).toHaveBeenCalledTimes(1);
+        yield* waitForPhase(receipts, "setup_failed");
+        // A stop is a decision, not an interruption: it holds no later send,
+        // and the script is unlisted once that is written.
+        expect((yield* receipts.latest(input.worktreePath))?.error).toBe(SETUP_SCRIPT_STOPPED);
+        for (let attempt = 0; attempt < 200; attempt++) {
+          if (!(yield* service.scriptRunning(input.worktreePath))) break;
+          yield* Effect.sleep("1 millis");
+        }
+        expect(yield* service.scriptRunning(input.worktreePath)).toBe(false);
+        yield* service.prepare(input);
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+      }),
+    );
+  });
+  it.each([
+    ["another branch", "agent-branch"],
+    ["a detached HEAD", null],
+  ])("runs the setup script in a worktree the agent left on %s", async (_name, head) => {
+    // The folder is the worktree's identity: its setup still belongs to it.
+    await fixture({ phase: "setup_failed", head }).run(({ service, receipts, exited }) =>
+      Effect.gen(function* () {
         yield* service.prepare({ ...input, retry: true });
-        expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("completed");
+        expect(startOwnedSetupScript).toHaveBeenCalledTimes(1);
+        yield* Deferred.succeed(exited, 0);
+        yield* waitForPhase(receipts, "completed");
+      }),
+    );
+  });
+  it("does not adopt a creation that was cut off once the checkout has left its branch", async () => {
+    await fixture({ phase: "allocated", head: "agent-branch" }).run(({ service, receipts }) =>
+      Effect.gen(function* () {
+        const exit = yield* service.prepare({ ...input, retry: true }).pipe(Effect.exit);
+        expect(exit._tag).toBe("Failure");
+        expect(startOwnedSetupScript).not.toHaveBeenCalled();
+        expect((yield* receipts.latest(input.worktreePath))?.phase).toBe("allocated");
       }),
     );
   });

@@ -1,9 +1,13 @@
 {
   "name": "@t3tools/shared",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "type": "module",
   "exports": {
+    "./terminalReplay": {
+      "types": "./src/terminalReplay.ts",
+      "import": "./src/terminalReplay.ts"
+    },
     "./editorLinks": {
       "types": "./src/editorLinks.ts",
       "import": "./src/editorLinks.ts"
@@ -534,6 +538,8 @@
     },
     "./mcpTools": "./src/mcpTools.ts",
     "./mcpSecrets": "./src/mcpSecrets.ts",
+    "./mcpComposer": "./src/mcpComposer.ts",
+    "./mcpCatalog": "./src/mcpCatalog.ts",
     "./cronSchedule": {
       "types": "./src/cronSchedule.ts",
       "import": "./src/cronSchedule.ts"

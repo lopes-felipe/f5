@@ -87,10 +87,12 @@ function deriveAuthoringPhase(workflow: PlanningWorkflow): TimelinePhase {
     id: "authoring",
     label: "Authoring",
     state,
+    parallel: true,
     steps: branches.map((branch) => ({
       key: `author-${branch.branchId}`,
       label: `Branch ${workflowParticipantLabel(branch.branchId)}`,
       threadId: branch.authorThreadId,
+      turnId: branch.planTurnId,
       state: branchStepState(branch),
       modelSlot: branch.authorSlot,
     })),
@@ -180,6 +182,7 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
       slot: review.slot,
       reviewerId: planReviewReviewerBranchId(workflow, branch.branchId, review),
       threadId: review.threadId as ThreadId | null,
+      turnId: review.pinnedTurnId ?? null,
       state: reviewStepState(review.status),
     }));
     // Two-author runs show placeholders only before any review exists, as before.
@@ -199,6 +202,7 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
               slot: edge.slot,
               reviewerId: edge.reviewerBranchId,
               threadId: null,
+              turnId: null,
               state: "pending" as StepState,
             }));
     return [...stored, ...missing];
@@ -214,11 +218,12 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
     .map((entry) => ({
       ...reviewStepIdentity(mesh, entry.reviewedId, entry.slot, entry.reviewerId),
       threadId: entry.threadId,
+      turnId: entry.turnId,
       state: entry.state,
       modelSlot: null,
     }));
 
-  return { id: "reviews", label: "Reviews", state, steps };
+  return { id: "reviews", label: "Reviews", state, parallel: true, steps };
 }
 
 function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
@@ -254,10 +259,15 @@ function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
     id: "revision",
     label: "Revision",
     state,
+    parallel: true,
     steps: branches.map((branch) => ({
       key: `revision-${branch.branchId}`,
-      label: `Branch ${workflowParticipantLabel(branch.branchId)}`,
+      label:
+        branch.status === "revising" && branch.condenseTargetChars != null
+          ? `Branch ${workflowParticipantLabel(branch.branchId)} (condensing for merge)`
+          : `Branch ${workflowParticipantLabel(branch.branchId)}`,
       threadId: branch.authorThreadId,
+      turnId: branch.revisionTurnId,
       state: branchRevisionStepState(branch),
       modelSlot: branch.authorSlot,
     })),
@@ -292,6 +302,7 @@ function deriveMergePhase(workflow: PlanningWorkflow): TimelinePhase {
         key: "merge",
         label: "Merge",
         threadId: workflow.merge.threadId,
+        turnId: workflow.merge.turnId,
         state,
         modelSlot: workflow.merge.mergeSlot,
       },
@@ -324,6 +335,7 @@ function deriveImplementationPhase(workflow: PlanningWorkflow): TimelinePhase {
       key: "implementation",
       label: "Implementation",
       threadId: impl?.threadId ?? null,
+      turnId: impl?.implementationTurnId ?? null,
       state,
       modelSlot: impl?.implementationSlot ?? null,
     },
@@ -394,6 +406,7 @@ function deriveCodeReviewPhase(workflow: PlanningWorkflow): TimelinePhase {
     id: "code-review",
     label: "Code Review",
     state,
+    parallel: true,
     steps,
   };
 }
@@ -430,6 +443,7 @@ function deriveApplyReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
         key: "apply-reviews",
         label: "Apply Reviews",
         threadId: impl?.threadId ?? null,
+        turnId: impl?.revisionTurnId ?? null,
         state,
         modelSlot: impl?.implementationSlot ?? null,
       },
@@ -471,6 +485,7 @@ export function deriveTimelinePhases(workflow: PlanningWorkflow): TimelinePhase[
             key: "reader-review",
             label: "Reader review",
             threadId: pass?.readerThreadId ?? null,
+            turnId: pass?.pinnedTurnId ?? null,
             modelSlot: workflow.readerSlot ?? null,
             state:
               pass?.status === "skipped"
@@ -487,6 +502,7 @@ export function deriveTimelinePhases(workflow: PlanningWorkflow): TimelinePhase[
             key: "polish",
             label: "Polish",
             threadId: workflow.merge.threadId,
+            turnId: pass?.polishTurnId ?? null,
             modelSlot: workflow.merge.mergeSlot,
             state:
               pass?.status === "skipped"

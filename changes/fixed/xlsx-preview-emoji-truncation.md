@@ -1,0 +1,1 @@
+- XLSX previews still open when a long cell would be shortened in the middle of an emoji.

@@ -29,6 +29,38 @@ Each harness release bumps the version once: Release 1 is 16, and Release 2 is 1
 (session capability snapshots, reported model capabilities, catalog sources and the
 provider inventory RPC).
 
+Version 51 gives each thread one server-computed workspace status. `worktrees.threadState` and
+`worktrees.recover` return a `ThreadWorkspaceStatus` (`ready`, `dormant`, `working` or
+`attention`, the last with the actions that apply) instead of the raw registration fields, and
+the same value is carried as `workspace` on the next-turn-queue snapshot, replacing
+`workspaceTransition`. `worktrees.recover` takes `restore`, `attach`, `newWorktree`,
+`useProjectFolder` or `cancel`, and no longer takes `expectedQueueRevision`: the server reads
+the queue under its own lock.
+
+Version 52 adds `worktreeSetup.rerunScript`, which runs a finished setup's failed or interrupted
+setup script again in the worktree the agent is already using. It takes the same input as the
+other `worktreeSetup` actions and returns the setup snapshot.
+
+Version 53 lets a client remove a worktree without a confirmation dialog when that is safe.
+`worktrees.inspect` returns `safeToRemoveSilently` and, in `ignoredFiles`, `disposableOnly` (every
+ignored entry is build or cache output). `worktrees.remove` takes `disposableIgnoredOnly`, which
+removes such entries without naming them and refuses the removal if anything else is ignored, and
+`silent`, for a removal nobody confirmed: the server then also refuses, under its locks, a
+worktree that any thread still uses and a group of worktrees.
+
+Version 50 makes workspace switches settle themselves. `worktrees.previewTransitionRecovery`
+and `worktrees.resolveTransition` are removed, the `workspace_switch_failed` queue reason is
+no longer sent, and a transition snapshot is never left in `needs_recovery` (the phase still
+decodes, for rows an older version wrote). A switch that ends unfinished is reported through
+its caller's error and a `workspace.note` thread activity.
+
+Version 49 makes a thread's branch an observation rather than part of its identity.
+`worktrees.threadState` reports `registration: "foreign"` in place of `"otherBranch"` and drops
+`checkoutBranch`, `branchDriftOnly`, `checkoutDirty` and `followsCheckoutAtTurnEnd`;
+`worktrees.recover` drops the `adoptCheckoutBranch` and `restoreRecordedBranch` actions;
+`worktrees.switchAvailability` no longer reports the `thread` blocker; and the
+`followWorktreeBranchChanges` server setting is removed.
+
 Version 48 adds the `credentials-expired` account usage error code and the provider-limits
 section's `accountFingerprint`, which name an expired sign-in's account.
 

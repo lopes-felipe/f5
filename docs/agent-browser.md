@@ -765,8 +765,10 @@ Certification is a one-time **evidence** run: a live harness runs outside F5 on 
 checkout of main and writes a report; the stamper validates it and stamps the record,
 which lands on main by PR. Publication (the release publisher and
 `bun run release:promote --tag vX.Y.Z`) then only requires every certifying record's
-`evidenceCommit` to be in the tag's history; it reads records at the commit the remote
-tag names and refuses a local tag that differs.
+`evidenceCommit` to be in the source's history. It reads records at the commit the remote
+tag names and refuses a local tag that differs; for a tagless draft (publishers create the
+tag only right before undrafting) it reads them at the full source SHA the draft records,
+and creates the tag there just before publishing.
 
 Per-build **acceptance** is optional and never blocks a release. To check a build by
 hand, install its DMG and run

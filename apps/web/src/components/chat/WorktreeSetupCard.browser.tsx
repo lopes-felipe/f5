@@ -6,9 +6,8 @@ import { WorktreeSetupCard } from "./WorktreeSetupCard";
 import { makeWorktreeSetupSnapshot } from "./worktreeSetupFixtures";
 
 describe("WorktreeSetupCard", () => {
-  it("shows checkout progress, the script tail and running actions", async () => {
+  it("shows checkout progress, the script tail and Cancel while running", async () => {
     const onCancel = vi.fn();
-    const onWorkLocally = vi.fn();
     const base = makeWorktreeSetupSnapshot();
     const snapshot = {
       ...base,
@@ -34,7 +33,7 @@ describe("WorktreeSetupCard", () => {
         busy={false}
         onCancel={onCancel}
         onRetry={null}
-        onWorkLocally={onWorkLocally}
+        onWorkLocally={null}
       />,
     );
     try {
@@ -42,11 +41,45 @@ describe("WorktreeSetupCard", () => {
       await expect.element(page.getByText("Install (agent waits)")).toBeVisible();
       await expect.element(page.getByText("done 12 packages")).toBeVisible();
       await expect.element(page.getByText("1,200 files")).toBeVisible();
-      await page.getByRole("button", { name: "Cancel setup" }).click();
-      await page.getByRole("button", { name: "Work locally" }).click();
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
       expect(onCancel).toHaveBeenCalledTimes(1);
-      expect(onWorkLocally).toHaveBeenCalledTimes(1);
-      await expect.element(page.getByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      expect(page.getByRole("button").elements()).toHaveLength(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("offers to rerun a setup script that a restart cut off, without holding anything", async () => {
+    const onRerunScript = vi.fn();
+    const base = makeWorktreeSetupSnapshot({
+      phase: "done",
+      endedAt: "2026-10-01T10:00:02.000Z",
+      agentStarted: true,
+    });
+    const screen = await render(
+      <WorktreeSetupCard
+        snapshot={{
+          ...base,
+          setupScript: { name: "Install", command: "bun install", async: true },
+          stages: base.stages.map((stage) =>
+            stage.id === "setup-script"
+              ? { ...stage, status: "warning" as const, detail: "interrupted by a restart" }
+              : { ...stage, status: "done" as const },
+          ),
+        }}
+        busy={false}
+        defaultExpanded
+        onCancel={null}
+        onRetry={null}
+        onWorkLocally={null}
+        onRerunScript={onRerunScript}
+      />,
+    );
+    try {
+      await expect.element(page.getByText("Worktree ready")).toBeVisible();
+      await expect.element(page.getByText("interrupted by a restart")).toBeVisible();
+      await page.getByRole("button", { name: "Rerun setup script" }).click();
+      expect(onRerunScript).toHaveBeenCalledTimes(1);
     } finally {
       await screen.unmount();
     }
@@ -89,9 +122,10 @@ describe("WorktreeSetupCard", () => {
     }
   });
 
-  it("offers retry and discard after a cancelled setup kept its worktree", async () => {
+  it("offers Retry first, then the other ways out, after a setup stopped", async () => {
     const onCancel = vi.fn();
     const onRetry = vi.fn();
+    const onWorkLocally = vi.fn();
     const screen = await render(
       <WorktreeSetupCard
         snapshot={makeWorktreeSetupSnapshot({
@@ -102,16 +136,24 @@ describe("WorktreeSetupCard", () => {
         busy={false}
         onCancel={onCancel}
         onRetry={onRetry}
-        onWorkLocally={vi.fn()}
+        onWorkLocally={onWorkLocally}
       />,
     );
     try {
       await expect
         .element(page.getByText("Setup cancelled; worktree kept because it may contain changes."))
         .toBeVisible();
-      await page.getByRole("button", { name: "Discard" }).click();
+      expect(
+        page
+          .getByRole("button")
+          .elements()
+          .map((button) => button.textContent?.trim()),
+      ).toEqual(["Retry", "Continue in Local", "Discard message"]);
+      await page.getByRole("button", { name: "Discard message" }).click();
+      await page.getByRole("button", { name: "Continue in Local" }).click();
       await page.getByRole("button", { name: "Retry" }).click();
       expect(onCancel).toHaveBeenCalledTimes(1);
+      expect(onWorkLocally).toHaveBeenCalledTimes(1);
       expect(onRetry).toHaveBeenCalledTimes(1);
     } finally {
       await screen.unmount();

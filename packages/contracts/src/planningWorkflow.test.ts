@@ -155,6 +155,12 @@ describe("planningWorkflow contracts", () => {
     expect(workflow.branchB.errorStage).toBeNull();
     expect(workflow.branchB.authorFormatRepairAttempts).toBe(0);
     expect(workflow.branchB.revisionFormatRepairAttempts).toBe(0);
+    // Records saved before merge-time condensing have no condense state.
+    for (const branch of [workflow.branchA, workflow.branchB]) {
+      expect(branch.condenseAttempts).toBe(0);
+      expect(branch.condenseTargetChars).toBeNull();
+      expect(branch.condenseCommandKey).toBeNull();
+    }
     expect(workflow.merge.formatRepairAttempts).toBe(0);
     expect(workflow.totalCostUsd).toBe(0);
   });

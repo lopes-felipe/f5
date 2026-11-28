@@ -64,3 +64,38 @@ export function remoteTagCommit(
     throw new Error(`Local tag ${tag} (${local}) differs from origin's (${commit}). Refetch it.`);
   return commit;
 }
+
+/**
+ * The source commit a tagless draft names. Publishers create drafts without a tag (it is
+ * created only right before promotion) and record the source in `target_commitish`. Only
+ * a full commit SHA counts: older drafts carry a branch name such as `main` there.
+ */
+export interface DraftIdentity {
+  readonly draft: boolean;
+  readonly target_commitish?: string | null | undefined;
+}
+export function draftSourceCommit(release: DraftIdentity): string | undefined {
+  const target = release.target_commitish ?? "";
+  return release.draft && /^[a-f0-9]{40}$/.test(target) ? target : undefined;
+}
+
+/**
+ * The commit a release is published from. A remote tag is authoritative (published
+ * releases and drafts reserved by older publishers). A tagless draft names its source in
+ * `target_commitish`; `needsTag` then tells the caller to create the tag at that commit
+ * immediately before undrafting.
+ */
+export function promotionSource(
+  tag: string,
+  io: {
+    readonly tagExists: () => boolean;
+    readonly remoteTagCommit: () => string;
+    readonly release: () => DraftIdentity;
+  },
+): { readonly commit: string; readonly needsTag: boolean } {
+  if (io.tagExists()) return { commit: io.remoteTagCommit(), needsTag: false };
+  const commit = draftSourceCommit(io.release());
+  if (!commit)
+    throw new Error(`origin has no tag ${tag}, and it is not a draft naming a source commit.`);
+  return { commit, needsTag: true };
+}

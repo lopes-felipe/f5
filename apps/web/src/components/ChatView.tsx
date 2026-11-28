@@ -1,15 +1,6 @@
 import { ThreadFindBar } from "./chat/ThreadFindBar";
-import {
-  codeReviewReviewers,
-  findPlanningBranch,
-  investigationCrossReviews,
-  investigationInvestigators,
-  planningBranches,
-  planReviewReviewerBranchId,
-  requireInvestigator,
-} from "@t3tools/shared/workflowParticipants";
 import { attachmentSources } from "../lib/attachmentUploadQueue";
-import { useMcpHubChatServers } from "../lib/mcpHubChat";
+import { mergeChatMcpServers, useMcpHubChatServers } from "../lib/mcpHubChat";
 import { composerModelMentionItems } from "./chat/composerModelMentions";
 import { formatComposerModelMention } from "@t3tools/shared/composerModelMentions";
 import { useFreshSessionStore } from "../freshSessionStore";
@@ -40,9 +31,8 @@ import { projectProviderSnapshots } from "@t3tools/shared/serverSettings";
 import { deriveProviderInstanceEntries } from "../providerInstances";
 import { preserveTimelineAnchorDuringHistoryLoad } from "./chat/timelineScrollAnchors";
 import { messageAttachmentSources } from "../lib/streamingTextRevision";
-import { WorkspaceTransitionBanner } from "./chat/WorkspaceTransitionBanner";
+import { WorkspaceStatusCard } from "./chat/WorkspaceStatusCard";
 import { flushSync } from "react-dom";
-import { WorktreeMissingBanner } from "./chat/WorktreeMissingBanner";
 import { AgentComputerLiveCard } from "./AgentComputerLiveCard";
 import { parseNativeReviewTarget } from "@t3tools/shared/nativeReviewTarget";
 import { isScratchProject } from "@t3tools/shared/scratchProject";
@@ -133,12 +123,10 @@ import {
   type ProjectId,
   type ProjectScript,
   type ModelSlug,
-  type ModelSelection,
   type NativeOperationCommand,
   type ResolvedKeybindingsConfig,
   type ProviderApprovalDecision,
   type ServerProvider,
-  type ProviderKind,
   type ProviderInstanceId,
   type ProviderModelOptions,
   ThreadId,
@@ -146,12 +134,12 @@ import {
   OrchestrationThreadActivity,
   RuntimeMode,
   ProviderInteractionMode,
-  type WorkflowModelSlot,
   defaultInstanceIdForDriver,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import {
   getMessageTextLengthIssue,
+  getMessageTextMaxChars,
   getThreadReferenceLimitIssue,
 } from "@t3tools/shared/providerInput";
 import { formatByteSize } from "@t3tools/shared/byteSize";
@@ -302,9 +290,6 @@ import {
   DEFAULT_THREAD_TERMINAL_ID,
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
-  type CodeReviewWorkflow,
-  type InvestigationWorkflow,
-  type PlanningWorkflow,
   type TaskItem as ThreadTaskItem,
   type TurnDiffSummary,
 } from "../types";
@@ -333,12 +318,7 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { createTerminalCloseRepeatGuard } from "../lib/terminalCloseShortcut";
 import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 import { recordModelSelection } from "../modelPreferencesStore";
-import {
-  selectServerSettings,
-  type UnifiedWebSettings,
-  useSettings,
-  useUpdateSettings,
-} from "../hooks/useSettings";
+import { selectServerSettings, useSettings, useUpdateSettings } from "../hooks/useSettings";
 import {
   type FavoritePreset,
   type FavoritePresetSelection,
@@ -361,7 +341,6 @@ import {
   useWorktreeRepositoryChoices,
   WorktreeRepositoryPicker,
 } from "./RepositoryPicker";
-import { useChatViewBranchDriftGuard } from "./ChatViewBranchDriftGuard";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import {
   selectSurfaceHeaderState,
@@ -387,7 +366,7 @@ import { resolveThreadStatusPillForThread } from "../threadStatus";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { wasBootstrapThreadRolledBack } from "~/lib/bootstrapErrors";
 import { ensureNativeApi, readNativeApi } from "~/nativeApi";
-import { type AppSettings, useAppSettingsSelector } from "../appSettings";
+import { useAppSettingsSelector } from "../appSettings";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -481,15 +460,55 @@ import { UserInputAttachments } from "./chat/UserInputAttachments";
 import { AsyncUserInputPanel } from "./chat/AsyncUserInputPanel";
 import { ElicitationPanel } from "./chat/ElicitationPanel";
 import { NextTurnQueuePanel, NextTurnQueueSync } from "./chat/NextTurnQueuePanel";
-import { shouldShowWorktreeSetupCard, WorktreeSetupCard } from "./chat/WorktreeSetupCard";
+import {
+  canRerunWorktreeSetupScript,
+  canStopWorktreeSetupScript,
+  shouldShowWorktreeSetupCard,
+  WorktreeSetupCard,
+} from "./chat/WorktreeSetupCard";
 import { useWorktreeSetup } from "../hooks/useWorktreeSetup";
 import { runFanOut, toggleFanOutModel, type FanOutAttempt, type FanOutModel } from "./chat/fanOut";
 
-const EMPTY_FAN_OUT: ReadonlyArray<FanOutModel> = [];
+import {
+  resolvePlanningWorkflowThreadSlot,
+  resolveCodeReviewWorkflowThreadSlot,
+  resolveInvestigationWorkflowThreadSlot,
+  extendReplacementRangeForTrailingSpace,
+  syncTerminalContextsByIds,
+  terminalContextIdListsEqual,
+  summarizeTaskCounts,
+  deriveFallbackTasksFromPlan,
+  isEventInDialogKeybindingContext,
+  providerKindForDriver,
+  selectChatViewSettings,
+  selectFavoritePresets,
+} from "./chat/chatViewHelpers";
 import { useCreateProjectBackedDraftThread } from "../hooks/useCreateProjectBackedDraftThread";
 import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueueStore";
+const EMPTY_FAN_OUT: ReadonlyArray<FanOutModel> = [];
 
 import { ComposerCommandItem } from "./chat/ComposerCommandMenu";
+import { McpPromptDialog, type McpPromptRequest } from "./chat/composer/McpPromptDialog";
+import { MCP_COMPOSER_RESOURCE_TEXT_BYTES } from "@t3tools/contracts";
+import {
+  fitMcpResourceContext,
+  formatMcpResourceContext,
+  formatMcpResourceReference,
+  type McpResourceContextPart,
+  neutralizeMcpResourceReferences,
+  uniqueMcpResourceReferences,
+} from "@t3tools/shared/mcpComposer";
+import {
+  mcpComposerPromptsQueryOptions,
+  mcpComposerResourcesQueryOptions,
+} from "../lib/mcpReactQuery";
+import {
+  isMcpImageResource,
+  mcpPromptMenuItems,
+  mcpResourceImageFiles,
+  mcpResourceMenuItems,
+  mcpResourceTextParts,
+} from "../lib/mcpComposerMenu";
 
 import { getComposerReasoningStep } from "./chat/composerProviderState";
 
@@ -548,6 +567,9 @@ import {
   IMAGE_ONLY_BOOTSTRAP_PROMPT,
   isImageOnlyBootstrapPrompt,
 } from "@t3tools/shared/composerSendText";
+import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
+import { openNewSideChat } from "../lib/sideChats";
+import { sendThreadReply } from "../lib/sendThreadReply";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
@@ -576,107 +598,6 @@ const COMPOSER_WORKSPACE_AREA = workspaceAreaProps("composer", 2, "Message input
 
 type NativeApiClient = NonNullable<ReturnType<typeof readNativeApi>>;
 type PendingTurnDispatch = PendingTurnDispatchState;
-
-function resolvePlanningWorkflowThreadSlot(
-  workflow: PlanningWorkflow,
-  threadId: ThreadId,
-): WorkflowModelSlot | null {
-  if (
-    workflow.readerPass?.readerThreadId === threadId ||
-    workflow.readerPass?.previousReaderThreadIds?.includes(threadId)
-  )
-    return workflow.readerSlot ?? null;
-  const branches = planningBranches(workflow);
-  const author = branches.find((branch) => branch.authorThreadId === threadId);
-  if (author) {
-    return author.authorSlot;
-  }
-  if (workflow.merge.threadId === threadId) {
-    return workflow.merge.mergeSlot;
-  }
-  for (const branch of branches) {
-    const review = branch.reviews.find((entry) => entry.threadId === threadId);
-    if (review) {
-      const reviewerId = planReviewReviewerBranchId(workflow, branch.branchId, review);
-      return findPlanningBranch(workflow, reviewerId)?.authorSlot ?? null;
-    }
-  }
-  if (workflow.implementation?.threadId === threadId) {
-    return workflow.implementation.implementationSlot;
-  }
-  const codeReview = workflow.implementation?.codeReviews.find(
-    (review) => review.threadId === threadId,
-  );
-  return codeReview?.reviewerSlot ?? null;
-}
-
-function resolveCodeReviewWorkflowThreadSlot(
-  workflow: CodeReviewWorkflow,
-  threadId: ThreadId,
-): WorkflowModelSlot | null {
-  const reviewer = codeReviewReviewers(workflow).find(
-    (entry) => entry.reviewer.threadId === threadId,
-  );
-  if (reviewer) {
-    return reviewer.reviewer.slot;
-  }
-  if (workflow.consolidation.threadId === threadId) {
-    return workflow.consolidation.slot;
-  }
-  return null;
-}
-
-function resolveInvestigationWorkflowThreadSlot(
-  workflow: InvestigationWorkflow,
-  threadId: ThreadId,
-): WorkflowModelSlot | null {
-  const investigator = investigationInvestigators(workflow).find(
-    ({ investigator: entry }) =>
-      entry.investigationThreadId === threadId || entry.selfReviewThreadId === threadId,
-  );
-  if (investigator) {
-    return investigator.investigator.slot;
-  }
-  // A cross-review runs on its reviewer's model.
-  const crossReview = investigationCrossReviews(workflow).find(
-    (view) => view.threadId === threadId,
-  );
-  if (crossReview) {
-    return requireInvestigator(workflow, crossReview.reviewerId).slot;
-  }
-  if (workflow.synthesis.threadId === threadId) {
-    return workflow.synthesis.slot;
-  }
-  return null;
-}
-
-const extendReplacementRangeForTrailingSpace = (
-  text: string,
-  rangeEnd: number,
-  replacement: string,
-): number => {
-  if (!replacement.endsWith(" ")) {
-    return rangeEnd;
-  }
-  return text[rangeEnd] === " " ? rangeEnd + 1 : rangeEnd;
-};
-
-const syncTerminalContextsByIds = (
-  contexts: ReadonlyArray<TerminalContextDraft>,
-  ids: ReadonlyArray<string>,
-): TerminalContextDraft[] => {
-  const contextsById = new Map(contexts.map((context) => [context.id, context]));
-  return ids.flatMap((id) => {
-    const context = contextsById.get(id);
-    return context ? [context] : [];
-  });
-};
-
-const terminalContextIdListsEqual = (
-  contexts: ReadonlyArray<TerminalContextDraft>,
-  ids: ReadonlyArray<string>,
-): boolean =>
-  contexts.length === ids.length && contexts.every((context, index) => context.id === ids[index]);
 
 type ChatHeaderPanelStateProp = "diffState" | "filesState" | "agentsState" | "previewState";
 
@@ -716,48 +637,6 @@ function ChatHeaderWithPanelState(
   );
 }
 
-function summarizeTaskCounts(tasks: ReadonlyArray<ThreadTaskItem>): string {
-  const counts = {
-    pending: 0,
-    in_progress: 0,
-    completed: 0,
-  } satisfies Record<ThreadTaskItem["status"], number>;
-
-  for (const task of tasks) {
-    counts[task.status] += 1;
-  }
-
-  return (
-    [
-      counts.in_progress > 0 ? `${counts.in_progress} active` : null,
-      counts.pending > 0 ? `${counts.pending} pending` : null,
-      counts.completed > 0 ? `${counts.completed} done` : null,
-    ]
-      .filter((entry): entry is string => entry !== null)
-      .join(" · ") || "No tasks"
-  );
-}
-
-function deriveFallbackTasksFromPlan(
-  activePlan: ReturnType<typeof deriveActivePlanState>,
-): ThreadTaskItem[] {
-  if (!activePlan || activePlan.steps.length === 0) {
-    return [];
-  }
-
-  return activePlan.steps.map((step, index) => ({
-    id: `plan-step:${index}`,
-    content: step.step,
-    activeForm: step.step,
-    status:
-      step.status === "completed"
-        ? "completed"
-        : step.status === "inProgress"
-          ? "in_progress"
-          : "pending",
-  }));
-}
-
 interface ChatViewProps {
   embedded?: boolean;
   threadId: ThreadId;
@@ -765,83 +644,6 @@ interface ChatViewProps {
   liveAgentCount: number;
   focusTimelineEntryId?: string | undefined;
   focusTimelineEntryKind?: "message" | "activity" | undefined;
-}
-
-const DIALOG_POPUP_SELECTOR = '[data-slot="dialog-popup"]';
-const DIALOG_PORTALED_POPUP_SELECTOR = [
-  '[data-slot="combobox-positioner"]',
-  '[data-slot="combobox-popup"]',
-  '[data-slot="menu-positioner"]',
-  '[data-slot="menu-popup"]',
-  '[data-slot="popover-positioner"]',
-  '[data-slot="popover-popup"]',
-  '[data-slot="select-positioner"]',
-  '[data-slot="select-popup"]',
-].join(",");
-
-function isEventInDialogKeybindingContext(event: globalThis.KeyboardEvent): boolean {
-  const eventTarget = event.target instanceof Node ? event.target : null;
-  const eventTargetElement =
-    event.target instanceof Element ? event.target : eventTarget?.parentElement;
-  if (eventTargetElement?.closest(DIALOG_POPUP_SELECTOR)) {
-    return true;
-  }
-
-  if (!document.querySelector(DIALOG_POPUP_SELECTOR)) {
-    return false;
-  }
-
-  return Boolean(eventTargetElement?.closest(DIALOG_PORTALED_POPUP_SELECTOR));
-}
-
-function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null {
-  return driver === "codex" ||
-    driver === "claudeAgent" ||
-    driver === "cursor" ||
-    driver === "opencode" ||
-    driver === "grok" ||
-    driver === "antigravity"
-    ? (driver as ProviderKind)
-    : null;
-}
-
-// ChatView reads settings through these selectors, so a write to any other setting keeps
-// the selection's identity and does not re-render the conversation.
-function selectChatViewSettings(settings: AppSettings) {
-  return {
-    alwaysExpandAgentCommandTranscripts: settings.alwaysExpandAgentCommandTranscripts,
-    claudeBinaryPath: settings.claudeBinaryPath,
-    claudeLaunchArgs: settings.claudeLaunchArgs,
-    claudeProjectSettings: settings.claudeProjectSettings,
-    claudeSubagentDefaults: settings.claudeSubagentDefaults,
-    codexBinaryPath: settings.codexBinaryPath,
-    codexHomePath: settings.codexHomePath,
-    compactChatLayout: settings.compactChatLayout,
-    codexThreadTitleModel: settings.codexThreadTitleModel,
-    customClaudeModels: settings.customClaudeModels,
-    customCodexModels: settings.customCodexModels,
-    customGrokModels: settings.customGrokModels,
-    followUpBehavior: settings.followUpBehavior,
-    gitStatusAutoRefreshIntervalSeconds: settings.gitStatusAutoRefreshIntervalSeconds,
-    openFileLinksInPanel: settings.openFileLinksInPanel,
-    proactivePanelsEnabled: settings.proactivePanelsEnabled,
-    providerModelPreferences: settings.providerModelPreferences,
-    runtimeWarningVisibility: settings.runtimeWarningVisibility,
-    screenReaderAnnouncements: settings.screenReaderAnnouncements,
-    sendShortcut: settings.sendShortcut,
-    showAgentCommandTranscripts: settings.showAgentCommandTranscripts,
-    showFileChangeDiffsInline: settings.showFileChangeDiffsInline,
-    showPromptCacheIndicator: settings.showPromptCacheIndicator,
-    showProviderRuntimeMetadata: settings.showProviderRuntimeMetadata,
-    tasksPanelAutoOpen: settings.tasksPanelAutoOpen,
-    timestampFormat: settings.timestampFormat,
-    workLogFilter: settings.workLogFilter,
-    workLogMode: settings.workLogMode,
-  };
-}
-
-function selectFavoritePresets(settings: UnifiedWebSettings): ReadonlyArray<FavoritePreset> {
-  return settings.favorites;
 }
 
 // Memoized: props are primitives, so streamed tokens and panel updates only re-render this
@@ -903,7 +705,6 @@ export default memo(function ChatView({
   const { resolvedTheme } = useTheme();
   const { revision: themePaletteRevision } = useResolvedThemePalette(resolvedTheme);
   const queryClient = useQueryClient();
-  const { guardBranchDrift, branchDriftDialog } = useChatViewBranchDriftGuard(threadId);
   const {
     composerDraft,
     prompt,
@@ -1060,6 +861,22 @@ export default memo(function ChatView({
     return state.isOpen && state.surfaces.some((surface) => surface.id === "plan");
   });
   const [workflowImplementDialogOpen, setWorkflowImplementDialogOpen] = useState(false);
+  const [mcpPromptRequest, setMcpPromptRequest] = useState<McpPromptRequest | null>(null);
+  // Set every render; the memoized menu handler calls through these.
+  const mcpComposerActionsRef = useRef<{
+    insertMcpPrompt: (
+      request: McpPromptRequest,
+      values: Record<string, string>,
+    ) => Promise<boolean>;
+    attachMcpResourceImage: (serverName: string, uri: string, label: string) => Promise<void>;
+  } | null>(null);
+  const readComposerSnapshotRef = useRef<() => { value: string; expandedCursor: number }>(() => ({
+    value: "",
+    expandedCursor: 0,
+  }));
+  const applyPromptReplacementRef = useRef<
+    (rangeStart: number, rangeEnd: number, replacement: string) => boolean
+  >(() => false);
 
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
@@ -1990,13 +1807,13 @@ export default memo(function ChatView({
 
     return null;
   }, [threadActivities]);
-  // Agents other than Codex and Claude reach MCP servers through F5's hub, which
-  // reports their status; Codex and Claude report it as thread activities.
+  // Servers F5's hub serves report their status from the hub; Codex and Claude report
+  // the servers they configure themselves as thread activities.
   const hubMcpServers = useMcpHubChatServers(sessionProvider, activeThread?.projectId ?? null);
   const mcpRuntimeSummary = useMemo(() => {
-    const servers = hubMcpServers?.length
-      ? hubMcpServers
-      : [...latestMcpStatusActivities(threadActivities).values()];
+    const { servers, hubNames } = mergeChatMcpServers(hubMcpServers, [
+      ...latestMcpStatusActivities(threadActivities).values(),
+    ]);
 
     if (servers.length === 0) {
       return null;
@@ -2006,6 +1823,7 @@ export default memo(function ChatView({
     return {
       summary: `${connectedCount}/${servers.length} connected`,
       servers,
+      hubNames,
     };
   }, [hubMcpServers, threadActivities]);
   const openRewindOperationIds = useMemo(
@@ -2955,6 +2773,19 @@ export default memo(function ChatView({
       limit: 80,
     }),
   );
+  // MCP prompts and resources come from the conversation's live hub servers, read on demand.
+  const mcpComposerPromptsQuery = useQuery(
+    mcpComposerPromptsQueryOptions({
+      threadId: isServerThread ? threadId : null,
+      enabled: composerTriggerKind === "slash-command" && !composerTrigger?.inline,
+    }),
+  );
+  const mcpComposerResourcesQuery = useQuery(
+    mcpComposerResourcesQueryOptions({
+      threadId: isServerThread ? threadId : null,
+      enabled: isPathTrigger,
+    }),
+  );
   const composerMenuItems = useMemo<ComposerCommandItem[]>(() => {
     if (!composerTrigger || (composerTrigger.kind === "skill" && selectedProvider !== "codex"))
       return [];
@@ -2974,6 +2805,7 @@ export default memo(function ChatView({
             }) as ComposerCommandItem,
         ),
         ...composerModelMentionItems(providerStatuses, composerTrigger.query),
+        ...mcpResourceMenuItems(mcpComposerResourcesQuery.data?.servers, composerTrigger.query),
       ];
     }
 
@@ -2987,7 +2819,10 @@ export default memo(function ChatView({
     });
     return composerTrigger.kind === "skill" || composerTrigger.inline
       ? items.filter((item) => item.type === "skill")
-      : items;
+      : [
+          ...items,
+          ...mcpPromptMenuItems(mcpComposerPromptsQuery.data?.servers, composerTrigger.query),
+        ];
   }, [
     activeProject?.skills,
     selectedProviderSnapshot?.skills,
@@ -2996,6 +2831,8 @@ export default memo(function ChatView({
     selectedProvider,
     workspaceEntriesQuery.data,
     providerStatuses,
+    mcpComposerPromptsQuery.data,
+    mcpComposerResourcesQuery.data,
   ]);
   const dismissedComposerPromptRef = useRef<string | null>(null);
   const composerMenuOpen =
@@ -3090,7 +2927,7 @@ export default memo(function ChatView({
   const [worktreeSetupBusy, setWorktreeSetupBusy] = useState(false);
   const createProjectDraftThread = useCreateProjectBackedDraftThread();
   const runWorktreeSetupAction = useCallback(
-    async (action: "cancel" | "retry" | "workLocally") => {
+    async (action: "cancel" | "retry" | "workLocally" | "rerunScript") => {
       const api = readNativeApi();
       if (!api || !worktreeSetup) return;
       const setupThreadId = worktreeSetup.threadId;
@@ -4968,6 +4805,72 @@ export default memo(function ChatView({
     setThreadError(destinationThreadId, latestFailure?.message ?? null);
   };
 
+  /** Fetches an MCP prompt and puts its text at the caret for review; it is never sent from here. */
+  const insertMcpPrompt = async (
+    request: McpPromptRequest,
+    values: Record<string, string>,
+  ): Promise<boolean> => {
+    try {
+      const result = await ensureNativeApi().mcp.getComposerPrompt({
+        threadId,
+        serverName: request.serverName,
+        name: request.prompt.name,
+        ...(Object.keys(values).length > 0 ? { arguments: values } : {}),
+      });
+      if (result.omitted > 0)
+        toastManager.add({
+          type: "warning",
+          title: `Left out ${result.omitted === 1 ? "one part" : `${result.omitted} parts`} of the prompt`,
+          description: "Images, audio and binary content cannot go into the composer.",
+        });
+      if (!result.text.trim()) {
+        toastManager.add({ type: "warning", title: "The prompt returned no text." });
+        return true;
+      }
+      const snapshot = readComposerSnapshotRef.current();
+      const at = snapshot.expandedCursor;
+      const before = snapshot.value.slice(0, at);
+      const separator = before.length > 0 && !/\s$/.test(before) ? " " : "";
+      // A server's prompt can never make F5 read another resource on send.
+      return applyPromptReplacementRef.current(
+        at,
+        at,
+        `${separator}${neutralizeMcpResourceReferences(result.text)}`,
+      );
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: `Could not get /${request.serverName}:${request.prompt.name}`,
+        description: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  };
+
+  /** An image resource goes through the image attachment path as soon as it is chosen. */
+  const attachMcpResourceImage = async (serverName: string, uri: string, label: string) => {
+    try {
+      const read = await ensureNativeApi().mcp.readComposerResource({ threadId, serverName, uri });
+      const files = mcpResourceImageFiles(read, label);
+      if (files.length === 0) {
+        toastManager.add({
+          type: "warning",
+          title: "This resource has no image F5 can attach.",
+          description: "Only PNG, JPEG, GIF and WebP images are attached.",
+        });
+        return;
+      }
+      await addComposerImages(files);
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: `Could not read ${label} from ${serverName}`,
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  mcpComposerActionsRef.current = { insertMcpPrompt, attachMcpResourceImage };
+
   const addComposerFileAttachments = (files: File[]) => {
     if (!activeThreadId || !activeProject || files.length === 0) return;
     if (isPendingTurnDispatchBlocked) return;
@@ -5811,29 +5714,48 @@ export default memo(function ChatView({
         return;
       }
     }
-    const threadIdForSend = activeThread.id;
-    const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
-    if (!sideChatCommand && isServerThread && !isFirstMessage && activeThread.branch && gitCwd) {
-      let proceed = false;
+    // Chosen MCP resources are read now, so the message carries their current contents.
+    // Side chats never carry resource context, so they skip the read (and its failures).
+    let mcpResourceParts: McpResourceContextPart[] = [];
+    const mcpResourceReferences = sideChatCommand ? [] : uniqueMcpResourceReferences(promptForSend);
+    if (mcpResourceReferences.length > 0) {
       try {
-        proceed = await guardBranchDrift({
-          cwd: gitCwd,
-          threadId: threadIdForSend,
-          recordedBranch: activeThread.branch,
-          worktreePath: activeThread.worktreePath,
-        });
+        const reads = await Promise.all(
+          mcpResourceReferences.map(async (reference) =>
+            mcpResourceTextParts(
+              reference.serverName,
+              await api.mcp.readComposerResource({
+                threadId: activeThread.id,
+                serverName: reference.serverName,
+                uri: reference.uri,
+              }),
+            ),
+          ),
+        );
+        mcpResourceParts = fitMcpResourceContext(
+          reads.flatMap((read) => read.parts),
+          MCP_COMPOSER_RESOURCE_TEXT_BYTES,
+        );
+        const omitted = reads.reduce((total, read) => total + read.omitted, 0);
+        if (omitted > 0)
+          toastManager.add({
+            type: "warning",
+            title: `Left out ${omitted === 1 ? "one binary part" : `${omitted} binary parts`} of the MCP resources`,
+            description:
+              "Only text is added to the message. Choose an image resource to attach it.",
+          });
       } catch (error) {
         toastManager.add({
           type: "error",
-          title: "Could not verify the current branch.",
+          title: "An MCP resource could not be read.",
           description: error instanceof Error ? error.message : "Try sending again.",
         });
-      }
-      if (!proceed) {
         sendInFlightRef.current = false;
         return;
       }
     }
+    const threadIdForSend = activeThread.id;
+    const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     // Always request worktree preparation on the first send in worktree mode,
     // even if the client cache shows a non-null `worktreePath`. The client
     // cache can be stale after preload/restore, and the server has the
@@ -5924,14 +5846,40 @@ export default memo(function ChatView({
         projectSkills: activeProject?.skills,
         providerSkills: selectedProviderSnapshot?.skills,
       });
+    const attachedFilesReserve =
+      appendAttachedFilesToPrompt("", composerFilePathsSnapshot).length +
+      (composerFilePathsSnapshot.length > 0 ? 2 : 0);
+    // Resource text gets what the rest of the message leaves, so a large resource is
+    // cut with a note instead of blocking the send.
+    const mcpResourceContext = (() => {
+      if (sideChatCommand || mcpResourceParts.length === 0) return "";
+      const rest = appendTerminalContextsToPrompt(
+        rewrittenPromptForSend,
+        composerTerminalContextsSnapshot,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const replyReserve = replyToForSend
+        ? serializeAssistantResponseContext(replyToForSend).length + 2
+        : 0;
+      return formatMcpResourceContext(
+        mcpResourceParts,
+        getMessageTextMaxChars(rest, sendLimits.maxInputChars) -
+          rest.length -
+          2 -
+          attachedFilesReserve -
+          replyReserve,
+      );
+    })();
     // Rewrite provider-specific runtime skill syntax before any send-time
     // context helpers append extra text ahead of the user's leading token.
     const messageTextWithContexts = appendTerminalContextsToPrompt(
-      sideChatCommand ? (sideChatCommand[1] ?? "") : rewrittenPromptForSend,
+      sideChatCommand
+        ? (sideChatCommand[1] ?? "")
+        : mcpResourceContext
+          ? `${rewrittenPromptForSend.trim()}\n\n${mcpResourceContext}`
+          : rewrittenPromptForSend,
       composerTerminalContextsSnapshot,
-      sendLimits.maxInputChars -
-        appendAttachedFilesToPrompt("", composerFilePathsSnapshot).length -
-        (composerFilePathsSnapshot.length > 0 ? 2 : 0),
+      sendLimits.maxInputChars - attachedFilesReserve,
     );
     const messageTextForSend = appendAttachedFilesToPrompt(
       messageTextWithContexts,
@@ -6513,18 +6461,6 @@ export default memo(function ChatView({
 
       const threadIdForSend = activeThread.id;
       const replyTo = useComposerDraftStore.getState().draftsByThreadId[threadId]?.replyTo ?? null;
-      if (activeThread.branch && gitCwd) {
-        const proceed = await guardBranchDrift({
-          cwd: gitCwd,
-          threadId: threadIdForSend,
-          recordedBranch: activeThread.branch,
-          worktreePath: activeThread.worktreePath,
-        });
-        if (!proceed) return;
-        // Branch-drift confirmation is asynchronous. Another submit may have
-        // acquired the shared send lock while this one was waiting.
-        if (sendInFlightRef.current) return;
-      }
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();
       const { text: rewrittenText, skillCall } = rewriteComposerRuntimeSkillInvocationForSend({
@@ -6682,8 +6618,6 @@ export default memo(function ChatView({
       composerMatchesClearedState,
       dispatchPendingTurnStartCommand,
       draftThread,
-      gitCwd,
-      guardBranchDrift,
       hasPendingTurnDispatch,
       isConnecting,
       isServerThread,
@@ -7457,6 +7391,8 @@ export default memo(function ChatView({
       terminalContextIds: composerTerminalContexts.map((context) => context.id),
     };
   }, [composerCursor, composerTerminalContexts]);
+  readComposerSnapshotRef.current = readComposerSnapshot;
+  applyPromptReplacementRef.current = applyPromptReplacement;
 
   const resolveActiveComposerTrigger = useCallback((): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
@@ -7564,6 +7500,45 @@ export default memo(function ChatView({
         if (applied) {
           setComposerHighlightedItemId(null);
         }
+        return;
+      }
+      if (item.type === "mcp-resource") {
+        const expectedText = snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd);
+        if (isMcpImageResource(item)) {
+          if (!applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", { expectedText }))
+            return;
+          setComposerHighlightedItemId(null);
+          void mcpComposerActionsRef.current?.attachMcpResourceImage(
+            item.serverName,
+            item.resource.uri,
+            item.label,
+          );
+          return;
+        }
+        const replacement = `${formatMcpResourceReference(item.serverName, item.resource)} `;
+        const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
+          snapshot.value,
+          trigger.rangeEnd,
+          replacement,
+        );
+        const applied = applyPromptReplacement(
+          trigger.rangeStart,
+          replacementRangeEnd,
+          replacement,
+          { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
+        );
+        if (applied) setComposerHighlightedItemId(null);
+        return;
+      }
+      if (item.type === "mcp-prompt") {
+        const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+          expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+        });
+        if (!applied) return;
+        setComposerHighlightedItemId(null);
+        const request = { serverName: item.serverName, prompt: item.prompt };
+        if (item.prompt.arguments.length > 0) setMcpPromptRequest(request);
+        else void mcpComposerActionsRef.current?.insertMcpPrompt(request, {});
         return;
       }
       if (item.type === "skill") {
@@ -8445,10 +8420,24 @@ export default memo(function ChatView({
             ? () => void runWorktreeSetupAction("retry")
             : null
         }
+        // A running setup offers only Cancel; the other ways out follow a setup that stopped.
         onWorkLocally={
-          worktreeSetup.agentStarted || worktreeSetup.phase === "done"
+          worktreeSetup.agentStarted ||
+          worktreeSetup.phase === "done" ||
+          worktreeSetup.phase === "running"
             ? null
             : () => void runWorktreeSetupAction("workLocally")
+        }
+        onRerunScript={
+          canRerunWorktreeSetupScript(worktreeSetup)
+            ? () => void runWorktreeSetupAction("rerunScript")
+            : null
+        }
+        // The server stops only the script when the setup itself has finished.
+        onStopScript={
+          canStopWorktreeSetupScript(worktreeSetup)
+            ? () => void runWorktreeSetupAction("cancel")
+            : null
         }
       />
     ) : null;
@@ -8687,6 +8676,7 @@ export default memo(function ChatView({
                         provider={sessionProvider ?? selectedProviderByThreadId ?? null}
                         entries={providerRuntimeInfoEntries}
                         mcpServers={mcpRuntimeSummary?.servers}
+                        mcpHubServerNames={mcpRuntimeSummary?.hubNames}
                         projectId={activeThread.projectId}
                         threadId={activeThread.id}
                         className="hidden @[36rem]/header-actions:flex"
@@ -8752,6 +8742,7 @@ export default memo(function ChatView({
                     provider={sessionProvider ?? selectedProviderByThreadId ?? null}
                     entries={providerRuntimeInfoEntries}
                     mcpServers={mcpRuntimeSummary?.servers}
+                    mcpHubServerNames={mcpRuntimeSummary?.hubNames}
                     projectId={activeThread.projectId}
                     threadId={activeThread.id}
                   />
@@ -8983,25 +8974,17 @@ export default memo(function ChatView({
                         {inlineThreadNotices.length > 0 ? (
                           <ThreadNoticeStack notices={inlineThreadNotices} />
                         ) : null}
-                        {isServerThread && (
-                          <>
-                            <WorkspaceTransitionBanner threadId={threadId} />
-                            <WorktreeMissingBanner
-                              threadId={threadId}
-                              worktreePath={activeThread?.worktreePath}
-                              branch={activeThread?.branch}
-                              queueBlocked={
-                                nextTurnQueueState.snapshot?.reasonCode === "worktree_missing"
-                              }
-                              turnActive={
-                                phase === "running" || Boolean(activeThread?.session?.activeTurnId)
-                              }
-                            />
-                          </>
-                        )}
-                        {worktreeSetupCardVisible && !worktreeSetupAsChip
-                          ? renderWorktreeSetupCard(false)
-                          : null}
+                        {/* The only workspace surface in the tray. On a compact
+                        layout a setup that fits a chip lives in the strip above. */}
+                        {isServerThread && !worktreeSetupAsChip ? (
+                          <WorkspaceStatusCard
+                            threadId={threadId}
+                            turnActive={
+                              phase === "running" || Boolean(activeThread?.session?.activeTurnId)
+                            }
+                            setup={worktreeSetupCardVisible ? renderWorktreeSetupCard(false) : null}
+                          />
+                        ) : null}
                         {isServerThread && !queueChip ? nextTurnQueuePanel : null}
                         {activeThread?.pendingUserInputs
                           ?.filter((input) => !input.elicitation && !isBlockingUserInput(input))
@@ -9285,7 +9268,20 @@ export default memo(function ChatView({
             </Suspense>
           ) : null}
 
-          {branchDriftDialog}
+          {isServerThread ? (
+            <McpPromptDialog
+              threadId={threadId}
+              request={mcpPromptRequest}
+              onOpenChange={(open) => {
+                if (!open) setMcpPromptRequest(null);
+              }}
+              onInsert={(values) =>
+                mcpPromptRequest
+                  ? insertMcpPrompt(mcpPromptRequest, values)
+                  : Promise.resolve(false)
+              }
+            />
+          ) : null}
 
           {expandedImage && (
             <ExpandedImageDialog
@@ -9313,6 +9309,3 @@ export default memo(function ChatView({
     </OpenLinkThread.Provider>
   );
 });
-import { CODEX_NATIVE_ASIDE_COMMAND } from "@t3tools/shared/slashCommands";
-import { openNewSideChat } from "../lib/sideChats";
-import { sendThreadReply } from "../lib/sendThreadReply";

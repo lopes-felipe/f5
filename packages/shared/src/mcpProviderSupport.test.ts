@@ -28,40 +28,31 @@ describe("mcpProviderSupport", () => {
       "pi",
     ]);
     expect(matrix.every((entry) => entry.support === "supported")).toBe(true);
-    expect(MCP_HUB_PROVIDERS).not.toContain("codex");
-    expect(MCP_HUB_PROVIDERS).not.toContain("claudeAgent");
+    expect(MCP_HUB_PROVIDERS).toContain("codex");
+    expect(MCP_HUB_PROVIDERS).toContain("claudeAgent");
   });
 
-  it("names the fields each provider ignores", () => {
+  it("names only what an agent's own client ignores, since the hub runs every server", () => {
     const server: McpServerDefinition = {
       type: "stdio",
       command: "node",
       cwd: "/srv",
-      startupTimeoutSec: 20,
-      supportsParallelToolCalls: true,
       connectionScope: "shared",
+      startupTimeoutSec: 30,
+      supportsParallelToolCalls: true,
     };
-    expect(mcpProviderSupport(server, "claudeAgent")).toEqual({
-      provider: "claudeAgent",
-      support: "limited",
-      reasons: [
-        "Ignores the working directory; the server starts in the conversation's",
-        "Starts its own copy of the server in each session",
-        "Ignores startup timeout, parallel tool calls",
-      ],
+    expect(mcpProviderSupport(server, "codex")).toEqual({
+      provider: "codex",
+      support: "supported",
+      reasons: [],
     });
-    expect(mcpProviderSupport(server, "codex").reasons).toEqual([
-      "Starts its own copy of the server in each session",
+    expect(mcpProviderSupport(server, "claudeAgent").reasons).toEqual([
+      "Ignores parallel tool calls",
     ]);
     expect(mcpProviderSupport(server, "cursor").reasons).toEqual(["Ignores parallel tool calls"]);
     expect(mcpProviderSupport({ type: "sse", url: "https://x.test" }, "codex").support).toBe(
-      "limited",
+      "supported",
     );
-    // An empty list is not a set field.
-    expect(
-      mcpProviderSupport({ type: "http", url: "https://x.test", scopes: [] }, "claudeAgent")
-        .support,
-    ).toBe("supported");
   });
 
   it("turns providers off and on, and translators leave off servers out", () => {

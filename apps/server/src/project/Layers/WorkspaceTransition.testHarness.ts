@@ -60,6 +60,8 @@ export function createWorkspaceTransitionFixture() {
     const world = makeWorld();
     const base = automationLayer(world, {}, "f5-transition-state-");
     const failPhase: { current: string | null } = { current: null };
+    /** Called after each row update with the phase it wrote, to change the world mid-switch. */
+    const phaseHook: { current: ((phase: string) => void) | null } = { current: null };
     const preparationControl = { fail: false, block: false };
     const preparationEntered = Deferred.makeUnsafe<void>();
     const stoppingEntered = Deferred.makeUnsafe<void>();
@@ -156,6 +158,7 @@ export function createWorkspaceTransitionFixture() {
                   ? Deferred.succeed(stoppingEntered, undefined)
                   : Effect.void,
               ),
+              Effect.tap((next) => Effect.sync(() => phaseHook.current?.(next.phase))),
               Effect.tap((next) =>
                 failPhase.current === next.phase
                   ? Effect.fail(new WorkspaceTransitionError(`crash after ${next.phase}`))
@@ -186,6 +189,8 @@ export function createWorkspaceTransitionFixture() {
             return {
               startup: Effect.void,
               needsPreparation: () => Effect.succeed(false),
+              scriptRunning: () => Effect.succeed(false),
+              stopScript: () => Effect.succeed(false),
               startBackground: () => Effect.void,
               prepare: ({ worktreePath }) =>
                 Effect.gen(function* () {
@@ -210,7 +215,10 @@ export function createWorkspaceTransitionFixture() {
         ),
       ),
       Layer.provideMerge(
-        Layer.succeed(NextTurnQueueDispatcher, { notify: () => Effect.void } as never),
+        Layer.succeed(NextTurnQueueDispatcher, {
+          notify: () => Effect.void,
+          setWorkspaceRestorer: () => Effect.void,
+        } as never),
       ),
       Layer.provideMerge(gitLayer),
       Layer.provideMerge(base),
@@ -297,6 +305,7 @@ export function createWorkspaceTransitionFixture() {
       request,
       preparations,
       failPhase,
+      phaseHook,
       preparationControl,
       preparationEntered,
       stoppingEntered,

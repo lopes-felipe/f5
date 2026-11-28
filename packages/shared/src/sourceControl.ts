@@ -334,26 +334,29 @@ export function userlessScpRemoteHost(remoteUrl: string): string | null {
  * A remote URL safe to show, log or trace. An http(s) remote loses its userinfo, query and
  * fragment, where tokens live (`https://x-access-token:…@host/repo.git`). Other URL schemes
  * lose only a password: the SSH user is not a secret, and scp-style remotes have no password.
+ * For Git's explicit helper form, strip credentials from the URL after the transport prefix.
  * Unparseable input is returned unchanged.
  */
 export function stripRemoteUrlCredentials(url: string): string {
   const trimmed = url.trim();
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return url;
+  const helper = /^[a-z][a-z0-9+.-]*::/i.exec(trimmed)?.[0] ?? "";
+  const address = trimmed.slice(helper.length);
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(address)) return url;
   let parsed: URL;
   try {
-    parsed = new URL(trimmed);
+    parsed = new URL(address);
   } catch {
     return url;
   }
   const http = parsed.protocol === "http:" || parsed.protocol === "https:";
-  if (!parsed.password && !(http && (parsed.username || parsed.search || parsed.hash))) return url;
+  if (!parsed.password && !(http && (parsed.username || /[?#]/.test(address)))) return url;
   parsed.password = "";
   if (http) {
     parsed.username = "";
     parsed.search = "";
     parsed.hash = "";
   }
-  return parsed.toString();
+  return helper + parsed.toString();
 }
 
 export function parseSourceControlRemoteUrl(

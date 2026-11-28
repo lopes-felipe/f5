@@ -36,6 +36,41 @@ it("rechecks empty ignored directories, protects newly written secrets and envir
   }
 });
 
+it("looks inside a build directory before trusting it by name", async () => {
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-build-ignored-"));
+  try {
+    const policy = { kind: "rebuildable" } as const;
+    const entries = ["dist/", "build/", "out/", "target/", "coverage/", "node_modules/"];
+    for (const entry of entries) {
+      await FS.mkdir(Path.join(root, entry, "nested", "deeper"), { recursive: true });
+      await FS.writeFile(Path.join(root, entry, "nested", "bundle.js"), "built");
+    }
+    // Nothing but build output: every directory goes, as before.
+    expect(await blockingIgnoredEntriesOnDisk(root, entries, policy)).toEqual([]);
+
+    // Local files nobody can rebuild, wherever they sit in the directory.
+    await FS.writeFile(Path.join(root, "dist", ".env"), "TOKEN=1");
+    await FS.writeFile(Path.join(root, "build", "nested", "deeper", "dev.sqlite"), "data");
+    await FS.writeFile(Path.join(root, "out", "nested", "credentials.json"), "{}");
+    await FS.symlink("/somewhere/else", Path.join(root, "target", "nested", "server.pem"));
+    // Installed packages are a registry's content: their `.env` files are not the user's.
+    await FS.writeFile(Path.join(root, "node_modules", "nested", ".env"), "EXAMPLE=1");
+    expect((await blockingIgnoredEntriesOnDisk(root, entries, policy)).toSorted()).toEqual([
+      "build/",
+      "dist/",
+      "out/",
+      "target/",
+    ]);
+    // The name-only answer has not changed: it is the disk check that refuses.
+    expect(blockingIgnoredEntries(entries, policy)).toEqual([]);
+    // A directory that went away since it was listed holds nothing to lose.
+    await FS.rm(Path.join(root, "dist"), { recursive: true });
+    expect(await blockingIgnoredEntriesOnDisk(root, ["dist/"], policy)).toEqual([]);
+  } finally {
+    await FS.rm(root, { recursive: true, force: true });
+  }
+});
+
 it("keeps the conservative default node_modules exception without approving other ignored paths", () => {
   expect(
     blockingIgnoredEntries(["node_modules/", "apps/web/node_modules/", ".env", "dist/"]),

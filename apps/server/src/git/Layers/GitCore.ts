@@ -1,4 +1,5 @@
 import { gitConfigArgs, topLiteralGitPathspec } from "@t3tools/shared/git";
+import { stripRemoteUrlCredentials } from "@t3tools/shared/sourceControl";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { Option } from "effect";
 import {
@@ -22,6 +23,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { parseCleanupSafetyStatus } from "../cleanupSafety.ts";
 import { basename, dirname, relative } from "node:path";
 import {
+  SUBMODULES_INITIALIZING,
+  SUBMODULES_UNFINISHED,
   WorktreePreparations,
   type WorktreePreparationReceipt,
   type WorktreeGroupPlan,
@@ -58,6 +61,7 @@ import {
   withRepositoryLifecycleLock,
   repositoryIdentityHash,
   pathContains,
+  RepositoryBusyError,
 } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
 import {
   parseRemoteFetchUrls,
@@ -102,6 +106,8 @@ import {
 import { ServerConfig } from "../../config.ts";
 import {
   canonicalWorktreePath,
+  dropLeftoverWorktreeRegistration,
+  isLeftoverWorktreeFolder,
   worktreePathSlug,
   worktreePathExceedsWindowsLimit,
 } from "../worktreePaths.ts";
@@ -408,6 +414,15 @@ const makeGitCore = Effect.gen(function* () {
         Effect.flatMap((result) => {
           if (options.allowNonZeroExit || result.code === 0) {
             return Effect.succeed(result);
+          }
+          if (args[0] === "remote") {
+            // Keep the config-lock retry without reporting potentially credentialed Git output.
+            const detail = isGitConfigLockedError({ detail: result.stderr })
+              ? "could not lock config file (repository config): File exists"
+              : "Git could not inspect or update the repository remotes.";
+            return Effect.fail(
+              createGitCommandError(operation, cwd, args.map(stripRemoteUrlCredentials), detail),
+            );
           }
           if (["fetch", "push", "pull", "ls-remote"].includes(args[0] ?? "")) {
             return Effect.fail(
@@ -1133,14 +1148,17 @@ const makeGitCore = Effect.gen(function* () {
   const ensureRemote: GitCoreShape["ensureRemote"] = (input) =>
     Effect.gen(function* () {
       const preferredName = sanitizeRemoteName(input.preferredName);
-      const normalizedTargetUrl = normalizeRemoteUrl(input.url);
+      const url = stripRemoteUrlCredentials(input.url);
+      const normalizedTargetUrl = normalizeRemoteUrl(url);
       const listRemoteFetchUrls = runGitStdout("GitCore.ensureRemote.listRemoteUrls", input.cwd, [
         "remote",
         "-v",
-      ]).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout)));
+      ]).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout, { includeCredentials: true })));
       const findMatchingRemote = (remoteFetchUrls: Map<string, string>) =>
         [...remoteFetchUrls].find(
-          ([, remoteUrl]) => normalizeRemoteUrl(remoteUrl) === normalizedTargetUrl,
+          ([, remoteUrl]) =>
+            stripRemoteUrlCredentials(remoteUrl) === remoteUrl &&
+            normalizeRemoteUrl(remoteUrl) === normalizedTargetUrl,
         )?.[0];
 
       const remoteFetchUrls = yield* listRemoteFetchUrls;
@@ -1159,7 +1177,7 @@ const makeGitCore = Effect.gen(function* () {
         "add",
         "--",
         remoteName,
-        input.url,
+        url,
       ]).pipe(
         Effect.as(remoteName),
         // A parallel launch for the same fork may have added it since the listing above.
@@ -1595,19 +1613,19 @@ const makeGitCore = Effect.gen(function* () {
         if (yield* checkoutExists(input.path)) {
           const inspected = yield* inspectCheckoutIdentity(input.path);
           const common = yield* canonicalPath(yield* resolveCommonDir(input.cwd));
+          // The folder is the identity: an existing checkout is kept on whatever
+          // HEAD it is on, so a branch the agent switched to is never an error.
           if (
             !registration ||
             registration.isMain ||
             inspected.canonicalRoot !== target ||
-            inspected.commonDir !== common ||
-            inspected.branch !== input.branch ||
-            registration.branch !== input.branch
+            inspected.commonDir !== common
           ) {
             return yield* createGitCommandError(
               "GitCore.ensureWorktree",
               input.cwd,
               [],
-              "The target is not the registered checkout of the expected repository and branch.",
+              "The target is not a registered worktree of the expected repository.",
             );
           }
           return { recreated: false };
@@ -1646,29 +1664,58 @@ const makeGitCore = Effect.gen(function* () {
                 `Worktree branch ${input.branch} is missing.`,
               );
             }
-            if (
-              registration &&
-              (registration.branch !== input.branch ||
-                registration.isMain ||
-                registration.locked !== null)
-            ) {
+            // A stale registration may name a branch the checkout switched to
+            // before its folder was removed; only main and locked ones are kept.
+            if (registration && (registration.isMain || registration.locked !== null)) {
               return yield* createGitCommandError(
                 "GitCore.ensureWorktree",
                 input.cwd,
                 [],
-                "The missing worktree registration does not match the requested branch or is locked.",
+                "The missing worktree registration is locked or is the main checkout.",
               );
             }
-            const other = entries.find(
+            // Every other registration on the branch is looked at, not only the
+            // first: a leftover one can sit in front of a live checkout.
+            const holders = entries.filter(
               (entry) => entry.canonicalPath !== target && entry.branch === input.branch,
             );
-            if (other)
-              return yield* createGitCommandError(
+            const cannotInspect = () =>
+              createGitCommandError(
                 "GitCore.ensureWorktree",
                 input.cwd,
                 [],
-                `Branch ${input.branch} is checked out at ${other.path}.`,
+                "Cannot inspect the checkout that holds the branch.",
               );
+            for (const holder of holders) {
+              // A registration whose folder is no checkout any more holds nothing.
+              const leftover =
+                !holder.isMain &&
+                holder.locked === null &&
+                (yield* Effect.tryPromise({
+                  try: () => isLeftoverWorktreeFolder(holder.path),
+                  catch: cannotInspect,
+                }));
+              if (!leftover)
+                return yield* createGitCommandError(
+                  "GitCore.ensureWorktree",
+                  input.cwd,
+                  [],
+                  `Branch ${input.branch} is checked out at ${holder.path}.`,
+                );
+            }
+            // Only the registrations just verified are dropped. The checkout
+            // below is added without `--force`, so Git itself refuses a holder
+            // that is live, or that appeared since.
+            if (holders.length > 0) {
+              const commonDir = yield* resolveCommonDir(input.cwd).pipe(
+                Effect.flatMap(canonicalPath),
+              );
+              for (const holder of holders)
+                yield* Effect.tryPromise({
+                  try: () => dropLeftoverWorktreeRegistration(commonDir, holder.path),
+                  catch: cannotInspect,
+                });
+            }
             yield* clearMissingRegistrationUnlocked(input.cwd, input.path);
             const prior = yield* preparations
               .latest(target)
@@ -1751,8 +1798,21 @@ const makeGitCore = Effect.gen(function* () {
       ),
     );
 
-  const groupError = (path: string, detail: string) =>
-    createGitCommandError("GitCore.worktreeGroup", path, [], detail);
+  /**
+   * `from` is the error being reported again. A repository that is only busy
+   * stays recognisable as the cause, so the caller can wait and try again
+   * instead of failing a worktree group on a lock held for a moment.
+   */
+  const groupError = (path: string, detail: string, from?: unknown) => {
+    const inner = (from as { readonly cause?: unknown } | null | undefined)?.cause;
+    const busy =
+      from instanceof RepositoryBusyError
+        ? from
+        : inner instanceof RepositoryBusyError
+          ? inner
+          : undefined;
+    return createGitCommandError("GitCore.worktreeGroup", path, [], detail, busy);
+  };
   const listProjectRepositoryRoots: NonNullable<GitCoreShape["listProjectRepositoryRoots"]> = (
     id,
   ) =>
@@ -1776,7 +1836,7 @@ const makeGitCore = Effect.gen(function* () {
       if (checkout.canonicalRoot !== path)
         return yield* groupError(path, "Choose the repository root.");
       yield* preparations.setProjectRepositoryRoot(input.projectId, path, true);
-    }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+    }).pipe(Effect.mapError((error) => groupError(input.path, error.message, error)));
 
   const inspectWorktreeGroup = (
     input: Parameters<NonNullable<GitCoreShape["inspectWorktreeGroup"]>>[0],
@@ -1805,9 +1865,14 @@ const makeGitCore = Effect.gen(function* () {
           )) !== group.root.identity
         )
           return { ready: false, recoverable: false };
+        // The folder is the thread's identity: a root the agent left on another
+        // branch or a detached HEAD is still this group's checkout.
+        const anyHead = input.anyHead === true;
         const root = (yield* listWorktrees(group.projectRoot)).find(
           (entry) =>
-            !entry.isMain && entry.canonicalPath === target && entry.branch === group.branch,
+            !entry.isMain &&
+            entry.canonicalPath === target &&
+            (anyHead || entry.branch === group.branch),
         );
         if (workspaceExists) {
           const checkout = yield* inspectCheckoutIdentity(target);
@@ -1815,7 +1880,7 @@ const makeGitCore = Effect.gen(function* () {
             !root ||
             checkout.canonicalRoot !== target ||
             checkout.commonDir !== group.root.identity ||
-            checkout.branch !== group.branch
+            (!anyHead && checkout.branch !== group.branch)
           )
             return { ready: false, recoverable: false };
         } else {
@@ -1836,7 +1901,9 @@ const makeGitCore = Effect.gen(function* () {
         if (destination.kind === "missing" || destination.kind === "empty") {
           ready = false;
           const receipt = yield* preparations.latest(member.path);
-          const branch = yield* branchExists(member.source, group.branch);
+          // A member is recreated on the branch its own receipt records: it may
+          // not have moved with the root.
+          const branch = yield* branchExists(member.source, receipt?.branch ?? group.branch);
           recoverable &&= branch ? receipt?.owner === nestedWorktreeOwner(target) : !receipt;
           continue;
         }
@@ -1852,7 +1919,9 @@ const makeGitCore = Effect.gen(function* () {
           Option.isNone(checkout) ||
           checkout.value.commonDir !== member.identity ||
           checkout.value.canonicalRoot !== member.path ||
-          (observedGroup !== undefined && checkout.value.branch !== group.branch)
+          // A group with a root follows its root; only a group made of members
+          // alone has to be on the observed branch as a whole.
+          (observedGroup !== undefined && !group.root && checkout.value.branch !== group.branch)
         )
           return { ready: false, recoverable: false };
         const registered = yield* listWorktrees(member.source);
@@ -1867,7 +1936,7 @@ const makeGitCore = Effect.gen(function* () {
           return { ready: false, recoverable: false };
       }
       return { ready, recoverable };
-    }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+    }).pipe(Effect.mapError((error) => groupError(input.path, error.message, error)));
 
   const prepareObservedWorktreeBranch: NonNullable<
     GitCoreShape["prepareObservedWorktreeBranch"]
@@ -1878,10 +1947,22 @@ const makeGitCore = Effect.gen(function* () {
       const checkoutPaths = !group || group.root ? [path] : [];
       const receipts: WorktreePreparationReceipt[] = [];
       if (group) {
-        if (
-          group.branch !== input.previousBranch ||
-          !(yield* inspectWorktreeGroup(input, { ...group, branch: input.branch }))?.ready
-        )
+        if (group.branch !== input.previousBranch)
+          return yield* groupError(path, "The worktree group does not match the observed branch.");
+        const memberBranches = new Map<string, string | null>();
+        for (const member of group.members)
+          memberBranches.set(
+            member.path,
+            yield* inspectCheckoutIdentity(member.path).pipe(
+              Effect.map((checkout) => checkout.branch),
+              Effect.orElseSucceed(() => null),
+            ),
+          );
+        // A group made of members alone moves once every member is on the
+        // branch. Until then there is nothing to record, and nothing has failed.
+        if (!group.root && [...memberBranches.values()].some((branch) => branch !== input.branch))
+          return null;
+        if (!(yield* inspectWorktreeGroup(input, { ...group, branch: input.branch }))?.ready)
           return yield* groupError(path, "The worktree group does not match the observed branch.");
         for (const member of group.members) {
           const receipt = yield* preparations.latest(member.path);
@@ -1895,6 +1976,9 @@ const makeGitCore = Effect.gen(function* () {
               !(receipt.phase === "checkout_created" && !receipt.runSetupScript))
           )
             return yield* groupError(member.path, "The worktree preparation changed.");
+          // A member that stayed behind keeps its receipt, which is the branch
+          // it is recreated on.
+          if (memberBranches.get(member.path) !== input.branch) continue;
           checkoutPaths.push(member.path);
           if (receipt.branch !== input.branch) receipts.push(receipt);
         }
@@ -1927,19 +2011,24 @@ const makeGitCore = Effect.gen(function* () {
           if (branchNameFromHeadRef(head.trim()) !== input.branch)
             return yield* groupError(checkoutPath, "The observed checkout branch changed.");
         }
-      }).pipe(Effect.mapError((error) => groupError(path, error.message)));
+      }).pipe(Effect.mapError((error) => groupError(path, error.message, error)));
       const commit = Effect.gen(function* () {
         for (const receipt of receipts) {
           yield* preparations.update(receipt, { branch: input.branch });
         }
         if (group) yield* preparations.updateGroupBranch(group, input.branch);
-      }).pipe(Effect.mapError((error) => groupError(path, error.message)));
+      }).pipe(Effect.mapError((error) => groupError(path, error.message, error)));
       return { verifyBranch, commit };
-    }).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+    }).pipe(Effect.mapError((error) => groupError(input.path, error.message, error)));
 
   const materializeWorktreeGroup = (
     group: WorktreeGroupPlan,
-    options: { custom?: boolean; adopt?: boolean } = {},
+    /**
+     * `anyHead` is for repairing a group that already existed: its root may be
+     * on another branch or detached, and is verified as readiness verifies it.
+     * Creating a group leaves it unset, so the root must be on the group's branch.
+     */
+    options: { custom?: boolean; adopt?: boolean; anyHead?: boolean } = {},
   ) =>
     Effect.gen(function* () {
       if (!group.root && !options.custom)
@@ -2003,13 +2092,12 @@ const makeGitCore = Effect.gen(function* () {
           continue;
         }
         const prior = yield* preparations.latest(member.path);
-        const existing = yield* branchExists(member.source, group.branch);
-        if (
-          existing &&
-          (prior?.owner !== owner ||
-            prior.repositoryIdentity !== member.identity ||
-            prior.branch !== group.branch)
-        )
+        const ours = prior?.owner === owner && prior.repositoryIdentity === member.identity;
+        // A member this group created comes back on the branch its receipt
+        // records, which is not the root's when the root moved on without it.
+        const memberBranch = ours && prior ? prior.branch : group.branch;
+        const existing = yield* branchExists(member.source, memberBranch);
+        if (existing && !ours)
           return yield* groupError(member.path, "The planned branch belongs to another checkout.");
         if (destination.kind === "empty") yield* Effect.tryPromise(() => rmdir(member.path));
         yield* fileSystem.makeDirectory(dirname(member.path), { recursive: true });
@@ -2017,7 +2105,7 @@ const makeGitCore = Effect.gen(function* () {
           yield* ensureSingleWorktree({
             cwd: member.source,
             path: member.path,
-            branch: group.branch,
+            branch: memberBranch,
             owner,
           });
         } else {
@@ -2025,11 +2113,11 @@ const makeGitCore = Effect.gen(function* () {
             cwd: member.source,
             path: member.path,
             branch: member.baseOid,
-            newBranch: group.branch,
+            newBranch: memberBranch,
             baseRefName: member.baseOid,
             preparation: { owner, runSetupScript: false, setupIdentity: null },
           });
-          if (created.worktree.branch !== group.branch)
+          if (created.worktree.branch !== memberBranch)
             return yield* groupError(member.path, "The planned branch changed during checkout.");
         }
       }
@@ -2038,6 +2126,7 @@ const makeGitCore = Effect.gen(function* () {
         projectRoot: group.projectRoot,
         branch: group.branch,
         threadId: group.threadId,
+        ...(options.anyHead ? { anyHead: true } : {}),
       });
       if (!state?.ready)
         return yield* groupError(group.path, "The worktree group failed verification.");
@@ -2059,12 +2148,18 @@ const makeGitCore = Effect.gen(function* () {
           group.path,
           "Retry explicitly to rerun an interrupted layout command.",
         );
-      yield* preparations.setGroupLayoutPhase(group.path, "running");
-      yield* fileSystem.makeDirectory(group.path, { recursive: true });
+      // The layout is marked as running only once the repository is held: a
+      // refusal because another window has it must not look like a command
+      // that was cut off, which only an explicit retry may run again.
+      const layoutCreate = options.layoutCreate;
       yield* withRepositoryLifecycleLock(
         baseDir,
         group.projectRoot,
-        runApprovedWorktreeLayout(group, options.layoutCreate, options.baseBranch),
+        Effect.gen(function* () {
+          yield* preparations.setGroupLayoutPhase(group.path, "running");
+          yield* fileSystem.makeDirectory(group.path, { recursive: true });
+          yield* runApprovedWorktreeLayout(group, layoutCreate, options.baseBranch);
+        }),
       );
       yield* materializeWorktreeGroup(group, { custom: true, adopt: true });
       yield* preparations.setGroupLayoutPhase(group.path, "done");
@@ -2166,7 +2261,7 @@ const makeGitCore = Effect.gen(function* () {
         yield* preparations.saveGroup(group);
         yield* prepareWorktreeGroupLayout(group, input);
       }),
-    ).pipe(Effect.mapError((error) => groupError(input.path, error.message)));
+    ).pipe(Effect.mapError((error) => groupError(input.path, error.message, error)));
 
   const ensureWorktree: GitCoreShape["ensureWorktree"] = (input) =>
     withWorktreeLifecycleLock(
@@ -2181,11 +2276,14 @@ const makeGitCore = Effect.gen(function* () {
             group.projectRoot !== (yield* canonicalPath(input.cwd))
           )
             return yield* groupError(target, "The worktree group owner does not match.");
+          // Whether the folders are there, not which branch they are on: an
+          // intact group on another branch needs nothing recreated.
           const state = yield* inspectWorktreeGroup({
             path: target,
             projectRoot: input.cwd,
             branch: input.branch,
             threadId: group.threadId,
+            anyHead: true,
           });
           if (state?.ready) return { recreated: false };
           if (!state?.recoverable)
@@ -2197,7 +2295,9 @@ const makeGitCore = Effect.gen(function* () {
               target,
               "Retry the interrupted approved layout from the setup card.",
             );
-          yield* materializeWorktreeGroup(group, { custom: phase === "done" });
+          // The inspection above allowed the repair with the root on any HEAD;
+          // the check after it must accept the same root.
+          yield* materializeWorktreeGroup(group, { custom: phase === "done", anyHead: true });
           return { recreated: true };
         }
         const result = yield* ensureSingleWorktree(input);
@@ -3415,7 +3515,14 @@ const makeGitCore = Effect.gen(function* () {
           .update(receipt, { phase: "checkout_created", createdCheckout: true })
           .pipe(
             // Submodule initialization runs outside locks but still owns the checkout.
-            Effect.flatMap((created) => preparations.update(created, { phase: "setup_running" })),
+            // The mark says what is running, so a restart during it is not
+            // taken for a setup script that was cut off.
+            Effect.flatMap((created) =>
+              preparations.update(created, {
+                phase: "setup_running",
+                result: SUBMODULES_INITIALIZING,
+              }),
+            ),
             Effect.mapError((error) =>
               createGitCommandError("GitCore.createWorktree", input.cwd, [], error.message, error),
             ),
@@ -3483,9 +3590,7 @@ const makeGitCore = Effect.gen(function* () {
       yield* initializeSubmodules(worktreePath, input.submodules, input.progress).pipe(
         Effect.onExit((exit) =>
           exit._tag === "Failure"
-            ? finishInitialization(
-                "Submodule initialization did not finish. Retry preparation.",
-              ).pipe(Effect.ignoreCause({ log: true }))
+            ? finishInitialization(SUBMODULES_UNFINISHED).pipe(Effect.ignoreCause({ log: true }))
             : Effect.void,
         ),
       );
@@ -4148,7 +4253,7 @@ const makeGitCore = Effect.gen(function* () {
       if (
         !(yield* fileSystem
           .exists(path)
-          .pipe(Effect.mapError((error) => groupError(path, error.message))))
+          .pipe(Effect.mapError((error) => groupError(path, error.message, error))))
       )
         return;
       const checkout = yield* inspectCheckout(path);
@@ -4176,7 +4281,7 @@ const makeGitCore = Effect.gen(function* () {
       const target = yield* canonicalPath(resolvePath(input.cwd, input.path));
       const group = yield* preparations
         .getGroup(target)
-        .pipe(Effect.mapError((error) => groupError(target, error.message)));
+        .pipe(Effect.mapError((error) => groupError(target, error.message, error)));
       const memberIgnoredFiles = (path: string) =>
         scopeIgnoredFilesRemovalPolicy(relative(target, path), input.ignoredFiles);
       const runLayoutRemoval =
@@ -4185,7 +4290,7 @@ const makeGitCore = Effect.gen(function* () {
               baseDir,
               group.projectRoot,
               runApprovedWorktreeLayout(group, input.layoutRemove, ""),
-            ).pipe(Effect.mapError((error) => groupError(target, error.message)))
+            ).pipe(Effect.mapError((error) => groupError(target, error.message, error)))
           : null;
       if (group && !group.root) {
         const managed = yield* managedWorktreesRoots;
@@ -4197,7 +4302,7 @@ const makeGitCore = Effect.gen(function* () {
         for (const member of group.members) {
           const owner = yield* preparations
             .latest(member.path)
-            .pipe(Effect.mapError((error) => groupError(target, error.message)));
+            .pipe(Effect.mapError((error) => groupError(target, error.message, error)));
           if (
             !owner ||
             owner.owner !== nestedWorktreeOwner(target) ||
@@ -4221,7 +4326,7 @@ const makeGitCore = Effect.gen(function* () {
         )
           yield* runLayoutRemoval;
         yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, false)).pipe(
-          Effect.mapError((error) => groupError(target, error.message)),
+          Effect.mapError((error) => groupError(target, error.message, error)),
         );
         for (const member of group.members)
           yield* removeWorktree({
@@ -4230,11 +4335,11 @@ const makeGitCore = Effect.gen(function* () {
             ...(input.ignoredFiles ? { ignoredFiles: memberIgnoredFiles(member.path)! } : {}),
           });
         yield* Effect.tryPromise(() => cleanPlainWorktreeLayout(group, true)).pipe(
-          Effect.mapError((error) => groupError(target, error.message)),
+          Effect.mapError((error) => groupError(target, error.message, error)),
         );
         yield* preparations
           .deleteGroup(group)
-          .pipe(Effect.mapError((error) => groupError(target, error.message)));
+          .pipe(Effect.mapError((error) => groupError(target, error.message, error)));
         return;
       }
       const entry = (yield* listWorktrees(input.cwd)).find(
@@ -4710,7 +4815,7 @@ const makeGitCore = Effect.gen(function* () {
     readWorktreeGroup: (path) =>
       canonicalPath(path).pipe(
         Effect.flatMap(preparations.getGroup),
-        Effect.mapError((error) => groupError(path, error.message)),
+        Effect.mapError((error) => groupError(path, error.message, error)),
       ),
     isValidBranchName,
     resolveAvailableBranchName,

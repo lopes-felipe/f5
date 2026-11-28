@@ -6,6 +6,14 @@ export * from "./worktreeTransitionSchemas";
 export * from "./worktreesResults";
 export * from "./worktreesInventory";
 
+/** Thread activity kind: the thread's folder moved to another branch. */
+export const WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND = "workspace.branch-changed";
+/**
+ * Thread activity kind: anything else F5 did to, or could not do to, a thread's
+ * workspace on its own, such as a switch that did not finish.
+ */
+export const WORKSPACE_NOTE_ACTIVITY_KIND = "workspace.note";
+
 export const WorktreesInspectInput = Schema.Struct({ projectId: ProjectId, path: FilesystemPath });
 export type WorktreesInspectInput = typeof WorktreesInspectInput.Type;
 
@@ -17,6 +25,19 @@ export const WorktreesRemoveInput = Schema.Struct({
   approvedIgnoredEntries: Schema.optional(
     Schema.Array(Schema.String.check(Schema.isMaxLength(65_535))).check(Schema.isMaxLength(32_768)),
   ),
+  /**
+   * Remove the ignored files without naming them, but only when every one is
+   * build or cache output of the kind automatic cleanup already removes. The
+   * server checks that under its locks and refuses otherwise.
+   */
+  disposableIgnoredOnly: Schema.optional(Schema.Boolean),
+  /**
+   * Nobody confirmed this removal. Under its locks the server then also refuses
+   * a worktree any thread still uses, archived ones included, and a group of
+   * worktrees, and it treats ignored files as `disposableIgnoredOnly` does. It
+   * is everything `safeToRemoveSilently` promised, checked again.
+   */
+  silent: Schema.optional(Schema.Boolean),
 });
 export type WorktreesRemoveInput = typeof WorktreesRemoveInput.Type;
 
@@ -35,17 +56,15 @@ export const WorktreesSwitchAvailabilityInput = Schema.Struct({
 });
 export type WorktreesSwitchAvailabilityInput = typeof WorktreesSwitchAvailabilityInput.Type;
 
+/**
+ * `restore` does whatever brings the thread's worktree back without asking:
+ * recreate it on its branch, recreate the branch from the default branch when
+ * it is gone, or move to a new folder when the recorded one is taken. The
+ * others are the choices `ThreadWorkspaceStatus` offers when it cannot.
+ */
 export const WorktreesRecoverInput = Schema.Struct({
   threadId: ThreadId,
-  expectedQueueRevision: NonNegativeInt,
-  action: Schema.Literals([
-    "recreate",
-    "recreateFromBase",
-    "useProjectCheckout",
-    "cancel",
-    "adoptCheckoutBranch",
-    "restoreRecordedBranch",
-  ]),
+  action: Schema.Literals(["restore", "attach", "newWorktree", "useProjectFolder", "cancel"]),
 });
 export type WorktreesRecoverInput = typeof WorktreesRecoverInput.Type;
 
@@ -62,25 +81,6 @@ export type WorktreesSwitchWorkspaceInput = typeof WorktreesSwitchWorkspaceInput
 
 export const WorktreesGetTransitionInput = WorktreesThreadStateInput;
 export type WorktreesGetTransitionInput = typeof WorktreesGetTransitionInput.Type;
-
-export const WorktreesPreviewTransitionRecoveryInput = Schema.Struct({
-  operationId: Schema.String,
-});
-export type WorktreesPreviewTransitionRecoveryInput =
-  typeof WorktreesPreviewTransitionRecoveryInput.Type;
-
-export const WorktreesResolveTransitionInput = Schema.Struct({
-  operationId: Schema.String,
-  version: NonNegativeInt,
-  acceptanceToken: Schema.String,
-  action: Schema.Literals([
-    "accept_inspected_workspace",
-    "keep_original_workspace",
-    "use_project_checkout",
-    "retry",
-  ]),
-});
-export type WorktreesResolveTransitionInput = typeof WorktreesResolveTransitionInput.Type;
 
 /** Inventory is informational; every mutation revalidates identity and claims. */
 

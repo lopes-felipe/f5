@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import { Effect, Layer, ServiceMap } from "effect";
 
+import { CODEX_ADMIN_MCP_CONFIG } from "../mcp/hub/nativeHubOptions.ts";
 import { ProjectMcpConfigService } from "../mcp/ProjectMcpConfigService.ts";
 import { CodexControlClientRegistry } from "./CodexControlClientRegistry.ts";
 import { isMethodNotFoundError } from "./CodexControlClient.ts";
@@ -36,12 +37,8 @@ const makeCodexMcpSyncService = Effect.gen(function* () {
               projectId,
               ...(instanceId ? { instanceId } : {}),
               ...(providerOptions ? { providerOptions } : {}),
-              mcpEffectiveConfigVersion: stored.effectiveVersion,
-              mcpServers: stored.servers,
-              ...(stored.oauthCallbackPort
-                ? { mcpOAuthCallbackPort: stored.oauthCallbackPort }
-                : {}),
-              ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
+              // F5's servers reach Codex through the hub; this client starts none of them.
+              ...CODEX_ADMIN_MCP_CONFIG,
             })
             .pipe(
               Effect.map(

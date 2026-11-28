@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { replayTerminalContinuation } from "@t3tools/shared/terminalReplay";
 import { BoundedTerminalHistory, TERMINAL_HISTORY_MAX_BYTES } from "./BoundedTerminalHistory";
 
 function reference(text: string, maxLines: number, maxBytes: number): string {
@@ -18,6 +19,56 @@ function reference(text: string, maxLines: number, maxBytes: number): string {
 }
 
 describe("BoundedTerminalHistory", () => {
+  it.each([
+    [8, "\u0084ready", "\x1bDready"],
+    [8, "\u0085ready", "\x1bEready"],
+    [8, "\u0088\r\tset", "\x1bH\r\tset"],
+    [8, "\u008dready", "ready"],
+    [16, "ÅÍ日本\u2140\x1b\\ready", "ready"],
+  ])(
+    "replays only the layout control and visible tail within %i bytes (%j)",
+    (budget, tail, expected) => {
+      const input = "\x1bPz" + "z".repeat(50) + tail;
+      for (let split = 0; split <= input.length; split++) {
+        const history = new BoundedTerminalHistory(5000, budget);
+        history.append(input.slice(0, split));
+        history.value();
+        history.append(input.slice(split));
+        expect(history.snapshot()).toEqual({ history: expected });
+        expect(history.byteLength).toBe(Buffer.byteLength(expected));
+      }
+    },
+  );
+
+  it("tracks an omitted string through later PTY chunks and a split terminator", () => {
+    const history = new BoundedTerminalHistory(5000, 8);
+    history.append("\x1bPz" + "z".repeat(50));
+    const snapshot = history.snapshot();
+    expect(snapshot.history).toBe("");
+    const continuation = replayTerminalContinuation(snapshot.historySequenceState!, "payload");
+    expect(continuation).toEqual({ state: snapshot.historySequenceState, data: "" });
+    expect(replayTerminalContinuation(continuation.state, "\u2140ready")).toEqual(continuation);
+    const splitCodePoint = "\u{45000}";
+    const firstHalf = replayTerminalContinuation(continuation.state, splitCodePoint[0]!);
+    expect(firstHalf.data).toBe("");
+    expect(replayTerminalContinuation(firstHalf.state, splitCodePoint[1]! + "ready")).toEqual(
+      continuation,
+    );
+    history.append("\x1b");
+    expect(replayTerminalContinuation(history.snapshot().historySequenceState!, "\\ready")).toEqual(
+      {
+        state: 0,
+        data: "ready",
+      },
+    );
+    expect(
+      replayTerminalContinuation(history.snapshot().historySequenceState!, "[31mready"),
+    ).toEqual({ state: 0, data: "\x1b[31mready" });
+    history.finish();
+    history.append("new shell");
+    expect(history.snapshot()).toEqual({ history: "ew shell" });
+  });
+
   it.each([
     ["before\x1bP$q\x18after\n", "beforeafter\n"],
     ["before\x1bP$q\x1aafter\n", "beforeafter\n"],

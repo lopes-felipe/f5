@@ -273,7 +273,12 @@ export function UserInputQuestionStep({
               {questionIndex + 1}/{questionCount}
             </span>
           ) : null}
-          <span className="truncate text-2xs font-semibold tracking-widest text-muted-foreground uppercase">
+          <span
+            className={cn(
+              "min-w-0 text-2xs font-semibold tracking-widest text-muted-foreground uppercase",
+              collapsed ? "truncate" : "wrap-anywhere",
+            )}
+          >
             {question.header}
           </span>
           {isMultiSelect ? (

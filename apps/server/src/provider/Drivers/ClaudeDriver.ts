@@ -29,6 +29,7 @@ import {
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import { Duration, Effect, FileSystem, Option, Path, Ref, Schema, Stream } from "effect";
 import { makeClaudeInstanceProbes, makeClaudeSignOutInvalidation } from "./ClaudeProbeCache.ts";
+import { nativeMcpHubAdapterOptions } from "../../mcp/hub/nativeHubOptions.ts";
 import {
   makeClaudeConsumeResetCredit,
   makeClaudeLimitResetAccess,
@@ -201,6 +202,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             }),
           ),
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        ...(yield* nativeMcpHubAdapterOptions),
         previewAutomationBroker,
         ...(threadMcpBroker._tag === "Some" ? { threadMcpBroker: threadMcpBroker.value } : {}),
         ...(computerAutomationBroker._tag === "Some"
@@ -249,6 +251,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       // the limit-reset client only ever reads.
       const limitResets = yield* makeClaudeLimitResetAccess(effectiveConfig, processEnv, {
         cwd: serverConfig.stateDir,
+        instanceId,
         refreshToken: () => Effect.runPromise(probes.usage.pipe(Effect.ignore)),
       });
       const accountUsage = yield* makeAccountUsageCapability(
@@ -273,9 +276,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
                     limitResets: Option.isSome(resets)
                       ? resets.value
                       : limitResets.lastKnownStatus(),
+                    // Only a read that heard Claude refuse F5 says so; failures don't.
+                    limitResetsWithheld: limitResets.withheld(),
                   })),
                 )
-              : Effect.succeed({ ...usage, limitResets: null }),
+              : Effect.succeed({ ...usage, limitResets: null, limitResetsWithheld: false }),
           ),
           Effect.map((data) => {
             const fetchedAt = new Date().toISOString();

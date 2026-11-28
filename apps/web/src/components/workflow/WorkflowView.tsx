@@ -175,6 +175,7 @@ export function WorkflowView(props: { workflowId: string }) {
   return (
     <>
       <WorkflowPageLayout
+        workflowId={workflow.id}
         projectId={workflow.projectId}
         workflowType={documentType ? "document" : "planning"}
         typeLabel={

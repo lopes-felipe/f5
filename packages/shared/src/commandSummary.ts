@@ -1,491 +1,67 @@
-interface ComparableCommandExecutionLike {
-  readonly command: string;
-  readonly detail?: string | null | undefined;
-  readonly title?: string | null | undefined;
-}
+import {
+  RG_FLAGS_WITH_VALUE,
+  RG_PATTERN_FLAGS,
+  GREP_FLAGS_WITH_VALUE,
+  GREP_PATTERN_FLAGS,
+  GIT_GREP_FLAGS_WITH_VALUE,
+  GIT_GREP_PATTERN_FLAGS,
+  RG_REJECT_FLAGS,
+  GREP_REJECT_FLAGS,
+  GIT_GREP_REJECT_FLAGS,
+  SIMPLE_LITERAL_ESCAPE_CHARS,
+  SIMPLE_REGEX_META_CHARS,
+  SEARCH_SUMMARY_TARGET_LIMIT,
+  SEARCH_SUMMARY_PATTERN_LIMIT,
+  SEARCH_SUMMARY_PATTERN_PREVIEW_LIMIT,
+  FIND_PATTERN_FLAGS,
+  FIND_FLAGS_WITH_VALUE,
+  FD_FLAGS_WITH_VALUE,
+  type FileReadCommandMatch,
+  type SearchSummaryInput,
+  type ActivityDisplayHints,
+  type CompactCommandClassification,
+  type SearchSummaryMatch,
+  type ParsedSearchCommand,
+  type SearchToolConfig,
+  type ComparableCommandExecutionLike,
+} from "./commandSummary/constants";
+import {
+  parseCommandExecutionTitle,
+  commandExecutionBackgroundStatus,
+  isGenericCommandTitle,
+  shellBasename,
+  isCommandSubstitutionToken,
+  maybeUnquoteShellToken,
+  displayCommandExecutionCommand,
+  extractCommandToolSummaryPayload,
+  normalizeCommandExecutionDetail,
+  resolveCommandExecutionDisplayCommand,
+  type CommandExecutionBackgroundStatus,
+  type ParsedCommandExecutionTitle,
+} from "./commandSummary/displayHelpers";
+import {
+  isShellCommandSeparatorToken,
+  isShellOperatorToken,
+  lexShellCommand,
+} from "./commandSummary/shellLexer";
 
-const POSIX_SHELL_NAMES = new Set(["zsh", "bash", "sh", "fish"]);
-const COMMAND_TOOL_NAMES = new Set(["bash", "shell", "terminal", "command", "sh", "zsh", "run"]);
-const SHELL_TOKEN_OPERATORS = [
-  "2>&1",
-  "1>>",
-  "2>>",
-  "&>>",
-  "&>",
-  ">>",
-  "<<",
-  "||",
-  "&&",
-  "1>",
-  "2>",
-  "|",
-  ";",
-  "&",
-  "<",
-  ">",
-] as const;
-const SHELL_COMMAND_SEPARATORS = new Set(["|", "||", "&&", ";", "&"]);
-const RG_FLAGS_WITH_VALUE = new Set([
-  "-A",
-  "-B",
-  "-C",
-  "-E",
-  "-e",
-  "-f",
-  "-g",
-  "-j",
-  "-M",
-  "-m",
-  "-t",
-  "-T",
-  "--after-context",
-  "--before-context",
-  "--context",
-  "--encoding",
-  "--engine",
-  "--file",
-  "--glob",
-  "--glob-case-insensitive",
-  "--ignore-file",
-  "--max-columns",
-  "--max-count",
-  "--max-depth",
-  "--max-filesize",
-  "--path-separator",
-  "--pre",
-  "--pre-glob",
-  "--regexp",
-  "--replace",
-  "--sort",
-  "--sortr",
-  "--threads",
-  "--type",
-  "--type-add",
-  "--type-not",
-]);
-const RG_PATTERN_FLAGS = new Set(["-e", "--regexp"]);
-const GREP_FLAGS_WITH_VALUE = new Set([
-  "-A",
-  "-B",
-  "-C",
-  "-D",
-  "-d",
-  "-e",
-  "-f",
-  "-m",
-  "--after-context",
-  "--before-context",
-  "--binary-files",
-  "--color",
-  "--colour",
-  "--context",
-  "--devices",
-  "--directories",
-  "--exclude",
-  "--exclude-dir",
-  "--exclude-from",
-  "--file",
-  "--include",
-  "--label",
-  "--max-count",
-  "--regexp",
-]);
-const GREP_PATTERN_FLAGS = new Set(["-e", "--regexp"]);
-const GIT_GREP_FLAGS_WITH_VALUE = new Set([
-  "-e",
-  "-f",
-  "-C",
-  "--max-depth",
-  "--open-files-in-pager",
-]);
-const GIT_GREP_PATTERN_FLAGS = new Set(["-e"]);
-const RG_REJECT_FLAGS = new Set(["--files", "--type-list", "--help", "--version"]);
-const GREP_REJECT_FLAGS = new Set(["--help", "--version"]);
-const GIT_GREP_REJECT_FLAGS = new Set(["--help", "--version"]);
-const SIMPLE_LITERAL_ESCAPE_CHARS = new Set([
-  ".",
-  "\\",
-  "-",
-  "/",
-  "_",
-  ":",
-  ",",
-  "@",
-  "#",
-  "%",
-  "=",
-  "+",
-]);
-const SIMPLE_REGEX_META_CHARS = new Set([
-  ".",
-  "^",
-  "$",
-  "*",
-  "+",
-  "?",
-  "(",
-  ")",
-  "[",
-  "]",
-  "{",
-  "}",
-]);
-// Keep worklog summaries scannable in the timeline: enumerate a few concrete
-// targets/patterns, then collapse the tail before the label turns into a
-// second command transcript.
-const SEARCH_SUMMARY_TARGET_LIMIT = 3;
-const SEARCH_SUMMARY_PATTERN_LIMIT = 3;
-const SEARCH_SUMMARY_PATTERN_PREVIEW_LIMIT = 80;
-const FIND_PATTERN_FLAGS = new Set([
-  "-name",
-  "-iname",
-  "-path",
-  "-ipath",
-  "-wholename",
-  "-iwholename",
-]);
-const FIND_FLAGS_WITH_VALUE = new Set([
-  "-fstype",
-  "-gid",
-  "-group",
-  "-maxdepth",
-  "-mindepth",
-  "-mount",
-  "-mtime",
-  "-name",
-  "-iname",
-  "-path",
-  "-ipath",
-  "-perm",
-  "-size",
-  "-type",
-  "-uid",
-  "-user",
-  "-used",
-  "-wholename",
-  "-iwholename",
-]);
-const FD_FLAGS_WITH_VALUE = new Set([
-  "-d",
-  "-e",
-  "-E",
-  "-j",
-  "-s",
-  "-t",
-  "-x",
-  "-X",
-  "--changed-within",
-  "--changed-before",
-  "--extension",
-  "--exclude",
-  "--exec",
-  "--exec-batch",
-  "--max-depth",
-  "--min-depth",
-  "--owner",
-  "--search-path",
-  "--size",
-  "--threads",
-  "--type",
-]);
-
-export interface FileReadCommandMatch {
-  readonly filePaths: ReadonlyArray<string>;
-  readonly lineSummary?: string;
-}
-
-export interface SearchSummaryInput {
-  readonly patterns: ReadonlyArray<string>;
-  readonly targets?: ReadonlyArray<string>;
-}
-
-export interface ActivityDisplayHints {
-  readonly readPaths?: ReadonlyArray<string>;
-  readonly lineSummary?: string;
-  readonly searchSummary?: string;
-}
-
-export type CompactCommandClassification =
-  | {
-      readonly kind: "search";
-      readonly summary: string;
-    }
-  | {
-      readonly kind: "file-read";
-      readonly fileRead: FileReadCommandMatch;
-    }
-  | {
-      readonly kind: "other";
-    };
-
-interface SearchSummaryMatch {
-  readonly targets: ReadonlyArray<string>;
-  readonly patterns: ReadonlyArray<string>;
-}
-
-interface ParsedSearchCommand {
-  readonly patterns: ReadonlyArray<string>;
-  readonly targets: ReadonlyArray<string>;
-}
-
-interface SearchToolConfig {
-  readonly flagsWithValue: ReadonlySet<string>;
-  readonly patternFlags: ReadonlySet<string>;
-  readonly rejectFlags?: ReadonlySet<string>;
-}
-
-export type CommandExecutionBackgroundStatus = "running" | "completed" | "failed" | "stopped";
-
-export interface ParsedCommandExecutionTitle {
-  readonly baseTitle: string;
-  readonly backgroundStatus: CommandExecutionBackgroundStatus | null;
-}
-
-// Claude retitles backgrounded tools as "<title> — <status>" (see the Claude
-// adapter's backgroundToolTitle); the suffix is the only stored background marker.
-const BACKGROUND_TITLE_PATTERN = /^(.*\S)\s+—\s+(running|completed|failed|stopped)$/s;
-
-export function parseCommandExecutionTitle(title: string): ParsedCommandExecutionTitle {
-  const trimmed = title.trim();
-  const match = BACKGROUND_TITLE_PATTERN.exec(trimmed);
-  if (!match?.[1] || !match[2]) {
-    return { baseTitle: trimmed, backgroundStatus: null };
-  }
-  return {
-    baseTitle: match[1],
-    backgroundStatus: match[2] as CommandExecutionBackgroundStatus,
-  };
-}
-
-export function commandExecutionBackgroundStatus(
-  execution: Pick<ComparableCommandExecutionLike, "title">,
-): CommandExecutionBackgroundStatus | null {
-  return execution.title ? parseCommandExecutionTitle(execution.title).backgroundStatus : null;
-}
-
-export function isGenericCommandTitle(title: string): boolean {
-  return /^(?:ran|running) command$|^command run$/i.test(
-    parseCommandExecutionTitle(title).baseTitle,
-  );
-}
-
-function shellBasename(command: string): string {
-  const normalized = command.replace(/\\/g, "/");
-  const segments = normalized.split("/");
-  return segments[segments.length - 1] ?? normalized;
-}
-
-function unwrapShellCommandArg(value: string): string {
-  if (value.length < 2) {
-    return value;
-  }
-
-  if (value.startsWith("'") && value.endsWith("'")) {
-    return value.slice(1, -1).replace(/'"'"'/g, "'");
-  }
-
-  if (value.startsWith('"') && value.endsWith('"')) {
-    return value
-      .slice(1, -1)
-      .replace(/\\(["\\$`])/g, "$1")
-      .replace(/\\n/g, "\n");
-  }
-
-  return value;
-}
-
-function isQuotedToken(token: string): boolean {
-  return (
-    token.length >= 2 &&
-    ((token.startsWith("'") && token.endsWith("'")) ||
-      (token.startsWith('"') && token.endsWith('"')))
-  );
-}
-
-function isCommandSubstitutionToken(token: string): boolean {
-  return /^\$\(.+\)$/.test(token) || /^`[^`]+`$/.test(token);
-}
-
-function maybeUnquoteShellToken(token: string): string {
-  return isQuotedToken(token) ? unwrapShellCommandArg(token) : token;
-}
-
-// Codex can serialize a single argv value as adjacent single/double-quoted
-// fragments. Decode only that complete transport form, never PowerShell escapes.
-function unwrapQuotedCommandFragments(value: string): string | null {
-  let offset = 0;
-  let fragments = 0;
-  let result = "";
-  while (offset < value.length) {
-    const quote = value[offset++];
-    if (quote !== "'" && quote !== '"') return null;
-    let closed = false;
-    while (offset < value.length) {
-      const char = value[offset++];
-      if (char === quote) {
-        closed = true;
-        break;
-      }
-      if (quote === '"' && char === "\\" && /["\\$`]/.test(value[offset] ?? "")) {
-        result += value[offset++];
-      } else {
-        result += char;
-      }
-    }
-    if (!closed) return null;
-    fragments += 1;
-  }
-  return fragments > 1 ? result : null;
-}
-
-function displayPowerShellCommand(command: string): string | null {
-  const match =
-    /^(?:"(?<doubleQuotedShell>[^"]+)"|'(?<singleQuotedShell>[^']+)'|(?<shell>[^\s"']+))\s+(?<args>.+)$/s.exec(
-      command.trim(),
-    );
-  const shell =
-    match?.groups?.doubleQuotedShell ?? match?.groups?.singleQuotedShell ?? match?.groups?.shell;
-  const args = match?.groups?.args;
-  if (!shell || !args || !/^(?:powershell|pwsh)(?:\.exe)?$/i.test(shellBasename(shell))) {
-    return null;
-  }
-
-  const invocation =
-    /^(?:(?:-NoLogo|-NoProfile|-NonInteractive)\s+|-ExecutionPolicy\s+(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s\-"']+)\s+)*-(?:Command|c)\s+(?<body>.+)$/is.exec(
-      args,
-    );
-  const body = invocation?.groups?.body?.trim();
-  if (!body || body === "-") {
-    return null;
-  }
-
-  // Provider command strings already contain the script text. Only remove its
-  // enclosing quotes: POSIX unescaping would corrupt Windows paths and scripts.
-  if (body.startsWith("'") || body.startsWith('"')) {
-    const fragments = unwrapQuotedCommandFragments(body);
-    if (fragments !== null) return fragments || null;
-    return isQuotedToken(body) && body.length > 2 ? body.slice(1, -1) : null;
-  }
-  return body;
-}
-
-export function displayCommandExecutionCommand(command: string): string {
-  const powerShellCommand = displayPowerShellCommand(command);
-  if (powerShellCommand !== null) {
-    return powerShellCommand;
-  }
-  const windows = /^(?:"([^"]+)"|'([^']+)'|(\S+))\s+(.+)$/s.exec(command.trim());
-  const executable = windows?.[1] ?? windows?.[2] ?? windows?.[3];
-  if (executable && /^cmd(?:\.exe)?$/i.test(shellBasename(executable))) {
-    const tokens = lexShellCommand(windows![4]!).filter((token) => token.trim().length > 0);
-    for (let index = 0; index < tokens.length; index++) {
-      const token = tokens[index]!;
-      if (token.toLowerCase() === "/c") {
-        // Keep launchers with positional arguments or shell operators intact.
-        if (index === tokens.length - 2) {
-          const script = tokens[index + 1]!;
-          if (isShellOperatorToken(script)) break;
-          return isQuotedToken(script) ? script.slice(1, -1) || command : script;
-        }
-        break;
-      }
-      if (!token.startsWith("/")) break;
-    }
-    return command;
-  }
-  const match = /^(?<shell>\S+)\s+(?<flag>-(?:ilc|lc|ic|c))\s+(?<rest>.+)$/s.exec(command.trim());
-  const shell = match?.groups?.shell;
-  const rest = match?.groups?.rest;
-  if (!shell || !rest) {
-    return command;
-  }
-
-  if (!POSIX_SHELL_NAMES.has(shellBasename(shell))) {
-    return command;
-  }
-
-  return unwrapShellCommandArg(rest.trim());
-}
-
-function extractCommandToolSummaryPayload(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const match = /^(?<tool>[A-Za-z][A-Za-z0-9 _-]*):\s*(?<payload>.+)$/s.exec(value.trim());
-  if (!match?.groups) {
-    return null;
-  }
-
-  const { tool, payload: rawPayload } = match.groups;
-  if (tool === undefined || rawPayload === undefined) {
-    return null;
-  }
-
-  const toolName = tool.trim().toLowerCase();
-  if (!COMMAND_TOOL_NAMES.has(toolName)) {
-    return null;
-  }
-
-  const payload = rawPayload.trim();
-  if (payload.length === 0 || /^\{\s*\}$/.test(payload)) {
-    return null;
-  }
-
-  if (payload.startsWith("{") && payload.endsWith("}")) {
-    try {
-      const parsed = JSON.parse(payload) as Record<string, unknown>;
-      const command =
-        typeof parsed.command === "string"
-          ? parsed.command
-          : typeof parsed.cmd === "string"
-            ? parsed.cmd
-            : null;
-      const trimmed = command?.trim();
-      return trimmed && trimmed.length > 0 ? trimmed : null;
-    } catch {
-      return null;
-    }
-  }
-
-  return payload;
-}
-
-function isUnhelpfulCommandSummary(value: string): boolean {
-  const trimmed = value.trim();
-  return (
-    trimmed.length === 0 ||
-    /^(?:[A-Za-z][A-Za-z0-9 _-]*:\s*\{\s*\}|\[command unavailable\])$/s.test(trimmed)
-  );
-}
-
-export function normalizeCommandExecutionDetail(detail: string | null | undefined): string | null {
-  if (detail === null || detail === undefined) {
-    return null;
-  }
-  const payload = extractCommandToolSummaryPayload(detail);
-  return payload === null ? detail : displayCommandExecutionCommand(payload);
-}
-
-export function resolveCommandExecutionDisplayCommand(
-  execution: Pick<ComparableCommandExecutionLike, "command" | "detail">,
-): string {
-  const detailSummary = extractCommandToolSummaryPayload(execution.detail);
-  if (detailSummary) {
-    const commandSummary = extractCommandToolSummaryPayload(execution.command);
-    if (
-      !commandSummary ||
-      isUnhelpfulCommandSummary(execution.command) ||
-      commandSummary !== detailSummary
-    ) {
-      return displayCommandExecutionCommand(detailSummary);
-    }
-  }
-
-  return displayCommandExecutionCommand(
-    extractCommandToolSummaryPayload(execution.command) ?? execution.command,
-  );
-}
+export {
+  type FileReadCommandMatch,
+  type SearchSummaryInput,
+  type ActivityDisplayHints,
+  type CompactCommandClassification,
+  type CommandExecutionBackgroundStatus,
+  type ParsedCommandExecutionTitle,
+  parseCommandExecutionTitle,
+  commandExecutionBackgroundStatus,
+  isGenericCommandTitle,
+  displayCommandExecutionCommand,
+  normalizeCommandExecutionDetail,
+  resolveCommandExecutionDisplayCommand,
+  isShellCommandSeparatorToken,
+  isShellOperatorToken,
+  lexShellCommand,
+};
 
 export function resolveCommandExecutionSummaryText(
   execution: Pick<ComparableCommandExecutionLike, "command" | "detail" | "title">,
@@ -1629,104 +1205,6 @@ export function deriveNarratedActivityDisplayHints(detail: string): ActivityDisp
   }
 
   return deriveReadingDetailDisplayHints(trimmed);
-}
-
-function isWhitespace(char: string): boolean {
-  return /\s/.test(char);
-}
-
-function readShellWord(command: string, start: number): string {
-  let index = start;
-  let quote: '"' | "'" | null = null;
-
-  while (index < command.length) {
-    const char = command[index];
-    if (!char) {
-      break;
-    }
-
-    if (quote === null) {
-      if (isWhitespace(char)) {
-        break;
-      }
-      if (SHELL_TOKEN_OPERATORS.some((operator) => command.startsWith(operator, index))) {
-        break;
-      }
-      if (char === "'" || char === '"') {
-        quote = char;
-        index += 1;
-        continue;
-      }
-      if (char === "\\") {
-        index += Math.min(2, command.length - index);
-        continue;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (char === quote) {
-      quote = null;
-      index += 1;
-      continue;
-    }
-    if (quote === '"' && char === "\\") {
-      index += Math.min(2, command.length - index);
-      continue;
-    }
-    index += 1;
-  }
-
-  return command.slice(start, index);
-}
-
-export function lexShellCommand(command: string): ReadonlyArray<string> {
-  const tokens: string[] = [];
-  let index = 0;
-
-  while (index < command.length) {
-    const char = command[index];
-    if (!char) {
-      break;
-    }
-
-    if (isWhitespace(char)) {
-      const start = index;
-      while (index < command.length && isWhitespace(command[index] ?? "")) {
-        index += 1;
-      }
-      tokens.push(command.slice(start, index));
-      continue;
-    }
-
-    const operator = SHELL_TOKEN_OPERATORS.find((candidate) =>
-      command.startsWith(candidate, index),
-    );
-    if (operator) {
-      tokens.push(operator);
-      index += operator.length;
-      continue;
-    }
-
-    const word = readShellWord(command, index);
-    if (word.length === 0) {
-      tokens.push(char);
-      index += 1;
-      continue;
-    }
-    tokens.push(word);
-    index += word.length;
-  }
-
-  return tokens;
-}
-
-export function isShellOperatorToken(token: string): boolean {
-  return SHELL_TOKEN_OPERATORS.includes(token as (typeof SHELL_TOKEN_OPERATORS)[number]);
-}
-
-export function isShellCommandSeparatorToken(token: string): boolean {
-  return SHELL_COMMAND_SEPARATORS.has(token);
 }
 
 // Header labels for command cards whose provider sends no description (Codex,

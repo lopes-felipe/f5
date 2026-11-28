@@ -421,6 +421,15 @@ describe("allocateArtifactCharBudget", () => {
     });
   });
 
+  it("caps each share at the fan-in maximum unless a larger one is given", () => {
+    expect(allocateArtifactCharBudget([90_000, 90_000], 200_000).allowances).toEqual([
+      60_000, 60_000,
+    ]);
+    expect(
+      allocateArtifactCharBudget([90_000, 20_000], 100_000, Number.POSITIVE_INFINITY).allowances,
+    ).toEqual([80_000, 20_000]);
+  });
+
   it("handles no artifacts and no budget", () => {
     expect(allocateArtifactCharBudget([], 1_000)).toEqual({
       allowances: [],

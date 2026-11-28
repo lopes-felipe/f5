@@ -149,6 +149,15 @@ export const PROVIDER_INSTANCE_SECRET_FIELDS = {
 export type ProviderInstanceSecretField =
   (typeof PROVIDER_INSTANCE_SECRET_FIELDS)[keyof typeof PROVIDER_INSTANCE_SECRET_FIELDS];
 
+export function textGeneratorRequestUrl(
+  config: Pick<ServerSettings["textGenerators"][ProviderInstanceId], "baseUrl" | "kind">,
+): string {
+  const url =
+    config.baseUrl.trim().replace(/\/+$/, "") +
+    (config.kind === "anthropic" ? "/messages" : "/chat/completions");
+  return URL.parse(url)?.href ?? url;
+}
+
 export function providerInstanceSecretField(
   driver: string | undefined,
 ): ProviderInstanceSecretField | undefined {

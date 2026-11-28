@@ -22,6 +22,13 @@ interface RowState {
   removed?: boolean;
   inspecting?: boolean;
 }
+/**
+ * The only ignored content is build and cache output, which a build brings
+ * back. It is listed and removed with the worktree, without a second checkbox.
+ */
+const onlyDisposableIgnored = (inspection: WorktreesInspectResult | undefined) =>
+  inspection?.ignoredFiles?.canRemoveAfterApproval === true &&
+  inspection.ignoredFiles.disposableOnly;
 export function WorktreeRemovalDialog({
   rows,
   onClose,
@@ -58,7 +65,8 @@ export function WorktreeRemovalDialog({
                 i === index
                   ? {
                       inspection,
-                      selected: inspection.blockedReasons.length === 0,
+                      selected:
+                        inspection.blockedReasons.length === 0 || onlyDisposableIgnored(inspection),
                       deleteBranch: inspection.branchDeletable && inspection.branchMerged,
                       ignoredApproved: false,
                     }
@@ -133,9 +141,11 @@ export function WorktreeRemovalDialog({
           ...row,
           deleteBranch: state.deleteBranch,
           expectedHead: state.inspection.headSha,
-          ...(state.ignoredApproved && state.inspection.ignoredFiles
-            ? { approvedIgnoredEntries: state.inspection.ignoredFiles.entries }
-            : {}),
+          ...(onlyDisposableIgnored(state.inspection)
+            ? { disposableIgnoredOnly: true }
+            : state.ignoredApproved && state.inspection.ignoredFiles
+              ? { approvedIgnoredEntries: state.inspection.ignoredFiles.entries }
+              : {}),
         });
         const error = result.blockedReasons.join("; ");
         if (!result.removed || error) failed = true;
@@ -169,7 +179,7 @@ export function WorktreeRemovalDialog({
         <DialogHeader>
           <DialogTitle>Remove worktrees</DialogTitle>
           <DialogDescription>
-            Review each checkout before removing its files. Branches are kept unless selected below.
+            Review each worktree before removing its files. Branches are kept unless selected below.
           </DialogDescription>
         </DialogHeader>
         <div className="max-h-[60vh] space-y-4 overflow-y-auto py-3">
@@ -180,7 +190,9 @@ export function WorktreeRemovalDialog({
             const canApproveIgnored = ignored?.canRemoveAfterApproval === true;
             const hardBlocked =
               !inspection || (inspection.blockedReasons.length > 0 && !canApproveIgnored);
-            const blocked = hardBlocked || (ignored?.requiresApproval && !state.ignoredApproved);
+            const disposableOnly = onlyDisposableIgnored(inspection);
+            const needsApproval = ignored?.requiresApproval === true && !disposableOnly;
+            const blocked = hardBlocked || (needsApproval && !state.ignoredApproved);
             return (
               <fieldset
                 key={`${row.projectId}:${row.path}`}
@@ -207,7 +219,9 @@ export function WorktreeRemovalDialog({
                             "Confirm deletion of the ignored files below."
                           : state.ignoredApproved
                             ? "Ready to remove (ignored files will be deleted)"
-                            : "Safe to remove"
+                            : disposableOnly
+                              ? "Safe to remove (the build and cache output below goes with it)"
+                              : "Safe to remove"
                         : state.error
                           ? "Inspection failed"
                           : "Inspecting…"}
@@ -215,7 +229,7 @@ export function WorktreeRemovalDialog({
                 {ignored && (ignored.entries.length > 0 || ignored.truncated) && (
                   <div className="space-y-2">
                     <WorktreeIgnoredFilesList files={ignored} />
-                    {!ignored.truncated && ignored.requiresApproval && (
+                    {!ignored.truncated && needsApproval && (
                       <label className="flex items-start gap-2">
                         <input
                           type="checkbox"
@@ -241,7 +255,7 @@ export function WorktreeRemovalDialog({
                 )}
                 {inspection && inspection.linkedThreads.length > 0 && (
                   <p className="text-muted-foreground">
-                    Linked idle conversations will recreate on next send:{" "}
+                    These threads restore it on their next message:{" "}
                     {inspection.linkedThreads.map((thread) => thread.title).join(", ")}
                   </p>
                 )}

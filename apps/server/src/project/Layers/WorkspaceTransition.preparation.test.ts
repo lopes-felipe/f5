@@ -89,7 +89,7 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     expect(result).toBeInstanceOf(Error);
     const record = (await f.runtime.runPromise(f.store.forThread(f.threadId)))!;
     expect(record.phase).toBe("cancelled");
-    expect(record.error).toContain("Retained checkout");
+    expect(record.error).toContain(`Kept ${path.basename(record.target.path)} on archive-move`);
     expect(git(f.repo.root, "for-each-ref", "refs/f5/moves")).toBe("");
     // Reproduce a cancelled record left by an older server before ref cleanup.
     const gitCore = await f.runtime.runPromise(Effect.service(GitCore));
@@ -114,7 +114,7 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     await f.runtime.runPromise(Effect.scoped(makeWorkspaceTransition));
     expect((await f.runtime.runPromise(f.store.get(record.operationId)))?.phase).toBe("cancelled");
     expect((await f.runtime.runPromise(f.store.get(record.operationId)))?.error).toContain(
-      "Retained checkout",
+      `Kept ${path.basename(record.target.path)}`,
     );
     expect(await fs.readFile(path.join(record.target.path, "loose"), "utf8")).toBe("keep me");
     expect(await fs.readFile(path.join(f.repo.root, "loose"), "utf8")).toBe("keep me");
@@ -174,15 +174,26 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     await f.runtime.runPromise(
       f.queue.setPaused({ threadId: f.threadId, paused: true, reasonCode: "worktree_missing" }),
     );
-    const before = await f.runtime.runPromise(f.queue.listByThread(f.threadId));
+    expect(await f.runtime.runPromise(f.manager.threadState({ threadId: f.threadId }))).toEqual({
+      kind: "attention",
+      reason: "restore_failed",
+      message: "The worktree could not be restored.",
+      actions: ["retry", "useProjectFolder"],
+    });
     const recovered = await f.runtime.runPromise(
-      f.manager.recover({
-        threadId: f.threadId,
-        expectedQueueRevision: before.state.revision,
-        action: "recreate",
-      }),
+      f.manager.recover({ threadId: f.threadId, action: "restore" }),
     );
-    expect(recovered.registration).toBe("matching");
+    expect(recovered).toEqual({
+      kind: "ready",
+      location: "worktree",
+      path: await fs.realpath(target),
+      branch: "recovery",
+    });
+    expect(
+      (await f.runtime.runPromise(f.engine.getReadModel())).threads[0]?.activities.map(
+        (activity) => activity.summary,
+      ),
+    ).toContain("Worktree restored on recovery");
     expect(f.preparations).toContain(await fs.realpath(target));
     expect((await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state.paused).toBe(false);
     await fs.rm(target, { recursive: true });
@@ -200,7 +211,7 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     ).toBe("manual_pause");
   });
 
-  it("holds a preparation failure independently of queue resume and never repeats its Git step", async () => {
+  it("keeps a restored worktree when only its preparation fails, and never repeats the Git step", async () => {
     const f = await fixture();
     const target = path.join(f.config.worktreesDir, "retry");
     git(f.repo.root, "worktree", "add", "-q", "-b", "retry", target, "main");
@@ -211,26 +222,21 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     f.preparationControl.fail = true;
     const request = await f.request("recreate");
     const result = await f.runtime.runPromise(f.transition.switchWorkspace(request));
-    expect(result.phase).toBe("needs_recovery");
-    await f.runtime.runPromise(f.queue.setPaused({ threadId: f.threadId, paused: false }));
-    expect((await f.runtime.runPromise(f.store.forThread(f.threadId, true)))?.operationId).toBe(
-      request.operationId,
-    );
+    // Git restored the worktree, so the switch settles as done and holds nothing.
+    expect(result.phase).toBe("completed");
+    expect(await fs.stat(target)).toBeDefined();
+    expect(await f.runtime.runPromise(f.store.forThread(f.threadId, true))).toBeNull();
     expect(await f.runtime.runPromise(f.transition.switchWorkspace(request))).toEqual(result);
     expect(f.preparations).toHaveLength(1);
-    const preview = await f.runtime.runPromise(
-      f.transition.previewRecovery({ operationId: request.operationId }),
+    // The failed step is reported in the timeline instead of being held for a decision.
+    const notes = (
+      await f.runtime.runPromise(f.engine.getReadModel())
+    ).threads[0]!.activities.filter((activity) => activity.kind === "workspace.note").map(
+      (activity) => [activity.tone, activity.summary],
     );
-    await expect(
-      f.runtime.runPromise(
-        f.transition.resolve({
-          operationId: request.operationId,
-          version: preview.transition.version,
-          acceptanceToken: preview.acceptanceToken,
-          action: "retry",
-        }),
-      ),
-    ).rejects.toThrow(/partial/);
+    expect(notes).toEqual([
+      ["error", "Worktree restored on retry, but a later step failed: setup interrupted"],
+    ]);
   });
 
   it("allows archive to interrupt preparation, settle its caller, and retain checkout files", async () => {
@@ -293,7 +299,7 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
 
   for (const intent of ["recreate", "recreate_from_base"] as const) {
     it.each(["failure", "cancel"] as const)(
-      `can leave a missing checkout after ${intent} %s without repeating Git`,
+      `leaves no barrier after ${intent} %s: the next switch is accepted`,
       async (outcome) => {
         const f = await fixture();
         const target = path.join(f.config.worktreesDir, "missing");
@@ -310,21 +316,16 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
         const request = await f.request(intent);
         const running = f.runtime.runPromise(f.transition.switchWorkspace(request));
         await f.runtime.runPromise(Deferred.await(f.mutationEntered));
-        if (outcome === "cancel") await f.runtime.runPromise(f.transition.cancel(f.threadId, true));
-        expect((await running).phase).toBe("needs_recovery");
-        const preview = await f.runtime.runPromise(
-          f.transition.previewRecovery({ operationId: request.operationId }),
+        if (outcome === "cancel") await f.runtime.runPromise(f.transition.cancel(f.threadId));
+        // Git never restored the worktree, so the switch did not happen.
+        expect((await running).phase).toBe(outcome === "cancel" ? "cancelled" : "failed");
+        expect(await f.runtime.runPromise(f.store.forThread(f.threadId, true))).toBeNull();
+        expect((await f.runtime.runPromise(f.engine.getReadModel())).threads[0]?.worktreePath).toBe(
+          request.expected.worktreePath,
         );
-        expect(preview.actual).toBeNull();
-        expect(preview.original).toBeNull();
-        expect(preview.canRetry).toBe(false);
+        // Nothing has to be inspected or resolved first.
         const resolved = await f.runtime.runPromise(
-          f.transition.resolve({
-            operationId: request.operationId,
-            version: preview.transition.version,
-            acceptanceToken: preview.acceptanceToken,
-            action: "use_project_checkout",
-          }),
+          f.transition.switchWorkspace(await f.request("use_project_checkout")),
         );
         expect(resolved.phase).toBe("completed");
         expect(resolved.result?.worktreePath).toBeNull();
@@ -450,32 +451,27 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
       (await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state.worktreeBlockToken,
     ).toBe(operationId);
     f.failPhase.current = null;
+    // The failed attempt settled itself and holds nothing: the same action runs again.
     const transitionId = `work-locally:${operationId}`;
-    const preview = await f.runtime.runPromise(
-      f.transition.previewRecovery({ operationId: transitionId }),
-    );
-    const result = await f.runtime.runPromise(
-      f.transition.resolve({
-        operationId: transitionId,
-        version: preview.transition.version,
-        acceptanceToken: preview.acceptanceToken,
-        action: "accept_inspected_workspace",
-      }),
-    );
-    expect(result.phase).toBe("completed");
+    expect((await f.runtime.runPromise(f.store.get(transitionId)))?.phase).toBe("failed");
+    expect(await f.runtime.runPromise(f.store.forThread(f.threadId, true))).toBeNull();
+    // The project folder moves on before the retry. The retry plans against the
+    // folder as it is now; the first plan would be refused the same way every time.
+    git(f.repo.root, "commit", "--allow-empty", "-qm", "moved on");
+    const settled = await f.runtime.runPromise(f.setupService.workLocally(f.threadId, operationId));
+    expect(settled?.phase).toBe("cancelled_kept");
+    expect((await f.runtime.runPromise(f.store.get(transitionId)))?.phase).toBe("completed");
     expect((await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state).toMatchObject({
       worktreeBlockToken: null,
       paused: false,
     });
-    const settled = await f.runtime.runPromise(f.setupService.workLocally(f.threadId, operationId));
-    expect(settled?.phase).toBe("cancelled_kept");
     expect(await fs.stat(target)).toBeTruthy();
     expect(await f.runtime.runPromise(f.setupService.workLocally(f.threadId, operationId))).toEqual(
       settled,
     );
   });
 
-  it("retries indeterminate async preparation after its old setup token was cleared, preserving the existing setup pause", async () => {
+  it("retries indeterminate async preparation after its old setup token was cleared, then lets the waiting message go", async () => {
     const f = await fixture();
     const target = path.join(f.config.worktreesDir, "async-restart");
     await f.runtime.runPromise(
@@ -504,20 +500,21 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
         reasonCode: "worktree_setup_failed",
       }),
     );
+    const held = { kind: "attention", reason: "setup_failed" };
     expect(
-      (await f.runtime.runPromise(f.manager.threadState({ threadId: f.threadId }))).recovery,
-    ).toBe("interrupted");
-    const queue = await f.runtime.runPromise(f.queue.listByThread(f.threadId));
+      await f.runtime.runPromise(f.manager.threadState({ threadId: f.threadId })),
+    ).toMatchObject(held);
+    const prepared = f.preparations.length;
+    // The folder is there, so restoring only finishes the preparation a restart cut short.
     const state = await f.runtime.runPromise(
-      f.manager.recover({
-        threadId: f.threadId,
-        action: "recreate",
-        expectedQueueRevision: queue.state.revision,
-      }),
+      f.manager.recover({ threadId: f.threadId, action: "restore" }),
     );
-    expect(state.recovery).toBe("none");
-    expect(
-      (await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state.pauseReasonCode,
-    ).toBe("worktree_setup_failed");
+    expect(f.preparations.length).toBe(prepared + 1);
+    // "Try again" worked, so nothing holds the message any more.
+    expect(state).toMatchObject({ kind: "ready", location: "worktree" });
+    expect((await f.runtime.runPromise(f.queue.listByThread(f.threadId))).state).toMatchObject({
+      paused: false,
+      pauseReasonCode: null,
+    });
   });
 });

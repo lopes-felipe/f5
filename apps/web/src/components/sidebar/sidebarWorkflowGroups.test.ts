@@ -160,8 +160,206 @@ describe("groupWorkflowThreadsByPhase", () => {
             stepState: null,
           },
         ],
+        threadless: [],
       },
     ]);
+  });
+
+  it("lists steps without a thread yet after the rows", () => {
+    // Three authors with self-review: 4 reviews running, 5 waiting for a review slot. Two
+    // have pre-allocated thread ids whose threads don't exist yet; three are placeholders.
+    const [reviews] = groupWorkflowThreadsByPhase(
+      [
+        phase("reviews", "Reviews", "active", [
+          step("Review A by B", "active", "rab"),
+          step("Review A by C", "active", "rac"),
+          step("Review B by A", "completed", "rba"),
+          step("Review B by C", "pending", "rbc"),
+          step("Review C by A", "pending", null),
+          step("Review C by B", "pending", null),
+          step("Review A Self", "active", "ras"),
+          step("Review B Self", "pending", "rbs"),
+          step("Review C Self", "pending", null),
+        ]),
+      ],
+      ["rab", "rac", "rba", "ras"].map((value) => thread(value)),
+      () => "unused",
+    );
+    expect(reviews?.kind).toBe("phase");
+    if (reviews?.kind !== "phase") return;
+    expect(reviews.state).toBe("active");
+    expect(reviews.rows.map((row) => row.label)).toEqual(["A by B", "A by C", "B by A", "A Self"]);
+    expect(reviews.threadless.map((entry) => entry.label)).toEqual([
+      "B by C",
+      "C by A",
+      "C by B",
+      "B Self",
+      "C Self",
+    ]);
+    expect(reviews.threadless[0]).toMatchObject({
+      fullLabel: "Review B by C",
+      state: "pending",
+      modelSlot: null,
+    });
+    expect(new Set(reviews.threadless.map((entry) => entry.id)).size).toBe(5);
+  });
+
+  it("lists a step launching or failed before its thread exists, with its state", () => {
+    // The server marks a review running before creating its thread, and a launch failure or
+    // the cost limit marks it failed with no thread at all.
+    const [reviews] = groupWorkflowThreadsByPhase(
+      [
+        phase("reviews", "Reviews", "error", [
+          step("Review A Cross", "active", "rac"),
+          step("Review B Cross", "active", "rbc"),
+          step("Review A Self", "error", "ras"),
+          step("Review B Self", "pending", "rbs"),
+        ]),
+      ],
+      [thread("rac")],
+      () => "unused",
+    );
+    expect(reviews?.kind === "phase" && reviews.state).toBe("error");
+    expect(
+      reviews?.kind === "phase" &&
+        reviews.threadless.map((entry) => `${entry.label}:${entry.state}`),
+    ).toEqual(["B Cross:active", "A Self:error", "B Self:pending"]);
+  });
+
+  it("keeps a phase whose threads don't exist yet, listing every step", () => {
+    // Reviews are requested with reserved thread ids before any thread is created.
+    const [reviews] = groupWorkflowThreadsByPhase(
+      [
+        phase("reviews", "Reviews", "active", [
+          step("Review A Cross", "pending", "rac"),
+          step("Review B Cross", "pending", "rbc"),
+        ]),
+      ],
+      [],
+      () => "unused",
+    );
+    expect(reviews).toMatchObject({ kind: "phase", id: "reviews", state: "active", rows: [] });
+    expect(reviews?.kind === "phase" && reviews.threadless).toHaveLength(2);
+  });
+
+  it("only counts steps whose thread is snoozed or finished, without listing them", () => {
+    const groups = groupWorkflowThreadsByPhase(
+      [
+        phase("reviews", "Reviews", "pending", [
+          step("Review A Cross", "completed", "rac"),
+          // Missing from the list but not snoozed: an archived thread whose step finished.
+          step("Review B Cross", "completed", "gone"),
+          // A retried review that the user snoozed: it waits again, but its thread exists.
+          step("Review A Self", "pending", "snoozed"),
+        ]),
+        // Every thread snoozed: nothing to list, so no group.
+        phase("code-review", "Code Review", "pending", [
+          step("Code Review A", "pending", "snoozed-cr"),
+        ]),
+      ],
+      [thread("rac")],
+      () => "unused",
+      new Set([id("snoozed"), id("snoozed-cr")]),
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ kind: "phase", state: "pending", threadless: [] });
+    expect(groups[0]?.kind === "phase" && groups[0].rows.length).toBe(1);
+  });
+
+  it("keeps a phase with one started thread and threadless steps as a group", () => {
+    const codeReview = { provider: "codex", model: "gpt-5-codex" } as const;
+    const [group] = groupWorkflowThreadsByPhase(
+      [
+        phase("code-review", "Code Review", "active", [
+          step("Code Review A", "active", "cra"),
+          { ...step("Code Review B", "pending", null), modelSlot: codeReview },
+        ]),
+      ],
+      [thread("cra")],
+      () => "unused",
+    );
+    expect(group?.kind).toBe("phase");
+    if (group?.kind !== "phase") return;
+    expect(group.rows.map((row) => row.label)).toEqual(["Code Review A"]);
+    expect(group.threadless).toEqual([
+      {
+        id: "1",
+        label: "Code Review B",
+        fullLabel: "Code Review B",
+        state: "pending",
+        modelSlot: codeReview,
+      },
+    ]);
+  });
+
+  it("counts every review of a three-author run, started or waiting", () => {
+    const base = createPlanningWorkflow();
+    const review = (
+      slot: "cross" | "self",
+      reviewerBranchId: "a" | "b" | "c",
+      reviewed: string,
+      status: "running" | "completed" | "pending",
+    ) => ({
+      slot,
+      reviewerBranchId,
+      threadId: id(`review-${reviewed}-${slot}-${reviewerBranchId}`),
+      outputFilePath: null,
+      status,
+      error: null,
+      retryCount: 0,
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      lastRetryAt: null,
+      updatedAt: base.updatedAt,
+    });
+    const workflow = {
+      ...base,
+      branchA: {
+        ...base.branchA,
+        authorThreadId: id("a"),
+        status: "reviews_requested" as const,
+        reviews: [
+          review("cross", "b", "a", "running"),
+          review("cross", "c", "a", "running"),
+          review("self", "a", "a", "completed"),
+        ],
+      },
+      branchB: {
+        ...base.branchB,
+        authorThreadId: id("b"),
+        status: "reviews_requested" as const,
+        reviews: [
+          review("cross", "a", "b", "completed"),
+          review("cross", "c", "b", "pending"),
+          review("self", "b", "b", "pending"),
+        ],
+      },
+      additionalBranches: [
+        {
+          ...base.branchA,
+          branchId: "c" as const,
+          authorThreadId: id("c"),
+          status: "reviews_requested" as const,
+          reviews: [
+            review("cross", "a", "c", "pending"),
+            review("cross", "b", "c", "pending"),
+            review("self", "c", "c", "pending"),
+          ],
+        },
+      ],
+    };
+    const meta = deriveSidebarWorkflowMeta({ type: "planning", workflow });
+    const started = ["review-a-cross-b", "review-a-cross-c", "review-a-self-a", "review-b-cross-a"];
+    const groups = groupWorkflowThreadsByPhase(
+      meta.phases,
+      ["a", "b", "c", ...started].map((value) => thread(value)),
+      () => "unused",
+    );
+    const reviews = groups.find((group) => group.id === "reviews");
+    expect(reviews?.kind).toBe("phase");
+    if (reviews?.kind !== "phase") return;
+    expect(reviews.rows).toHaveLength(4);
+    expect(reviews.threadless).toHaveLength(5);
   });
 
   it("groups a real planning workflow the same way", () => {

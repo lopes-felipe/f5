@@ -15,7 +15,8 @@ import {
   Trash2,
   XIcon,
 } from "lucide-react";
-import { type ThreadId } from "@t3tools/contracts";
+import { type TerminalSessionSnapshot, type ThreadId } from "@t3tools/contracts";
+import { replayTerminalContinuation } from "@t3tools/shared/terminalReplay";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
@@ -662,6 +663,11 @@ function TerminalViewport({
     mount.addEventListener("pointerdown", handlePointerDown);
 
     let lastRecoveryError: string | undefined;
+    let historySequenceState = 0;
+    const installSnapshot = (snapshot: TerminalSessionSnapshot) => {
+      historySequenceState = snapshot.historySequenceState ?? 0;
+      outputWriter.write(snapshot.history, true);
+    };
     const recovery = new TerminalRecovery(
       terminalSnapshotReader(
         () => api.terminal.snapshot({ threadId, terminalId }),
@@ -694,7 +700,7 @@ function TerminalViewport({
         if (!activeTerminal || disposed) return;
         lastRecoveryError = undefined;
         hasHandledExitRef.current = snapshot.status === "exited";
-        outputWriter.write(snapshot.history, true);
+        installSnapshot(snapshot);
       },
       (event) => applyTerminalEvent(event),
       (error) => {
@@ -716,18 +722,25 @@ function TerminalViewport({
       if (!activeTerminal) return;
 
       if (event.type === "output") {
-        outputWriter.write(event.data);
+        if (historySequenceState === 0) {
+          outputWriter.write(event.data);
+          return;
+        }
+        const { state, data } = replayTerminalContinuation(historySequenceState, event.data);
+        historySequenceState = state;
+        if (data) outputWriter.write(data);
         return;
       }
 
       if (event.type === "started" || event.type === "restarted") {
         hasHandledExitRef.current = false;
         clearSelectionAction();
-        outputWriter.write(event.snapshot.history, true);
+        installSnapshot(event.snapshot);
         return;
       }
 
       if (event.type === "cleared") {
+        historySequenceState = 0;
         clearSelectionAction();
         activeTerminal.clear();
         outputWriter.write("", true);
@@ -740,6 +753,7 @@ function TerminalViewport({
       }
 
       if (event.type === "exited") {
+        historySequenceState = 0;
         const details = [
           typeof event.exitCode === "number" ? `code ${event.exitCode}` : null,
           typeof event.exitSignal === "number" ? `signal ${event.exitSignal}` : null,

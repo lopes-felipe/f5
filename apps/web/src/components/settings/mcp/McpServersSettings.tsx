@@ -46,6 +46,7 @@ import { McpAddServerDialog, type McpAddTab } from "./McpAddServerDialog";
 import { McpConfirmDialog, McpDraftNavigationGuard, useMcpDraftGuard } from "./McpDraftGuard";
 import { McpExport } from "./McpExport";
 import { McpObservedGroup } from "./McpObservedGroup";
+import { McpRepositoryServers } from "./McpRepositoryServers";
 import {
   McpServerDetailSheet,
   type McpDetailTab,
@@ -58,8 +59,10 @@ import { reconnectMcpServer } from "./mcpActions";
 import {
   createEmptyDraft,
   decodeDraftServer,
+  draftFromCatalog,
   draftFromServer,
   hasAdvancedFields,
+  uniqueMcpServerName,
   rebaseDraft,
   toWritableProjectServers,
   type ServerDraft,
@@ -197,6 +200,16 @@ export function McpServersSettings(props: {
     const empty = createEmptyDraft();
     setDraft(empty);
     setDraftBase(empty);
+    setFormError(null);
+    setIsAdvancedOpen(false);
+  };
+  /** A new, unsaved server from the catalog: the form compares against an empty draft. */
+  const loadCatalogDraft = (next: ServerDraft) => {
+    setEditorEpoch((epoch) => epoch + 1);
+    setEditingServerName(null);
+    setOverriding(null);
+    setDraft(next);
+    setDraftBase(createEmptyDraft());
     setFormError(null);
     setIsAdvancedOpen(false);
   };
@@ -1069,6 +1082,10 @@ export function McpServersSettings(props: {
           </section>
         ) : null}
 
+        {scope === "project" && selectedProjectId ? (
+          <McpRepositoryServers projectId={selectedProjectId} />
+        ) : null}
+
         {selectedProject ? (
           <details className="rounded-lg border border-border p-3 text-xs">
             <summary className="cursor-pointer text-sm font-medium text-foreground">
@@ -1288,6 +1305,31 @@ export function McpServersSettings(props: {
         title={overriding ? `Override ${overriding}` : "Add MCP server"}
         scopeLabel={scopeLabel}
         form={editor}
+        onCatalogChoose={(choice) =>
+          // Replaces the Add form's draft, so unsaved edits get the same discard check
+          // (and save-in-progress guard) as every other path that replaces the editor.
+          requestChange(() => {
+            const name = uniqueMcpServerName(choice.name, activeServers);
+            loadCatalogDraft(draftFromCatalog({ ...choice, name }));
+            setAdding("form");
+            const asks = [
+              ...(choice.secretKeys.length > 0
+                ? [`Store a secret for ${choice.secretKeys.join(", ")}.`]
+                : []),
+              ...(choice.needsInput.length > 0 ? [`Fill in ${choice.needsInput.join(", ")}.`] : []),
+              ...(choice.leftOutOptions.length > 0
+                ? [
+                    `Left out the listing's ${choice.server.type === "stdio" ? choice.server.command : "launcher"} options ${choice.leftOutOptions.join(", ")}; add any you trust to the arguments.`,
+                  ]
+                : []),
+            ];
+            toastManager.add({
+              type: "info",
+              title: `Review ${name} before saving`,
+              description: [...asks, "Nothing runs until you save."].join(" "),
+            });
+          })
+        }
         importProps={{
           scope,
           projectId: selectedProjectId,

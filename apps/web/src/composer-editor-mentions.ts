@@ -10,12 +10,14 @@ import type { SourceControlPullRequestRef } from "@t3tools/contracts";
 import { threadReferenceMatches } from "@t3tools/shared/threadReferences";
 import { randomUUID } from "./lib/utils";
 import { collectComposerModelMentions } from "@t3tools/shared/composerModelMentions";
+import { mcpResourceReferenceMatches } from "@t3tools/shared/mcpComposer";
 
 export type ComposerPromptSegment =
   | { type: "model-reference"; raw: string; instanceId: string; model: string }
   | { type: "assistant-quote"; raw: string; record: AssistantResponseContext }
   | { type: "pull-request"; raw: string; url: string; ref: SourceControlPullRequestRef }
   | { type: "thread-reference"; raw: string; threadId: string; label: string }
+  | { type: "mcp-resource"; raw: string; serverName: string; uri: string; label: string }
   | {
       type: "text";
       text: string;
@@ -358,7 +360,14 @@ export function splitPromptIntoComposerSegments(
 
 type ReferenceSegment = Extract<
   ComposerPromptSegment,
-  { type: "pull-request" | "thread-reference" | "assistant-quote" | "model-reference" }
+  {
+    type:
+      | "pull-request"
+      | "thread-reference"
+      | "mcp-resource"
+      | "assistant-quote"
+      | "model-reference";
+  }
 >;
 type ReferenceMatcher = (text: string) => ReadonlyArray<{
   readonly start: number;
@@ -407,6 +416,18 @@ const REFERENCE_MATCHERS: readonly ReferenceMatcher[] = [
         type: "thread-reference",
         raw: match.raw,
         threadId: match.threadId,
+        label: match.label,
+      },
+    })),
+  (text) =>
+    mcpResourceReferenceMatches(text).map((match) => ({
+      start: match.start,
+      end: match.end,
+      segment: {
+        type: "mcp-resource",
+        raw: match.raw,
+        serverName: match.serverName,
+        uri: match.uri,
         label: match.label,
       },
     })),

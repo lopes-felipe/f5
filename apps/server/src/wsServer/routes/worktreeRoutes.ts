@@ -13,8 +13,6 @@ type WorktreeMethod =
   | typeof WS_METHODS.worktreesDiscardMovedChanges
   | typeof WS_METHODS.worktreesSwitchWorkspace
   | typeof WS_METHODS.worktreesGetTransition
-  | typeof WS_METHODS.worktreesPreviewTransitionRecovery
-  | typeof WS_METHODS.worktreesResolveTransition
   | typeof WS_METHODS.worktreesList
   | typeof WS_METHODS.worktreesInspect
   | typeof WS_METHODS.worktreesRemove
@@ -24,7 +22,8 @@ type WorktreeMethod =
   | typeof WS_METHODS.worktreeSetupSubscribe
   | typeof WS_METHODS.worktreeSetupCancel
   | typeof WS_METHODS.worktreeSetupRetry
-  | typeof WS_METHODS.worktreeSetupWorkLocally;
+  | typeof WS_METHODS.worktreeSetupWorkLocally
+  | typeof WS_METHODS.worktreeSetupRerunScript;
 
 export interface WorktreeRouteDependencies {
   readonly runtime: Effect.Effect<
@@ -50,17 +49,12 @@ export const worktreeRoutes = ({
   publishNextTurnQueueSnapshot,
 }: WorktreeRouteDependencies): RouteTable<WorktreeMethod, never, Error> => {
   const handleWorktreeSetupAction = (
-    actionKind: "cancel" | "retry" | "workLocally",
+    actionKind: "cancel" | "retry" | "workLocally" | "rerunScript",
     body: { readonly threadId: ThreadId; readonly expectedOperationId: string },
   ) =>
     Effect.gen(function* () {
       const { worktreeSetup } = yield* runtime;
-      const action =
-        actionKind === "cancel"
-          ? worktreeSetup.cancel
-          : actionKind === "retry"
-            ? worktreeSetup.retry
-            : worktreeSetup.workLocally;
+      const action = worktreeSetup[actionKind];
       const snapshot = yield* action(body.threadId, body.expectedOperationId).pipe(
         Effect.mapError(
           (error) =>
@@ -115,22 +109,6 @@ export const worktreeRoutes = ({
         const { workspaceTransition } = yield* runtime;
         return yield* workspaceTransition
           .getTransition(withoutTag(request))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }),
-
-    [WS_METHODS.worktreesPreviewTransitionRecovery]: (request) =>
-      Effect.gen(function* () {
-        const { workspaceTransition } = yield* runtime;
-        return yield* workspaceTransition
-          .previewRecovery(withoutTag(request))
-          .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
-      }),
-
-    [WS_METHODS.worktreesResolveTransition]: (request) =>
-      Effect.gen(function* () {
-        const { workspaceTransition } = yield* runtime;
-        return yield* workspaceTransition
-          .resolve(withoutTag(request))
           .pipe(Effect.mapError((error) => new RouteRequestError({ message: error.message })));
       }),
 
@@ -203,5 +181,8 @@ export const worktreeRoutes = ({
 
     [WS_METHODS.worktreeSetupWorkLocally]: (request) =>
       handleWorktreeSetupAction("workLocally", withoutTag(request)),
+
+    [WS_METHODS.worktreeSetupRerunScript]: (request) =>
+      handleWorktreeSetupAction("rerunScript", withoutTag(request)),
   };
 };

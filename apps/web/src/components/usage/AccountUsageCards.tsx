@@ -15,7 +15,7 @@ import {
   type QuotaWindow,
   quotaWindowsFromSection,
 } from "@t3tools/shared/usageLimit";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -26,7 +26,14 @@ import { TightestLimitCallout, tightestQuotaWindow } from "./charts/TightestLimi
 import { codexAccountRangeTokens, codexDailyTokenSeries } from "./codexDailyTokens";
 import { providerLabel } from "./format";
 import { ResetCreditButton } from "./ResetCreditButton";
-import { ClaudeGrantButton, ClaudeLimitResets, claudeCalloutGrant } from "./ClaudeLimitResets";
+import {
+  ClaudeGrantButton,
+  ClaudeLimitResets,
+  ClaudeResetsLink,
+  ClaudeResetsLinkButton,
+  claudeCalloutGrant,
+  claudeResetsLinkPlacement,
+} from "./ClaudeLimitResets";
 import { ClaudeUsageAnalysisPanel } from "./ClaudeUsageAnalysisPanel";
 import { StatTile, UsageSection, UsageSubsection } from "./kit";
 
@@ -288,21 +295,47 @@ function claudeCalloutWindows(windows: ReadonlyArray<QuotaWindow>): Array<QuotaW
 
 type ClaudeUsageSection = Extract<AccountUsageSection, { kind: "claude-usage" }>;
 
+/** Epoch milliseconds, refreshed every 30s like the callout's own clock. */
+function useCalloutClock(): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
 /** Claude plan windows, with limit-reset buttons in the callout or their own block. */
 function ClaudeUsageLimits(props: {
   readonly account: UsageAccount;
   readonly section: ClaudeUsageSection;
   readonly history: QuotaHistoryIndex | undefined;
 }) {
+  // One clock for placement and the callout, so a window that resets while the
+  // page is open moves the button back to its row on the same tick.
+  const now = useCalloutClock();
   const snapshot = props.section.snapshot;
   if (!snapshot) return null;
   const windows = quotaWindowsFromSection(props.section);
   const instanceId = props.account.providerInstanceId;
   const resets = snapshot.data.limitResets ?? null;
+  const calloutWindows = claudeCalloutWindows(windows);
   const calloutGrant =
-    instanceId && resets
-      ? claudeCalloutGrant(resets, claudeCalloutWindows(windows), Date.now())
-      : null;
+    instanceId && resets ? claudeCalloutGrant(resets, calloutWindows, now) : null;
+  const linkPlacement = claudeResetsLinkPlacement(snapshot.data, calloutWindows, now);
+  const calloutAction =
+    instanceId && calloutGrant && resets
+      ? () => (
+          <ClaudeGrantButton
+            instanceId={instanceId}
+            accountName={props.account.displayName}
+            grant={calloutGrant}
+            cooldownUntil={resets.cooldownUntil}
+          />
+        )
+      : linkPlacement === "callout"
+        ? () => <ClaudeResetsLinkButton />
+        : null;
   return (
     <>
       {windows.length > 0 ? (
@@ -311,18 +344,8 @@ function ClaudeUsageLimits(props: {
           windows={windows}
           observedAt={snapshot.fetchedAt}
           history={props.history}
-          {...(instanceId && calloutGrant && resets
-            ? {
-                calloutAction: () => (
-                  <ClaudeGrantButton
-                    instanceId={instanceId}
-                    accountName={props.account.displayName}
-                    grant={calloutGrant}
-                    cooldownUntil={resets.cooldownUntil}
-                  />
-                ),
-              }
-            : {})}
+          now={now}
+          {...(calloutAction ? { calloutAction } : {})}
         />
       ) : null}
       {instanceId && resets ? (
@@ -333,6 +356,7 @@ function ClaudeUsageLimits(props: {
           excludeGrantId={windows.length > 0 ? (calloutGrant?.id ?? null) : null}
         />
       ) : null}
+      {linkPlacement === "row" ? <ClaudeResetsLink /> : null}
     </>
   );
 }
@@ -345,12 +369,15 @@ function QuotaWindowRows(props: {
   readonly history: QuotaHistoryIndex | undefined;
   /** Rendered inside the callout, e.g. a limit-reset button. */
   readonly calloutAction?: () => ReactNode;
+  /** The caller's clock, when the callout must agree with the caller's placement. */
+  readonly now?: number;
 }) {
   return (
     <div className="space-y-3">
       <TightestLimitCallout
         windows={claudeCalloutWindows(props.windows)}
         {...(props.calloutAction ? { action: props.calloutAction } : {})}
+        {...(props.now !== undefined ? { now: props.now } : {})}
       />
       {hasPaceWindow(props.windows) ? <QuotaMeterLegend /> : null}
       {props.windows.map((window) => (
@@ -486,6 +513,8 @@ export function accountStatusText(account: UsageAccount): string | null {
   if (!account.enabled)
     return `${providerLabel(account.provider)} is disabled in provider settings.`;
   for (const section of account.sections) {
+    if (section.outcome === "unsupported" && account.provider === "antigravity")
+      return "Subscription quota is unavailable for Antigravity.";
     if (section.outcome === "unsupported")
       return `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`;
     if (section.errorCode) return accountErrorMessage(account.provider, section.errorCode);
@@ -643,7 +672,13 @@ export function AccountUsageCard(props: {
               key={section.kind}
               first={index === 0}
               label={SECTION_LABELS[section.kind]}
-              meta={<SectionMeta section={section} />}
+              meta={
+                account.provider === "antigravity" &&
+                section.kind === "provider-limits" &&
+                section.snapshot?.data.plan === "Billed per token" ? null : (
+                  <SectionMeta section={section} />
+                )
+              }
             >
               <AccountSectionBody
                 account={account}

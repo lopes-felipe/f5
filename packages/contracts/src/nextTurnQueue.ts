@@ -1,4 +1,4 @@
-import { WorkspaceTransitionSnapshot } from "./worktrees";
+import { ThreadWorkspaceStatus } from "./worktreesResults";
 import { Schema } from "effect";
 
 import {
@@ -57,7 +57,6 @@ export const QueueReasonCode = Schema.Literals([
   "thread_deleted",
   "worktree_missing",
   "workspace_switch",
-  "workspace_switch_failed",
   "dispatch_rejected",
   "worktree_setup",
   "worktree_setup_failed",
@@ -98,7 +97,8 @@ export function isAdmittedDeliveryQueueItem(item: NextTurnQueueItem): boolean {
 }
 
 export const NextTurnQueueSnapshot = Schema.Struct({
-  workspaceTransition: Schema.optional(Schema.NullOr(WorkspaceTransitionSnapshot)),
+  /** The thread's workspace status; absent when the thread or its project is gone. */
+  workspace: Schema.optional(Schema.NullOr(ThreadWorkspaceStatus)),
   threadId: ThreadId,
   items: Schema.Array(NextTurnQueueItem),
   revision: NonNegativeInt,

@@ -1,13 +1,12 @@
 import { compareVersions } from "@t3tools/shared/providerIntegrationCertification";
 
 /**
- * The oldest Antigravity version whose private on-disk formats F5 reads: the OAuth token file the
- * subscription quota reader uses, the native session trajectory that explains failed turns, and
- * the child-work files behind the Agents panel. Older versions run standard ACP only.
+ * The oldest Antigravity version whose native session trajectories and child-work files F5 reads.
+ * Older versions run standard ACP only.
  *
  * Newer versions are read without a per-release check. Each reader acts only on evidence that
- * names itself: a token with the expected fields, an error step whose text is a recognised API
- * or quota error, a launch step whose tool call is `invoke_subagent` with native child ids.
+ * names itself: an error step whose text is a recognised API or quota error, or a launch step
+ * whose tool call is `invoke_subagent` with native child ids.
  * Anything else yields nothing. The one judgement that rests on step numbering alone (an error
  * step with unrecognised text) runs only on the releases in
  * `ANTIGRAVITY_VERIFIED_STEP_LAYOUT_VERSIONS`. Raise the floor when a release drops a format.
@@ -48,12 +47,12 @@ export function antigravityPrivateFormatGate(
   if (comparison === undefined) {
     return {
       enabled: false,
-      reason: `Antigravity ${trimmed} has an unrecognised version number, so quota, turn-failure details and native child work are unavailable.`,
+      reason: `Antigravity ${trimmed} has an unrecognised version number, so turn-failure details and native child work are unavailable.`,
     };
   }
   if (comparison >= 0) return { enabled: true, version: trimmed };
   return {
     enabled: false,
-    reason: `Antigravity ${trimmed} is older than ${ANTIGRAVITY_PRIVATE_FORMAT_MIN_VERSION}, so quota, turn-failure details and native child work are unavailable. Update Antigravity in Settings.`,
+    reason: `Antigravity ${trimmed} is older than ${ANTIGRAVITY_PRIVATE_FORMAT_MIN_VERSION}, so turn-failure details and native child work are unavailable. Update Antigravity in Settings.`,
   };
 }

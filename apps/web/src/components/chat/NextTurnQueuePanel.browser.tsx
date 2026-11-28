@@ -44,48 +44,34 @@ describe("NextTurnQueuePanel", () => {
     active = await render(<ThreadQueueCountBadge threadId={threadId} compact={compact} />);
     await expect.element(page.getByLabelText("Queue paused")).toHaveTextContent("Queue paused");
   });
-  it.each(["stopping", "needs_recovery", "failed", "completed", "cancelled"] as const)(
-    "handles an empty queue with a %s transition",
-    async (phase) => {
-      const threadId = ThreadId.makeUnsafe("switch-queue");
-      const source = { path: "/repo", repository: "/repo/.git", branch: "main", headSha: "base" };
-      useNextTurnQueueStore.getState().applySnapshot({
-        threadId,
-        revision: 2,
-        paused: false,
-        blockedKind: "waiting",
-        reasonCode: "workspace_switch",
-        reasonDetail: null,
-        maxItems: 20,
-        quarantinedCount: 0,
-        items: [],
-        workspaceTransition: {
-          operationId: "switch",
-          threadId,
-          version: 1,
-          intent: "attach_existing",
-          phase,
-          source,
-          target: { ...source, path: "/managed/topic", branch: "topic" },
-          observed: null,
-          error: null,
-          result: null,
-          createdAt: "2026-01-01",
-          updatedAt: "2026-01-01",
-        },
-      });
-      active = await render(<NextTurnQueuePanel threadId={threadId} />);
-      if (phase === "completed" || phase === "cancelled") {
-        await expect.element(page.getByText(/Workspace switch:/)).not.toBeInTheDocument();
-        expect(document.getElementById("next-turn-queue-panel")).toBeNull();
-      } else {
-        await expect
-          .element(page.getByText(`Workspace switch: ${phase.replaceAll("_", " ")}`))
-          .toBeVisible();
-        await expect.element(page.getByText("/repo → /managed/topic")).toBeVisible();
-      }
+  it.each([
+    { kind: "working", activity: "switching", cancellable: true },
+    {
+      kind: "attention",
+      reason: "branch_in_use",
+      message: "topic is checked out in the project folder.",
+      actions: ["attach", "newWorktree"],
     },
-  );
+    { kind: "ready", location: "worktree", path: "/managed/topic", branch: "topic" },
+  ] as const)("says nothing about the workspace with an empty queue: $kind", async (workspace) => {
+    const threadId = ThreadId.makeUnsafe("switch-queue");
+    useNextTurnQueueStore.getState().applySnapshot({
+      threadId,
+      revision: 2,
+      paused: false,
+      blockedKind: workspace.kind === "ready" ? null : "waiting",
+      reasonCode: workspace.kind === "ready" ? null : "workspace_switch",
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
+      items: [],
+      workspace,
+    });
+    active = await render(<NextTurnQueuePanel threadId={threadId} />);
+    // The workspace status card owns this; an empty queue has nothing of its own to show.
+    expect(document.getElementById("next-turn-queue-panel")).toBeNull();
+    expect(document.body.textContent?.trim()).toBe("");
+  });
 
   it("shows a queued turn from the durable snapshot", async () => {
     const threadId = ThreadId.makeUnsafe("queue-thread");

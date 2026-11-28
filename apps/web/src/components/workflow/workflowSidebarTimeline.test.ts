@@ -1022,6 +1022,24 @@ describe("deriveWorkflowThreadLabels", () => {
     expect(labels.get(ThreadId.makeUnsafe("merge"))).toBe("Merge");
     expect(labels.has(ThreadId.makeUnsafe("unknown"))).toBe(false);
   });
+
+  it("marks a condensing branch's revision step and keeps its thread label", () => {
+    const base = makeWorkflow();
+    const workflow: PlanningWorkflow = {
+      ...base,
+      branchA: { ...base.branchA, status: "revising", condenseTargetChars: 40_000 },
+      branchB: { ...base.branchB, status: "revised" },
+    };
+    const revision = deriveTimelinePhases(workflow).find((phase) => phase.id === "revision")!;
+    expect(revision.steps.map((step) => step.label)).toEqual([
+      "Branch A (condensing for merge)",
+      "Branch B",
+    ]);
+    expect(revision.steps[0]!.state).toBe("active");
+    expect(deriveWorkflowThreadLabels(workflow).get(ThreadId.makeUnsafe("author-a"))).toBe(
+      "Branch A",
+    );
+  });
 });
 
 describe("overallStateFromPhases", () => {

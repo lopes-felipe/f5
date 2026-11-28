@@ -46,6 +46,7 @@ import {
 import { switchConversationWorkspace } from "../lib/workspaceTransitions";
 import { cn } from "../lib/utils";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
+import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { parsePullRequestReference } from "../pullRequestReference";
 import { useWorktreeRemovalDialogStore } from "../worktreeRemovalDialogStore";
 import { WsRequestError } from "../wsTransport";
@@ -550,6 +551,39 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
         close();
         void navigate({ to: "/worktrees", search: { projectId, threadId } });
         return;
+      case "restoreWorktree":
+        close();
+        void (async () => {
+          const api = ensureNativeApi();
+          let status: Awaited<ReturnType<typeof api.worktrees.recover>>;
+          try {
+            status = await api.worktrees.recover({ threadId, action: "restore" });
+          } catch (error) {
+            // Only the restore itself failing is a failed restore.
+            toastManager.add({
+              type: "error",
+              title: "Could not restore the worktree",
+              description: errorMessage(error),
+            });
+            return;
+          }
+          // The folder is back whatever the queue read below does: refresh what shows it.
+          void queryClient.invalidateQueries({ queryKey: ["worktrees"] });
+          void queryClient.invalidateQueries({ queryKey: ["git"] });
+          if (status.kind === "attention")
+            toastManager.add({
+              type: "warning",
+              title: "Worktree not restored",
+              description: status.message,
+            });
+          // The workspace card says what is needed when the restore has to ask.
+          // If this read fails, the queue's next update brings the card up to date.
+          await api.nextTurnQueue
+            .list({ threadId })
+            .then((snapshot) => useNextTurnQueueStore.getState().applySnapshot(snapshot))
+            .catch(() => undefined);
+        })();
+        return;
       case "removeWorktree":
         close();
         if (state.kind === "worktree")
@@ -615,6 +649,11 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
     activeThreadBranch,
     projectBranch,
     checkoutMissing,
+    // Known only once Git has answered for the worktree itself.
+    liveBranch:
+      state.kind === "worktree" && branchCwd === state.path && statusQuery.data
+        ? statusQuery.data.branch
+        : undefined,
   });
   const displayPath = state.kind === "worktree" ? state.path : projectCwd;
   const TriggerIcon = state.kind === "local" && !creatingWorktree ? FolderIcon : GitForkIcon;
@@ -754,8 +793,8 @@ export function WorkspacePicker(props: WorkspacePickerProps) {
             <p role="status" className="px-3 py-2 text-xs text-muted-foreground">
               {state.kind === "worktree"
                 ? activeThreadBranch
-                  ? `Worktree missing. Send a message to recreate it on ${activeThreadBranch}.`
-                  : "Worktree missing."
+                  ? `This worktree is not on disk. Your next message restores it on ${activeThreadBranch}.`
+                  : "This worktree is not on disk."
                 : "The project folder could not be found."}
             </p>
           )}
@@ -852,7 +891,6 @@ function blockedReason(blockers: ReadonlyArray<{ kind: string; title: string | n
     queued: "queued messages",
     setup: "workspace setup",
     terminal: "open terminal",
-    thread: "uses this worktree",
     session: "agent session",
   };
   if (blockers.some((blocker) => blocker.kind === "unknown"))

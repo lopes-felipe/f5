@@ -232,15 +232,7 @@ export function createBrowserFixture(protocolVersion = 1) {
         case "worktrees.getTransition":
           return null;
         case "worktrees.threadState":
-          return {
-            recovery: "none",
-            worktreePath: null,
-            branch: "main",
-            directoryExists: true,
-            registration: "none",
-            branchExists: true,
-            defaultBranch: "main",
-          };
+          return { kind: "ready", location: "projectFolder", path: "/fixture", branch: "main" };
         case "server.getProjectSettings":
           return resolveProjectSettings({
             projectId: ProjectId.makeUnsafe(String(body.projectId)),

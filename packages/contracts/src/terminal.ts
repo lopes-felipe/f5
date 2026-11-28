@@ -96,6 +96,10 @@ export const TerminalSessionSnapshot = Schema.Struct({
   status: TerminalSessionStatus,
   pid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
   history: Schema.String,
+  // Parser state for a truncated control sequence whose continuation is still live.
+  historySequenceState: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 14 })),
+  ),
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),
   exitCode: Schema.NullOr(Schema.Int),

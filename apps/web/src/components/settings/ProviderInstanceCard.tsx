@@ -428,6 +428,9 @@ export function ProviderEnvironmentSection(props: {
         {rows.some((row) => row.valueRedacted === true)
           ? " Remove and re-add a saved variable to rename it or make it plain text."
           : null}
+        {rows.some((row) => row.name === "F5_CLIPROXY_API_KEY" && row.valueRedacted)
+          ? " Changing the CLIProxyAPI hub address clears the saved key unless you enter one."
+          : null}
       </span>
     </div>
   );

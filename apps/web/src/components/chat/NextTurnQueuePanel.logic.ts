@@ -114,11 +114,29 @@ export function mergeVisibleOrder(
   );
 }
 
+const WORKSPACE_REASON_CODES: ReadonlySet<NonNullable<NextTurnQueueSnapshot["reasonCode"]>> =
+  new Set([
+    "workspace_switch",
+    "worktree_missing",
+    "worktree_setup",
+    "worktree_setup_failed",
+    "worktree_setup_cancelled",
+    "worktree_setup_cancelled_kept",
+  ]);
+
 export function describeQueueBlockedState(
   snapshot: NextTurnQueueSnapshot,
-  options: { readonly workspaceBannerShown?: boolean } = {},
+  options: { readonly workspaceCardShown?: boolean } = {},
 ): string | null {
   const fallback = snapshot.reasonDetail;
+  // The workspace status card owns everything about the workspace: what it is
+  // doing, what it needs and the actions. Saying it twice only adds noise.
+  if (
+    options.workspaceCardShown &&
+    snapshot.reasonCode !== null &&
+    WORKSPACE_REASON_CODES.has(snapshot.reasonCode)
+  )
+    return null;
   switch (snapshot.reasonCode) {
     case "scheduled_task_wait":
       return "Waiting for scheduled execution capacity or scheduler enablement.";
@@ -158,14 +176,10 @@ export function describeQueueBlockedState(
       return "Queue paused after conversation compaction.";
     case "workspace_switch":
       return "Switching workspace. Queued turns will wait.";
-    case "workspace_switch_failed":
-      return fallback ?? "Inspect and resolve the interrupted workspace switch.";
     case "worktree_missing":
-      // The workspace banner above the composer owns the details and recovery
-      // actions; it only renders for a thread that records a worktree.
-      return snapshot.paused && options.workspaceBannerShown
-        ? "Queue paused: workspace needs attention (see above)."
-        : (fallback ?? "Queue paused because the worktree is missing.");
+      return snapshot.paused
+        ? (fallback ?? "Queue paused: the worktree could not be restored.")
+        : "Restoring the worktree.";
     case "dispatch_rejected":
     case "delivery_rejected":
     case "delivery_ambiguous":
@@ -178,7 +192,7 @@ export function describeQueueBlockedState(
     case "worktree_setup":
       return "Waiting for the worktree setup to finish.";
     case "worktree_setup_failed":
-      return fallback ?? "Worktree setup failed. Retry it, work locally, or discard.";
+      return fallback ?? "Worktree setup failed. Retry, continue in Local, or discard the message.";
     case "worktree_setup_cancelled":
       return fallback ?? "Worktree setup was cancelled.";
     case "worktree_setup_cancelled_kept":

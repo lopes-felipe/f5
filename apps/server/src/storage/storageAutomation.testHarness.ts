@@ -57,6 +57,7 @@ export interface AutomationWorld {
       revision: number;
       paused: boolean;
       pauseReasonCode: QueueReasonCode | null;
+      pauseDetail?: string | null;
       worktreeBlockToken: string | null;
     }
   >;
