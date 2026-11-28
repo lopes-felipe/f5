@@ -1304,14 +1304,24 @@
     },
     {
       "createdAt": "2026-10-26T17:31:50.643Z",
-      "decidedAt": "2026-11-07T23:28:08.435Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-25T01:34:19.911Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/rightPanelStore.ts:297",
+          "apps/web/src/hooks/useProactivePanels.ts:67"
+        ],
+        "f5Refs": [
+          "f6a44a64168fb7516b5a687cc750d60238c6fbf9"
+        ]
+      },
       "id": "pr-10113",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-16571"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "panels",
@@ -4882,11 +4892,22 @@
     },
     {
       "createdAt": "2026-10-26T17:34:07.879Z",
-      "decidedAt": "2026-11-07T23:28:08.434Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-25T01:34:19.910Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/lib/imageCompression.ts:79",
+          "apps/web/src/lib/imageCompression.core.ts:273",
+          "apps/web/src/components/ChatView.logic.ts:318"
+        ],
+        "f5Refs": [
+          "f6a44a64168fb7516b5a687cc750d60238c6fbf9"
+        ]
+      },
       "id": "pr-13342",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "composer",
@@ -39521,11 +39542,21 @@
     },
     {
       "createdAt": "2026-10-31T11:13:59.188Z",
-      "decidedAt": "2026-11-06T08:58:17.708Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-25T11:01:03.792Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/web/src/components/FileViewPanel.tsx:200",
+          "apps/web/src/components/FileViewPanel.tsx:755"
+        ],
+        "f5Refs": [
+          "f0a9602e4d992073e2fb51873827c48877e6f2e4"
+        ]
+      },
       "id": "pr-22339",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "files",
