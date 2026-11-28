@@ -166,6 +166,13 @@ export const WorkflowBranch = Schema.Struct({
   condenseTargetChars: Schema.optional(Schema.NullOr(Schema.Number)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  /**
+   * Identity of the condense turn in flight, saved before it is dispatched: a restart resends
+   * this same command, and a fresh attempt or a format repair gets a new one.
+   */
+  condenseCommandKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,
 });

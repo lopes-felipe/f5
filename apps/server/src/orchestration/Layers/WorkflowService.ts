@@ -179,6 +179,7 @@ import {
   workflowPlanEvenShare,
   workflowPlanMergeChars,
   workflowPlanMergeFit,
+  workflowPlanMergeRoom,
   workflowPlanSoftTarget,
   WORKFLOW_PLANNING_INTERACTION_MODE,
   MAX_AUTO_RETRY_ATTEMPTS,
@@ -253,6 +254,16 @@ const WORKFLOW_MAX_CONDENSE_ATTEMPTS = 2;
  */
 function failedWhileCondensing(branch: WorkflowBranch): boolean {
   return branch.status === "error" && (branch.condenseAttempts ?? 0) > 0;
+}
+
+/** Whether `turnId` is the revised plan a condensing branch is condensing, not its reply. */
+function isCondensingSource(branch: WorkflowBranch, turnId: string | null | undefined): boolean {
+  return (
+    branch.status === "revising" &&
+    branch.condenseTargetChars != null &&
+    turnId != null &&
+    turnId === branch.revisionTurnId
+  );
 }
 
 export const makeWorkflowService = Effect.gen(function* () {
@@ -388,10 +399,10 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly priorFailure?: string;
   }) =>
     Effect.gen(function* () {
-      const planMarkdown = input.branch.revisionTurnId
+      const planRecord = input.branch.revisionTurnId
         ? input.thread?.proposedPlans.find((plan) => plan.turnId === input.branch.revisionTurnId)
-            ?.planMarkdown
         : undefined;
+      const planMarkdown = planRecord?.planMarkdown;
       const fail = (message: string) =>
         rejectRevision(
           input,
@@ -406,13 +417,20 @@ export const makeWorkflowService = Effect.gen(function* () {
         input.branch.authorSlot,
         yield* getWorkflowProviders,
       );
+      // A saved repair resumed after a restart is still a format repair.
+      const retry: WorkflowRetryContext | undefined =
+        input.retry ??
+        (input.branch.condenseCommandKey?.includes(":repair:")
+          ? { kind: "retry", formatRepair: true, reusedThread: true }
+          : undefined);
       const prepared = prepareCondenseTurn({
         workflow: input.workflow,
         branch: { ...input.branch, authorSlot },
         planMarkdown,
+        planCreatedAt: planRecord?.createdAt,
         thread: input.thread,
         createdAt: input.createdAt,
-        ...(input.retry ? { retry: input.retry } : {}),
+        ...(retry ? { retry } : {}),
       });
       if ("rejection" in prepared) return yield* fail(prepared.rejection);
       // Sized for the resolved slot, as revisions are: dispatch without the selection guard.
@@ -435,6 +453,24 @@ export const makeWorkflowService = Effect.gen(function* () {
       const budgetError = workflowBudgetError(input.workflow);
       if (budgetError) {
         yield* upsertWorkflow(markMergeError(input.workflow, budgetError.message, input.updatedAt));
+        return;
+      }
+      // A run whose merge prompt leaves no real room (one created before the creation check
+      // covered it) can't be condensed into it: fail the merge visibly instead.
+      const room = workflowPlanMergeRoom(input.workflow);
+      if (
+        room < WORKFLOW_MIN_PLAN_CHAR_BUDGET ||
+        input.perBranch.some(
+          (entry) => entry.renderedChars > entry.allowanceChars && entry.allowanceChars <= 0,
+        )
+      ) {
+        yield* upsertWorkflow(
+          markMergeError(
+            input.workflow,
+            `The merge prompt leaves ${Math.max(0, room).toLocaleString("en-US")} characters for ${planningBranches(input.workflow).length} plans, too little to condense them into. Shorten the requirement or restart the workflow with fewer authors.`,
+            input.updatedAt,
+          ),
+        );
         return;
       }
       let next = input.workflow;
@@ -693,11 +729,11 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (!retryThread) {
         return yield* Effect.fail(new Error("Review thread not found for automatic retry."));
       }
-      const planMarkdown = completedProposedPlanForTurn(
+      // Reviews are running, so the reviewed pin can no longer be replaced.
+      const planMarkdown = exactPinnedPlan(
         snapshot,
         branch.authorThreadId,
         branch.planTurnId,
-        branch.updatedAt,
       )?.planMarkdown;
       if (!planMarkdown) {
         return yield* Effect.fail(new Error("Saved plan not found for automatic review retry."));
@@ -1039,6 +1075,8 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly turnId: TurnId;
     readonly branchId?: WorkflowBranchId;
     readonly createdAt: string;
+    /** Why the turn was rejected, when the caller already knows (the record itself is valid). */
+    readonly validationError?: string;
   }) =>
     Effect.gen(function* () {
       let workflow = input.workflow;
@@ -1066,12 +1104,15 @@ export const makeWorkflowService = Effect.gen(function* () {
       )
         return;
       const provider = branch?.authorSlot.provider ?? workflow.merge.mergeSlot.provider;
-      const validation = validateCapturedPlanForTurn({
-        workflow: workflow,
-        provider,
-        thread: input.thread,
-        turnId: input.turnId,
-      });
+      const validation =
+        input.validationError !== undefined
+          ? { valid: false as const, error: input.validationError }
+          : validateCapturedPlanForTurn({
+              workflow: workflow,
+              provider,
+              thread: input.thread,
+              turnId: input.turnId,
+            });
       if (validation.valid) return;
       // Every workflow kind records the rejected turn, so the stage evaluates it once. Planning
       // workflows record it only once the repair turn was dispatched: until then a repeated
@@ -1158,6 +1199,13 @@ export const makeWorkflowService = Effect.gen(function* () {
           ...(stage === "revision"
             ? { revisionFormatRepairAttempts: formatRepairAttempts + 1 }
             : { authorFormatRepairAttempts: formatRepairAttempts + 1 }),
+          // A condense repair is a new command, saved with the branch so a restart before its
+          // dispatch resends the repair rather than the original condense turn.
+          ...(retryBase.branch!.condenseTargetChars != null
+            ? {
+                condenseCommandKey: `${(retryBase.branch!.condenseCommandKey ?? "condense").split(":repair:")[0]}:repair:${formatRepairAttempts + 1}`,
+              }
+            : {}),
           updatedAt: input.createdAt,
         };
         const retryWorkflow: PlanningWorkflow = {
@@ -1214,11 +1262,10 @@ export const makeWorkflowService = Effect.gen(function* () {
           return;
         }
 
-        const originalPlan = completedProposedPlanForTurn(
+        const originalPlan = exactPinnedPlan(
           input.snapshot,
           branch.authorThreadId,
           branch.planTurnId,
-          branch.updatedAt,
         )?.planMarkdown;
         const reviews = yield* reviewFeedbackForBranch(workflow, branch, input.snapshot);
         if (!originalPlan || reviews.length === 0) {
@@ -1434,18 +1481,39 @@ export const makeWorkflowService = Effect.gen(function* () {
       : null;
   };
 
+  /**
+   * The plan pinned by turn id, for a stage whose pin can no longer move (reviews requested,
+   * revising, merge started). A newer turn's plan can't replace that pin, so it must not hide it.
+   */
+  const exactPinnedPlan = (
+    snapshot: OrchestrationReadModel,
+    threadId: ThreadId,
+    pinnedTurnId: string | null,
+  ): { readonly planMarkdown: string } | null =>
+    (pinnedTurnId
+      ? snapshot.threads
+          .find((thread) => thread.id === threadId)
+          ?.proposedPlans.find((plan) => plan.turnId === pinnedTurnId)
+      : undefined) ?? null;
+
   /** Every branch's pinned revised plan in author order, or `null` while any is missing. */
   const collectMergeInputs = (
     workflow: PlanningWorkflow,
     snapshot: OrchestrationReadModel,
   ): string[] | null => {
     const plans: string[] = [];
+    // Before the merge starts a newer plan can still be repinned; once it runs, the pins hold.
+    const pinsHeld = workflow.merge.status !== "not_started";
     for (const branch of planningBranches(workflow)) {
-      const plan = completedProposedPlanForTurn(
-        snapshot,
-        branch.authorThreadId,
-        branch.revisionTurnId,
-        branch.updatedAt,
+      const plan = (
+        pinsHeld
+          ? exactPinnedPlan(snapshot, branch.authorThreadId, branch.revisionTurnId)
+          : completedProposedPlanForTurn(
+              snapshot,
+              branch.authorThreadId,
+              branch.revisionTurnId,
+              branch.updatedAt,
+            )
       )?.planMarkdown;
       if (!plan) return null;
       plans.push(plan);
@@ -1577,11 +1645,17 @@ export const makeWorkflowService = Effect.gen(function* () {
 
       const plans = new Map<WorkflowBranchId, string>();
       for (const branch of branches) {
-        const plan = completedProposedPlanForTurn(
-          snapshot,
-          branch.authorThreadId,
-          branch.planTurnId,
-          branch.updatedAt,
+        // A fresh start still waits for a newer plan that can be repinned; once reviews are
+        // requested the pins hold, and a newer plan must not hide them.
+        const plan = (
+          startsFresh
+            ? completedProposedPlanForTurn(
+                snapshot,
+                branch.authorThreadId,
+                branch.planTurnId,
+                branch.updatedAt,
+              )
+            : exactPinnedPlan(snapshot, branch.authorThreadId, branch.planTurnId)
         )?.planMarkdown;
         if (!plan) return dispatched;
         plans.set(branch.branchId, plan);
@@ -1873,6 +1947,8 @@ export const makeWorkflowService = Effect.gen(function* () {
               existingDelivery ||
               (thread?.latestTurn &&
                 thread.latestTurn.turnId !== branch.planTurnId &&
+                // A condensing branch's source turn is not its condense turn.
+                !isCondensingSource(branch, thread.latestTurn.turnId) &&
                 thread.latestTurn.requestedAt >= branch.updatedAt)
             ) {
               return;
@@ -2424,7 +2500,15 @@ export const makeWorkflowService = Effect.gen(function* () {
               provider: branch.authorSlot.provider,
               thread,
               turnId: replacementTurnId,
-            }).valid
+            }).valid ||
+            // A draft that replaces the reviewed one must still fit its reviews.
+            (branch.status === "plan_saved" &&
+              planReviewFitError(
+                workflow,
+                authorBranchId,
+                selection.plan.planMarkdown,
+                replacementTurnId,
+              ) !== null)
           ) {
             return workflow;
           }
@@ -2469,6 +2553,11 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (isRevisionCompletion && turnId === branch.planTurnId) {
           return workflow;
         }
+        // The plan being condensed is not the condense turn's reply: a later event for that
+        // turn (at the same timestamp the condense intent was saved with) must not capture it.
+        if (isCondensingSource(branch, turnId)) {
+          return workflow;
+        }
         // A rejected turn is not evaluated again while its stage still runs.
         // Planning branches in error may still accept a late valid capture.
         if (
@@ -2510,6 +2599,36 @@ export const makeWorkflowService = Effect.gen(function* () {
               turnId,
               branchId: authorBranchId,
               createdAt: updatedAt,
+            });
+            return workflow;
+          }
+        }
+
+        // A fresh draft must fit its reviews: one too long for any review would block the run
+        // before the merge could condense it, so the author is asked for a shorter version.
+        if (isAuthoringCompletion) {
+          const captured = capture.valid
+            ? thread
+            : (yield* orchestrationEngine.getReadModel()).threads.find(
+                (entry) => entry.id === threadId,
+              );
+          const planMarkdown = captured?.proposedPlans.find(
+            (plan) => plan.turnId === turnId,
+          )?.planMarkdown;
+          const reviewFitError =
+            planMarkdown === undefined
+              ? null
+              : planReviewFitError(workflow, authorBranchId, planMarkdown, turnId);
+          if (reviewFitError) {
+            if (branch.status === "error") return workflow;
+            yield* retryOrFailInvalidPlanCapture({
+              workflow,
+              snapshot,
+              thread,
+              turnId,
+              branchId: authorBranchId,
+              createdAt: updatedAt,
+              validationError: reviewFitError,
             });
             return workflow;
           }
@@ -5966,6 +6085,18 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
       for (const { threadId, delivery } of deliveries) {
         if (!delivery || delivery.state === "abandoned") continue;
+        // A branch that failed while condensing already has its revision saved. An accepted
+        // delivery with no turn still running is a settled attempt whose result was unusable,
+        // so Retry resets the condense attempts instead of waiting on it.
+        if (
+          delivery.state === "accepted" &&
+          planningBranches(workflow).some(
+            (branch) => branch.authorThreadId === threadId && failedWhileCondensing(branch),
+          ) &&
+          !hasRunningSessionTurn(snapshot.threads.find((thread) => thread.id === threadId))
+        ) {
+          continue;
+        }
         const plan = revisionPlanByThread.get(threadId);
         // A delivery that produced or predates the reviewed plan belongs to authoring.
         if (
@@ -6386,11 +6517,14 @@ export const makeWorkflowService = Effect.gen(function* () {
         return { status: "started" as const };
       }
       const planForBranch = (branch: WorkflowBranch) =>
-        completedProposedPlanForTurn(
-          snapshot,
-          branch.authorThreadId,
-          branch.planTurnId,
-          branch.updatedAt,
+        (branch.reviews.length > 0
+          ? exactPinnedPlan(snapshot, branch.authorThreadId, branch.planTurnId)
+          : completedProposedPlanForTurn(
+              snapshot,
+              branch.authorThreadId,
+              branch.planTurnId,
+              branch.updatedAt,
+            )
         )?.planMarkdown ?? null;
 
       if (retriesLegacyReviewSetup) {
@@ -6698,6 +6832,7 @@ export const makeWorkflowService = Effect.gen(function* () {
               status: "revised",
               condenseAttempts: 0,
               condenseTargetChars: null,
+              condenseCommandKey: null,
               revisionFormatRepairAttempts: 0,
               error: null,
               errorStage: null,
@@ -6842,6 +6977,11 @@ export const makeWorkflowService = Effect.gen(function* () {
         retriedWorkflow =
           refreshed.planningWorkflows.find((entry) => entry.id === retriedWorkflow.id) ??
           retriedWorkflow;
+        // That pass already sent their condense turns; the lifecycle pass below must not
+        // dispatch them again.
+        for (const branch of planningBranches(retriedWorkflow)) {
+          if (branch.condenseTargetChars != null) handledRevisionThreads.add(branch.authorThreadId);
+        }
       }
 
       if (retriedWorkflow.merge.status === "error") {
@@ -7173,6 +7313,68 @@ function lensBranchFor(branchId: WorkflowBranchId): "a" | "b" {
   return workflowParticipantIndex(branchId) % 2 === 0 ? "a" : "b";
 }
 
+/** One plan review's prompt, and why it can't be sent (rendered ceiling or context budget). */
+function planReviewPrompt(input: {
+  workflow: PlanningWorkflow;
+  reviewerSlot: WorkflowModelSlot;
+  planMarkdown: string;
+  planTurnId: string | null;
+  reviewKind: WorkflowReviewSlot;
+  reviewedBranchId: WorkflowBranchId;
+  retry?: WorkflowRetryContext | undefined;
+}) {
+  const documentType = planningWorkflowDocumentType(input.workflow);
+  const prompt = (documentType ? buildDocumentReviewPrompt : buildReviewPrompt)({
+    documentType: documentType ?? "custom",
+    requirementPrompt: input.workflow.requirementPrompt,
+    planMarkdown: input.planMarkdown,
+    planSource: {
+      workflowId: input.workflow.id,
+      stage: "author",
+      ...(input.planTurnId ? { turnId: input.planTurnId } : {}),
+    },
+    reviewKind: input.reviewKind,
+    lensBranch: lensBranchFor(input.reviewedBranchId),
+    reviewerSlot: input.reviewerSlot,
+    retry: input.retry,
+  });
+  const error = workflowPromptInvariant({
+    workflow: input.workflow,
+    prompt,
+    artifacts: [input.planMarkdown],
+    targetSlot: input.reviewerSlot,
+    artifactLabel: "Plan under review",
+  });
+  return { prompt, error };
+}
+
+/**
+ * Why a freshly authored plan can't be reviewed: a review prompt carrying it would exceed the
+ * rendered ceiling or a reviewer's context budget. Plans are otherwise not judged for length
+ * until the merge, but one no review can hold would block the run before condensing is reached.
+ */
+export function planReviewFitError(
+  workflow: PlanningWorkflow,
+  branchId: WorkflowBranchId,
+  planMarkdown: string,
+  planTurnId: string | null,
+): string | null {
+  for (const edge of expectedPlanReviewEdges(workflow, branchId)) {
+    const { error } = planReviewPrompt({
+      workflow,
+      reviewerSlot: planReviewerSlot(workflow, branchId, edge),
+      planMarkdown,
+      planTurnId,
+      reviewKind: edge.slot,
+      reviewedBranchId: branchId,
+    });
+    if (error) {
+      return `The ${isDocumentWorkflow(workflow) ? "document" : "plan"} is too long to review (${error.detail}) Submit a shorter complete version.`;
+    }
+  }
+  return null;
+}
+
 /** An implementation reviewer's lens, by its position among the code reviews. */
 function codeReviewLensBranch(workflow: PlanningWorkflow, threadId: ThreadId): "a" | "b" {
   const index = workflow.implementation?.codeReviews.findIndex(
@@ -7328,29 +7530,17 @@ function startReviewTurn({
 }) {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const documentType = planningWorkflowDocumentType(workflow);
-  const prompt = (documentType ? buildDocumentReviewPrompt : buildReviewPrompt)({
-    documentType: documentType ?? "custom",
-    requirementPrompt: workflow.requirementPrompt,
-    planMarkdown,
-    planSource: {
-      workflowId: workflow.id,
-      stage: "author",
-      ...(planTurnId ? { turnId: planTurnId } : {}),
-    },
-    reviewKind,
-    lensBranch: lensBranchFor(reviewedBranchId),
+  const review = planReviewPrompt({
+    workflow,
     reviewerSlot,
+    planMarkdown,
+    planTurnId,
+    reviewKind,
+    reviewedBranchId,
     retry,
   });
-  const promptError = workflowPromptInvariant({
-    workflow,
-    prompt,
-    artifacts: [planMarkdown],
-    targetSlot: reviewerSlot,
-    artifactLabel: "Plan under review",
-  });
-  if (promptError) return Effect.fail(promptError);
+  if (review.error) return Effect.fail(review.error);
+  const prompt = review.prompt;
   const attemptKey = retry?.kind === "retry" ? `retry:${attempt}:${createdAt}` : "initial";
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
@@ -7530,6 +7720,7 @@ export function prepareCondenseTurn({
   workflow,
   branch,
   planMarkdown,
+  planCreatedAt,
   thread,
   createdAt,
   retry,
@@ -7538,7 +7729,11 @@ export function prepareCondenseTurn({
   branch: WorkflowBranch;
   /** The over-long revised plan, captured in `branch.revisionTurnId`. */
   planMarkdown: string;
-  thread?: WorkflowFitThread | undefined;
+  /** When that plan was captured; the thread no longer holds it once compacted past it. */
+  planCreatedAt?: string | undefined;
+  thread?:
+    | (WorkflowFitThread & { readonly compaction?: { readonly createdAt: string } | null })
+    | undefined;
   createdAt: string;
   retry?: WorkflowRetryContext;
 }): { readonly command: ThreadTurnStartCommand } | { readonly rejection: string } {
@@ -7572,26 +7767,33 @@ export function prepareCondenseTurn({
       ? buildDocumentCondensePrompt({ ...input, documentType })
       : buildCondensePrompt(input);
   };
+  const fitError = (inline: boolean, prompt: string) =>
+    workflowPromptInvariant({
+      workflow,
+      prompt,
+      artifacts: inline ? [planMarkdown] : [],
+      targetSlot: branch.authorSlot,
+      artifactLabel: "Condense input",
+      artifactBudgetRecovery: `Compact the Branch ${branch.branchId.toUpperCase()} author conversation, then retry.`,
+      ...(thread ? { thread } : {}),
+    });
+  // The plan travels in the message when it fits, characters and tokens both. Otherwise the
+  // prompt refers to it in the thread, which only works while the thread still holds it.
   const inlinePrompt = render(true);
-  const inline = inlinePrompt.length <= WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT;
-  const prompt = inline ? inlinePrompt : render(false);
-  const promptError = workflowPromptInvariant({
-    workflow,
-    prompt,
-    artifacts: inline ? [planMarkdown] : [],
-    targetSlot: branch.authorSlot,
-    artifactLabel: "Condense input",
-    artifactBudgetRecovery: `Compact the Branch ${branch.branchId.toUpperCase()} author conversation, then retry.`,
-    ...(thread ? { thread } : {}),
-  });
-  if (promptError) return { rejection: promptError.detail };
-  // One attempt key per condense attempt, so a restart resends the same command; a format
-  // repair of that attempt gets its own.
-  const attemptKey = `condense:${branch.condenseAttempts ?? 0}${
-    retry?.kind === "retry"
-      ? `:repair:${branch.revisionFormatRepairAttempts ?? 0}:${createdAt}`
-      : ""
-  }`;
+  const inlineError = fitError(true, inlinePrompt);
+  let prompt = inlinePrompt;
+  if (inlineError) {
+    const compactedPastPlan =
+      !!thread?.compaction &&
+      (planCreatedAt === undefined || thread.compaction.createdAt > planCreatedAt);
+    if (compactedPastPlan) return { rejection: inlineError.detail };
+    prompt = render(false);
+    const referenceError = fitError(false, prompt);
+    if (referenceError) return { rejection: referenceError.detail };
+  }
+  // The saved key: a restart resends the same command, and a fresh attempt or a format repair
+  // saved its own key before dispatching.
+  const attemptKey = branch.condenseCommandKey ?? `condense:${branch.condenseAttempts ?? 0}`;
   const command: ThreadTurnStartCommand = {
     type: "thread.turn.start",
     commandId: stableWorkflowCommandId(

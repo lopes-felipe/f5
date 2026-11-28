@@ -23,6 +23,7 @@ import {
 } from "@t3tools/shared/workflowParticipants";
 import { createHash } from "node:crypto";
 import {
+  DOCUMENT_ARTIFACT_MAX_CHARS,
   isDocumentWorkflow,
   planningWorkflowDocumentType,
   validateDocumentArtifact,
@@ -589,6 +590,7 @@ export function markBranchRevised(
       status: "revised",
       revisionTurnId: input.turnId ?? branch.revisionTurnId,
       condenseTargetChars: null,
+      condenseCommandKey: null,
       error: null,
       errorStage: null,
       updatedAt: input.updatedAt,
@@ -613,6 +615,9 @@ export function markBranchCondensing(
       status: "revising",
       condenseTargetChars: input.allowanceChars,
       condenseAttempts: (branch.condenseAttempts ?? 0) + 1,
+      // The save time makes each fresh intent's command unique, also after a Retry that
+      // resets the attempt count while the plan being condensed is unchanged.
+      condenseCommandKey: `condense:${(branch.condenseAttempts ?? 0) + 1}:${input.updatedAt}`,
       revisionFormatRepairAttempts: 0,
       rejectedDocumentTurnId: null,
       error: null,
@@ -628,8 +633,19 @@ export function markMergeStarted(
   threadId: ThreadId,
   updatedAt: string,
 ): PlanningWorkflow {
+  // Condense attempts count per merge preflight; the plans fit once the merge starts.
+  const settled = planningBranches(workflow).reduce(
+    (next, branch) =>
+      (branch.condenseAttempts ?? 0) === 0
+        ? next
+        : updatePlanningBranch(next, branch.branchId, (entry) => ({
+            ...entry,
+            condenseAttempts: 0,
+          })),
+    workflow,
+  );
   return {
-    ...workflow,
+    ...settled,
     merge: {
       ...workflow.merge,
       threadId,
@@ -1349,7 +1365,12 @@ export function workflowPlanEvenShare(workflow: PlanningWorkflow): number {
  * measured together before the merge and only the ones over their allowance are condensed.
  */
 export function workflowPlanSoftTarget(workflow: PlanningWorkflow): number {
-  return Math.max(0, Math.floor(workflowPlanEvenShare(workflow) * WORKFLOW_PLAN_TARGET_SHARE));
+  const target = Math.floor(workflowPlanEvenShare(workflow) * WORKFLOW_PLAN_TARGET_SHARE);
+  // Document drafts are also capped at capture; the target never asks for more than that cap.
+  const cap = isDocumentWorkflow(workflow)
+    ? Math.floor(DOCUMENT_ARTIFACT_MAX_CHARS * WORKFLOW_PLAN_TARGET_SHARE)
+    : Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.min(target, cap));
 }
 
 /** The length a condense turn asks for: 85% of the allowance, which acceptance is measured by. */
@@ -1411,10 +1432,16 @@ export function workflowPlanMergeChars(
   turnId: string | null,
 ): number {
   const branches = planningBranches(workflow);
-  const measured = updatePlanningBranch(workflow, branchId, (branch) => ({
-    ...branch,
-    revisionTurnId: turnId === null ? null : TurnId.makeUnsafe(turnId),
-  }));
+  // Only this plan's own turn is named: sibling turn ids would otherwise count against it.
+  const measured = branches.reduce(
+    (next, branch) =>
+      updatePlanningBranch(next, branch.branchId, (entry) => ({
+        ...entry,
+        revisionTurnId:
+          branch.branchId === branchId && turnId !== null ? TurnId.makeUnsafe(turnId) : null,
+      })),
+    workflow,
+  );
   const withPlan = buildWorkflowMergePrompt(
     measured,
     branches.map((branch) => (branch.branchId === branchId ? planMarkdown : "")),

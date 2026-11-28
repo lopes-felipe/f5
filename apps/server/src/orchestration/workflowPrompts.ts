@@ -39,7 +39,7 @@ export function planLengthLimitSection(
 ): string | null {
   if (targetPlanChars == null) return null;
   return `## Length Target
-Aim to keep the complete ${artifact} under ${targetPlanChars} characters (about ${Math.floor(targetPlanChars / 6)} words) so every author's ${artifact} fits in the merge. Longer ${artifact}s are condensed before the merge.`;
+Aim to keep the complete ${artifact} under ${targetPlanChars} characters (about ${Math.floor(targetPlanChars / 6)} words) so every author's ${artifact} fits in the merge. A revised ${artifact} is condensed before the merge only if it exceeds its share of the merge.`;
 }
 
 const PLAN_SUBMISSION_REQUIREMENT =
@@ -70,8 +70,14 @@ ${input.workflow.requirementPrompt}`,
 Do not create or modify files during this planning phase.`,
     planLengthLimitSection(input.targetPlanChars),
     PLAN_SUBMISSION_REQUIREMENT,
+    formatRepairSection(input.retry),
     workflowInterruptedRetrySection(input.retry),
   ];
+}
+
+/** A format repair names the failure it repairs, as document prompts do. */
+function formatRepairSection(retry: WorkflowRetryContext | undefined): string | null {
+  return retry?.kind === "retry" && retry.formatRepair ? workflowRetryContextSection(retry) : null;
 }
 
 export function buildAuthorPrompt(input: Parameters<typeof buildAuthorPromptSections>[0]): string {
@@ -156,6 +162,7 @@ Return the full revised plan in your assistant response.
 Do not create or modify files during this planning phase.`,
     planLengthLimitSection(input.targetPlanChars),
     PLAN_SUBMISSION_REQUIREMENT,
+    formatRepairSection(input.retry),
   ];
 }
 
@@ -177,6 +184,10 @@ export interface CondensePromptInput {
   readonly retry?: WorkflowRetryContext | undefined;
 }
 
+/** The reference form names the plan, not "the previous response", which may be a failed reply. */
+export const CONDENSE_REFERENCE_NOTE =
+  "It is too long to repeat here. Ignore any later reply of yours that did not contain a complete submission, such as a failed or malformed attempt.";
+
 export function condenseInstructions(
   input: Pick<CondensePromptInput, "renderedChars" | "allowanceChars" | "targetChars">,
   artifact: "plan" | "document",
@@ -193,15 +204,13 @@ export function buildCondensePromptSections(
 ): ReadonlyArray<string | null | undefined> {
   return [
     input.planMarkdown === null
-      ? "Condense the revised plan from your previous response in this thread."
+      ? `Condense the most recent complete plan you submitted in this thread. ${CONDENSE_REFERENCE_NOTE}`
       : `Condense your revised plan below.\n\n## Your revised plan\n\n${input.planMarkdown}`,
     condenseInstructions(input, "plan"),
     providerGuidanceSection(input.authorSlot.provider),
     "Do not create or modify files during this planning phase.",
     PLAN_SUBMISSION_REQUIREMENT,
-    input.retry?.kind === "retry" && input.retry.formatRepair
-      ? workflowRetryContextSection(input.retry)
-      : null,
+    formatRepairSection(input.retry),
     workflowInterruptedRetrySection(input.retry),
   ];
 }

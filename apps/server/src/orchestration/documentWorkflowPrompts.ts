@@ -13,6 +13,7 @@ import {
   type WorkflowRetryContext,
 } from "./workflowPromptFragments.ts";
 import {
+  CONDENSE_REFERENCE_NOTE,
   condenseInstructions,
   planLengthLimitSection,
   type CondensePromptInput,
@@ -123,7 +124,7 @@ export function buildDocumentCondensePrompt(
   const label = WORKFLOW_DOCUMENT_PROFILES[input.documentType].label;
   return joinPromptSections([
     input.planMarkdown === null
-      ? `Condense the revised ${label} from your previous response in this thread.`
+      ? `Condense the most recent complete ${label} you submitted in this thread. ${CONDENSE_REFERENCE_NOTE}`
       : `Condense your revised ${label} below.`,
     input.planMarkdown === null
       ? null

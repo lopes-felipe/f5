@@ -140,7 +140,9 @@ describe("workflowPrompts", () => {
     });
     expect(author).toContain("## Length Target");
     expect(author).toContain("under 48000 characters (about 8000 words)");
-    expect(author).toContain("Longer plans are condensed before the merge.");
+    expect(author).toContain(
+      "A revised plan is condensed before the merge only if it exceeds its share of the merge.",
+    );
     expect(author).not.toContain("rejected");
   });
 
