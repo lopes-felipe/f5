@@ -32,7 +32,7 @@ describe("applyLoginShellPath", () => {
     },
   );
 
-  it.each([": :", ":/fnm/probe/old/bin:"])(
+  it.each([": :", ":/fnm/probe/old/bin:", "/fnm/probe/old/bin:/usr/bin"])(
     "preserves the inherited environment for unusable PATH %s",
     async (path) => {
       const inherited = "/fnm/probe/old";

@@ -45,9 +45,11 @@ export async function applyLoginShellPath(
     // Keep the inherited directory and discard the failed replacement in that case.
     const canReplace = entries.includes(bin) && (await hasExecutableNode(bin));
     const discarded = canReplace ? inheritedMultishell : multishell;
+    const retained = canReplace ? multishell : inheritedMultishell;
     entries = entries.filter((entry) => !isWithinDirectory(entry, discarded));
-    if (!entries.some((entry) => entry.trim())) return false;
-    if (!canReplace) multishell = inheritedMultishell;
+    // Overlapping directories can make pruning unsafe even if other PATH entries survive.
+    if (!entries.some((entry) => isWithinDirectory(entry, retained))) return false;
+    multishell = retained;
   }
 
   env.PATH = entries.join(":");
