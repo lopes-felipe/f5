@@ -25,6 +25,7 @@
     "src",
     "vite",
     "vite.config.ts",
+    "../server/src/orchestration/pendingApprovals.ts",
     "../../scripts/lib/ci-test-reports.ts",
     "../../scripts/lib/test-home.ts"
   ]

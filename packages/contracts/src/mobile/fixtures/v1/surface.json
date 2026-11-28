@@ -1,0 +1,2254 @@
+{
+  "status": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "serverId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "serverVersion": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "mobileApi": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            },
+            "current": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            }
+          },
+          "required": ["min", "current"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["serverId", "serverVersion", "mobileApi"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "pairRequest": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "allOf": [
+            {
+              "pattern": "^[A-Z2-7]{10}$"
+            }
+          ]
+        },
+        "deviceName": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "platform": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": ["ios"]
+            },
+            {
+              "type": "string",
+              "enum": ["android"]
+            }
+          ]
+        },
+        "appVersion": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "bundleId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["code", "deviceName", "platform", "appVersion", "bundleId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "pairResponse": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "serverId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "serverVersion": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "mobileApi": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            },
+            "current": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            }
+          },
+          "required": ["min", "current"],
+          "additionalProperties": false
+        },
+        "deviceId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "deviceToken": {
+          "type": "string"
+        },
+        "profileName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serverId",
+        "serverVersion",
+        "mobileApi",
+        "deviceId",
+        "deviceToken",
+        "profileName"
+      ],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "bootstrap": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "serverId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "serverVersion": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "mobileApi": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            },
+            "current": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            }
+          },
+          "required": ["min", "current"],
+          "additionalProperties": false
+        },
+        "profileName": {
+          "type": "string"
+        },
+        "backendIncarnation": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "health": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": ["ok"]
+            },
+            {
+              "type": "string",
+              "enum": ["degraded"]
+            }
+          ]
+        },
+        "attachmentLimits": {
+          "type": "object",
+          "properties": {
+            "maxCount": {
+              "type": "integer"
+            },
+            "maxImageBytes": {
+              "type": "integer"
+            },
+            "maxImagesBytes": {
+              "type": "integer"
+            }
+          },
+          "required": ["maxCount", "maxImageBytes", "maxImagesBytes"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "serverId",
+        "serverVersion",
+        "mobileApi",
+        "profileName",
+        "backendIncarnation",
+        "ready",
+        "health",
+        "attachmentLimits"
+      ],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "batch": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "afterSequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "throughSequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "threadIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 128
+              }
+            ]
+          }
+        },
+        "projectsChanged": {
+          "type": "boolean"
+        },
+        "selectedThreadId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "messageId": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "role": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "streaming": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "sequence": {
+                "type": "integer",
+                "allOf": [
+                  {
+                    "minimum": 0
+                  }
+                ]
+              },
+              "mode": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": ["append"]
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["replace"]
+                  }
+                ]
+              },
+              "completed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "messageId",
+              "role",
+              "text",
+              "streaming",
+              "createdAt",
+              "sequence",
+              "mode",
+              "completed"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "tailInvalidated": {
+          "type": "boolean"
+        },
+        "transcriptReset": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "afterSequence",
+        "throughSequence",
+        "threadIds",
+        "projectsChanged",
+        "selectedThreadId",
+        "messages",
+        "tailInvalidated",
+        "transcriptReset"
+      ],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.subscribe": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "selectedThreadId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resume": {
+          "type": "object",
+          "properties": {
+            "afterSequence": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            },
+            "backendIncarnation": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          "required": ["afterSequence", "backendIncarnation"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["selectedThreadId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.probe": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "array"
+        }
+      ]
+    },
+    "definitions": {}
+  },
+  "request.getThreadShells": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1
+              },
+              {
+                "maxLength": 128
+              }
+            ]
+          },
+          "allOf": [
+            {
+              "maxItems": 256
+            }
+          ]
+        }
+      },
+      "required": ["threadIds"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.getThreadTail": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "messageLimit": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 1,
+              "maximum": 50
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "messageLimit"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.getThreadHistory": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "cursor": {
+          "type": "object",
+          "properties": {
+            "createdAt": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            },
+            "messageId": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            }
+          },
+          "required": ["createdAt", "messageId"],
+          "additionalProperties": false
+        },
+        "limit": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 1,
+              "maximum": 50
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "cursor", "limit"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.getCommandExecution": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "id": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "id"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.respondToApproval": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": ["accept"]
+            },
+            {
+              "type": "string",
+              "enum": ["decline"]
+            },
+            {
+              "type": "string",
+              "enum": ["cancel"]
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "requestId", "decision"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.respondToQuestion": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "answers": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "required": ["threadId", "requestId", "answers"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.dismissQuestion": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "requestId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.interrupt": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "turnId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "turnId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.settle": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["threadId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.unsettle": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["threadId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.snooze": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "until": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["threadId", "until"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.unsnooze": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["threadId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.archive": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "threadId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["threadId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.registerPush": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "pushToken": {
+          "type": "string",
+          "allOf": [
+            {
+              "pattern": "^[0-9a-fA-F]{32,256}$"
+            }
+          ]
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": ["sandbox"]
+            },
+            {
+              "type": "string",
+              "enum": ["production"]
+            }
+          ]
+        },
+        "bundleId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        }
+      },
+      "required": ["pushToken", "environment", "bundleId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.setPresence": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "foreground": {
+          "type": "boolean"
+        },
+        "viewingThreadId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["foreground", "viewingThreadId"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "request.setNotificationPrefs": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "approval": {
+          "type": "boolean"
+        },
+        "input": {
+          "type": "boolean"
+        },
+        "failed": {
+          "type": "boolean"
+        },
+        "plan-ready": {
+          "type": "boolean"
+        },
+        "completed": {
+          "type": "boolean"
+        },
+        "previews": {
+          "type": "boolean"
+        }
+      },
+      "required": ["approval", "input", "failed", "plan-ready", "completed", "previews"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.subscribe": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "head": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "snapshotRequired": {
+          "type": "boolean"
+        },
+        "batches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "afterSequence": {
+                "type": "integer",
+                "allOf": [
+                  {
+                    "minimum": 0
+                  }
+                ]
+              },
+              "throughSequence": {
+                "type": "integer",
+                "allOf": [
+                  {
+                    "minimum": 0
+                  }
+                ]
+              },
+              "threadIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "minLength": 1
+                    },
+                    {
+                      "maxLength": 128
+                    }
+                  ]
+                }
+              },
+              "projectsChanged": {
+                "type": "boolean"
+              },
+              "selectedThreadId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 128
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "messages": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "messageId": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "role": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "streaming": {
+                      "type": "boolean"
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "sequence": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 0
+                        }
+                      ]
+                    },
+                    "mode": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": ["append"]
+                        },
+                        {
+                          "type": "string",
+                          "enum": ["replace"]
+                        }
+                      ]
+                    },
+                    "completed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "messageId",
+                    "role",
+                    "text",
+                    "streaming",
+                    "createdAt",
+                    "sequence",
+                    "mode",
+                    "completed"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "tailInvalidated": {
+                "type": "boolean"
+              },
+              "transcriptReset": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "afterSequence",
+              "throughSequence",
+              "threadIds",
+              "projectsChanged",
+              "selectedThreadId",
+              "messages",
+              "tailInvalidated",
+              "transcriptReset"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["head", "snapshotRequired", "batches"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.probe": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "serverId": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "serverVersion": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "mobileApi": {
+          "type": "object",
+          "properties": {
+            "min": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            },
+            "current": {
+              "type": "integer",
+              "allOf": [
+                {
+                  "minimum": 0
+                }
+              ]
+            }
+          },
+          "required": ["min", "current"],
+          "additionalProperties": false
+        },
+        "profileName": {
+          "type": "string"
+        },
+        "backendIncarnation": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "health": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": ["ok"]
+            },
+            {
+              "type": "string",
+              "enum": ["degraded"]
+            }
+          ]
+        },
+        "attachmentLimits": {
+          "type": "object",
+          "properties": {
+            "maxCount": {
+              "type": "integer"
+            },
+            "maxImageBytes": {
+              "type": "integer"
+            },
+            "maxImagesBytes": {
+              "type": "integer"
+            }
+          },
+          "required": ["maxCount", "maxImageBytes", "maxImagesBytes"],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "serverId",
+        "serverVersion",
+        "mobileApi",
+        "profileName",
+        "backendIncarnation",
+        "ready",
+        "health",
+        "attachmentLimits"
+      ],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.getThreadShells": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "snapshotSequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "backendIncarnation": {
+          "type": "string",
+          "allOf": [
+            {
+              "minLength": 1
+            },
+            {
+              "maxLength": 128
+            }
+          ]
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "name"],
+            "additionalProperties": false
+          }
+        },
+        "threads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "projectId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 128
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "branch": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "latestActivityAt": {
+                "type": "string"
+              },
+              "archivedAt": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "snoozedUntil": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "settledAt": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "interactionMode": {
+                "type": "string"
+              },
+              "runtimeMode": {
+                "type": "string"
+              },
+              "sessionStatus": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "activeTurnId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 128
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "latestTurn": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "turnId": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          },
+                          {
+                            "maxLength": 128
+                          }
+                        ]
+                      },
+                      "state": {
+                        "type": "string"
+                      },
+                      "completedAt": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": ["turnId", "state", "completedAt"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "workflowRole": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "isSideChat": {
+                "type": "boolean"
+              },
+              "attention": {
+                "type": "object",
+                "properties": {
+                  "pendingApprovalRequestIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    }
+                  },
+                  "pendingInputRequestIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    }
+                  },
+                  "planReady": {
+                    "type": "boolean"
+                  },
+                  "latestFailedTurnId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          },
+                          {
+                            "maxLength": 128
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "latestCompletedTurnId": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          },
+                          {
+                            "maxLength": 128
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "pendingApprovalRequestIds",
+                  "pendingInputRequestIds",
+                  "planReady",
+                  "latestFailedTurnId",
+                  "latestCompletedTurnId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "projectId",
+              "title",
+              "branch",
+              "createdAt",
+              "updatedAt",
+              "latestActivityAt",
+              "archivedAt",
+              "snoozedUntil",
+              "settledAt",
+              "interactionMode",
+              "runtimeMode",
+              "sessionStatus",
+              "activeTurnId",
+              "latestTurn",
+              "workflowRole",
+              "isSideChat",
+              "attention"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["snapshotSequence", "backendIncarnation", "projects", "threads"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.getThreadTail": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "snapshotSequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "messageId": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "role": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "streaming": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string"
+              }
+            },
+            "required": ["messageId", "role", "text", "streaming", "createdAt"],
+            "additionalProperties": false
+          }
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "decisions": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": ["accept"]
+                    },
+                    {
+                      "type": "string",
+                      "enum": ["decline"]
+                    },
+                    {
+                      "type": "string",
+                      "enum": ["cancel"]
+                    }
+                  ]
+                }
+              }
+            },
+            "required": ["requestId", "kind", "title", "decisions"],
+            "additionalProperties": false
+          }
+        },
+        "pendingInputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "requestId": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "hostOnly": {
+                "type": "boolean"
+              },
+              "responseMode": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": ["native"]
+                  },
+                  {
+                    "type": "string",
+                    "enum": ["message"]
+                  }
+                ]
+              },
+              "questions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        },
+                        {
+                          "maxLength": 128
+                        }
+                      ]
+                    },
+                    "header": {
+                      "type": "string"
+                    },
+                    "question": {
+                      "type": "string"
+                    },
+                    "options": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "label": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "string"
+                          }
+                        },
+                        "required": ["label", "description"],
+                        "additionalProperties": false
+                      }
+                    },
+                    "optional": {
+                      "type": "boolean"
+                    },
+                    "multiSelect": {
+                      "type": "boolean"
+                    },
+                    "allowCustomAnswer": {
+                      "type": "boolean"
+                    },
+                    "initialAnswer": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["id", "header", "question", "options"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["requestId", "hostOnly", "responseMode", "questions"],
+            "additionalProperties": false
+          }
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activity": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "createdAt", "kind", "summary"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "snapshotSequence",
+        "messages",
+        "approvals",
+        "pendingInputs",
+        "plan",
+        "activity"
+      ],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.getThreadHistory": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "snapshotSequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "messageId": {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1
+                  },
+                  {
+                    "maxLength": 128
+                  }
+                ]
+              },
+              "role": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "streaming": {
+                "type": "boolean"
+              },
+              "createdAt": {
+                "type": "string"
+              }
+            },
+            "required": ["messageId", "role", "text", "streaming", "createdAt"],
+            "additionalProperties": false
+          }
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "createdAt": {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "minLength": 1
+                    },
+                    {
+                      "maxLength": 128
+                    }
+                  ]
+                },
+                "messageId": {
+                  "type": "string",
+                  "allOf": [
+                    {
+                      "minLength": 1
+                    },
+                    {
+                      "maxLength": 128
+                    }
+                  ]
+                }
+              },
+              "required": ["createdAt", "messageId"],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["snapshotSequence", "messages", "cursor"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.getCommandExecution": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "allOf": [
+                {
+                  "minLength": 1
+                },
+                {
+                  "maxLength": 128
+                }
+              ]
+            },
+            "title": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            },
+            "output": {
+              "type": "string"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": ["id", "title", "status", "output", "truncated"],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "definitions": {}
+  },
+  "result.respondToApproval": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.respondToQuestion": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.dismissQuestion": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.interrupt": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.settle": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.unsettle": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.snooze": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.unsnooze": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.archive": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "allOf": [
+            {
+              "minimum": 0
+            }
+          ]
+        }
+      },
+      "required": ["sequence"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.registerPush": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "registered": {
+          "type": "boolean",
+          "enum": [true]
+        }
+      },
+      "required": ["registered"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.setPresence": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "updated": {
+          "type": "boolean",
+          "enum": [true]
+        }
+      },
+      "required": ["updated"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  },
+  "result.setNotificationPrefs": {
+    "dialect": "draft-2020-12",
+    "schema": {
+      "type": "object",
+      "properties": {
+        "updated": {
+          "type": "boolean",
+          "enum": [true]
+        }
+      },
+      "required": ["updated"],
+      "additionalProperties": false
+    },
+    "definitions": {}
+  }
+}

@@ -8,7 +8,7 @@ import * as Crypto from "node:crypto";
 export const SECRET_STORE_KEY_ENV = "F5_SECRET_STORE_KEY";
 
 /** Secret names whose values are encrypted at rest. */
-export const ENCRYPTED_SECRET_PREFIXES = ["mcp-secret-", "mcp-oauth-"] as const;
+export const ENCRYPTED_SECRET_PREFIXES = ["mcp-secret-", "mcp-oauth-", "mobile-apns-p8"] as const;
 
 /** Holds the headless fallback key; it never matches an encrypted prefix. */
 export const SECRET_STORE_KEY_FILE = "secret-store-key";

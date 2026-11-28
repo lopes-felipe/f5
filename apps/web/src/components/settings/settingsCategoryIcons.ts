@@ -14,6 +14,7 @@ import {
   MessageSquareTextIcon,
   PaletteIcon,
   SlidersHorizontalIcon,
+  SmartphoneIcon,
   UsersIcon,
   WrenchIcon,
 } from "lucide-react";
@@ -25,6 +26,7 @@ export const SETTINGS_CATEGORY_ICONS = {
   conversation: MessageSquareTextIcon,
   keyboard: KeyboardIcon,
   notifications: BellIcon,
+  phone: SmartphoneIcon,
   providers: BotIcon,
   threads: ListTreeIcon,
   tools: WrenchIcon,

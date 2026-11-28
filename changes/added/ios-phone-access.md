@@ -1,0 +1,1 @@
+- Pair the F5 iPhone companion over Tailscale from Settings → Phone access. See conversations that need attention, follow live responses, answer supported requests, and receive notifications from the host.

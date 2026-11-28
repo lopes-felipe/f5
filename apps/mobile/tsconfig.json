@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2024"],
+    "types": ["node", "react"],
+    "noEmit": true
+  },
+  "include": ["index.ts", "app.config.ts", "app/**/*.tsx", "src/**/*.ts", "src/**/*.tsx"]
+}

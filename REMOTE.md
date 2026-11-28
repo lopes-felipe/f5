@@ -9,7 +9,11 @@ another laptop.
 > encrypted interface such as Tailscale, or put an HTTPS/WSS reverse proxy in front. Don't bind to
 > `0.0.0.0` on an untrusted network.
 
-## How to
+## Phone access
+
+To use the F5 iPhone companion, open **Settings → Phone access** on the host. The companion uses a dedicated Tailscale listener and a revocable device token. See the [iPhone pairing and push guide](docs/user/mobile.md).
+
+## Remote web access
 
 1. Build the web app: `bun run build`. Remote access needs the built app, not Vite dev mode.
 2. Generate a token: `TOKEN="$(openssl rand -hex 24)"`.

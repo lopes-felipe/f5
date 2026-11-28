@@ -175,7 +175,11 @@ describe("dependency auto-install", () => {
     });
     expect(install).toHaveBeenCalledOnce();
     expect(log.mock.calls[0]?.[0]).toContain("missing: apps/web/package.json: react");
-    expect(readFileSync(Path.join(root, STAMP), "utf8").trim()).toBe(lockfileFingerprint(root));
+    expect(readFileSync(Path.join(root, STAMP), "utf8").trim().split("\n")).toEqual([
+      lockfileFingerprint(root),
+      "package.json",
+      "apps/web/package.json",
+    ]);
     expect(isInstallStale(root)).toBe(false);
   });
 
@@ -200,7 +204,7 @@ describe("dependency auto-install", () => {
       installed: true,
     });
     expect(install).toHaveBeenCalledTimes(2);
-    expect(log.mock.calls[0]?.[0]).toContain("bun.lock changed since last install");
+    expect(log.mock.calls[0]?.[0]).toContain("does not cover the current bun.lock");
   });
 
   it("does not record the install when it fails or leaves packages missing", () => {
@@ -258,6 +262,19 @@ describe("dependency auto-install", () => {
     expect(isInstallStale(root)).toBe(true);
     ensureDependencies(root, { install, log: () => {} });
     expect(install).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts a scoped install only for its requested workspaces and local dependencies", () => {
+    const root = installedFixture();
+    writeManifest(root, "apps/mobile/package.json", {
+      name: "@t3tools/mobile",
+      dependencies: { "@t3tools/shared": "workspace:*" },
+    });
+    writeManifest(root, "packages/shared/package.json", { name: "@t3tools/shared" });
+    recordInstall(root, ["@t3tools/mobile"]);
+    expect(isInstallStale(root, ["@t3tools/mobile"])).toBe(false);
+    expect(isInstallStale(root, ["@t3tools/shared"])).toBe(false);
+    expect(isInstallStale(root)).toBe(true);
   });
 });
 
@@ -323,7 +340,24 @@ describe.skipIf(process.platform === "win32")("dependency auto-install CLI", () 
     const { root, run } = cliFixture("exit 1");
     const result = run(["--record-install"]);
     expect(result.status).toBe(0);
-    expect(readFileSync(Path.join(root, STAMP), "utf8").trim()).toBe(lockfileFingerprint(root));
+    expect(readFileSync(Path.join(root, STAMP), "utf8").trim().split("\n")[0]).toBe(
+      lockfileFingerprint(root),
+    );
+    expect(existsSync(Path.join(root, "bun-args"))).toBe(false);
+  });
+
+  it("recognizes an explicitly configured Electron distribution without installing again", () => {
+    const { root, run } = cliFixture("exit 1");
+    writeManifest(root, "node_modules/react/package.json", { name: "react" });
+    const override = Path.join(root, "custom-electron");
+    mkdirSync(override);
+    writeFileSync(Path.join(override, "electron"), "");
+    recordInstall(root);
+    const result = run(["--install", "--require-electron"], {
+      ELECTRON_OVERRIDE_DIST_PATH: override,
+      F5_SKIP_ELECTRON_INSTALL: "0",
+    });
+    expect(result.status).toBe(0);
     expect(existsSync(Path.join(root, "bun-args"))).toBe(false);
   });
 });

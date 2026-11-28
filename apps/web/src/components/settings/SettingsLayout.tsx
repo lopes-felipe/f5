@@ -18,6 +18,7 @@ import { GeneralSettings } from "./categories/GeneralSettings";
 import { GitSettings } from "./categories/GitSettings";
 import { KeyboardSettings } from "./categories/KeyboardSettings";
 import { NotificationsSettings } from "./categories/NotificationsSettings";
+import { PhoneAccessSettings } from "./PhoneAccessSettings";
 import { ProjectSettings } from "./categories/ProjectSettings";
 import { ProjectsSettings } from "./categories/ProjectsSettings";
 import { ProvidersSettings } from "./categories/ProvidersSettings";
@@ -77,6 +78,8 @@ function CategoryContent({
       return <KeyboardSettings />;
     case "notifications":
       return <NotificationsSettings />;
+    case "phone":
+      return active ? <PhoneAccessSettings /> : null;
     case "providers":
       return <ProvidersSettings />;
     case "threads":

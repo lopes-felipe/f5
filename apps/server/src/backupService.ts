@@ -12,7 +12,8 @@ import { backupMaintenanceEffect } from "./backupMaintenance.ts";
 import { withAttachmentRetentionLease } from "./storage/attachmentRetention.ts";
 
 import { ServerConfig, type ServerConfigShape } from "./config.ts";
-import { validateBackupDatabase } from "./backupDatabase.ts";
+import { clearBackedUpMobileDevices, validateBackupDatabase } from "./backupDatabase.ts";
+import { MOBILE_APNS_KEY_SECRET, MOBILE_ID_SECRET } from "./mobileAccess/apnsClient.ts";
 export { validateBackupDatabase } from "./backupDatabase.ts";
 import { exists, isInside, listRegularFiles } from "./backupFiles.ts";
 import { openRuntimeSqliteDatabase } from "./persistence/runtimeSqlite.ts";
@@ -283,6 +284,10 @@ export async function applyPendingRestore(
   }
   const payloadDir = resolve(pending.stagingDir, "payload");
   await validateRestoredPayload(payloadDir);
+  const replaceSecrets =
+    pending.replaceSecrets && (!pending.source || pending.source.profileId === config.profile?.id);
+  const mobileSecrets = [MOBILE_APNS_KEY_SECRET, MOBILE_ID_SECRET].map((name) => name + ".bin");
+  for (const file of mobileSecrets) await rm(resolve(payloadDir, "secrets", file), { force: true });
   await rebindRestoredAttachmentPaths(payloadDir, config.attachmentsDir);
   if (!pending.source && config.profile?.isDefault === false)
     throw new Error("Legacy backups can only be restored into Default.");
@@ -326,10 +331,15 @@ export async function applyPendingRestore(
       active: config.attachmentsDir,
       staged: resolve(payloadDir, "attachments"),
     },
-    ...(pending.replaceSecrets &&
-    (!pending.source || pending.source.profileId === config.profile?.id) &&
-    config.secretsDir
+    ...(replaceSecrets && config.secretsDir
       ? [{ name: "secrets", active: config.secretsDir, staged: resolve(payloadDir, "secrets") }]
+      : []),
+    ...(!replaceSecrets && config.secretsDir
+      ? mobileSecrets.map((file) => ({
+          name: file,
+          active: resolve(config.secretsDir!, file),
+          staged: resolve(payloadDir, "secrets", file),
+        }))
       : []),
   ];
   const movedActive: typeof activeItems = [];
@@ -423,6 +433,14 @@ export async function rebindRestoredProviderHomes(
       if (root) instance.config[key] = resolve(stateDir, "provider-homes", relative(root, value));
     }
   }
+  if (crossProfile && settings.mobileAccess) {
+    settings.mobileAccess = {
+      ...settings.mobileAccess,
+      enabled: false,
+      port: null,
+      confirmedInterface: null,
+    };
+  }
   await atomicWriteJson(settingsPath, crossProfile ? redactBackupSettings(settings) : settings);
 }
 
@@ -441,6 +459,7 @@ export async function rebindRestoredAttachmentPaths(
     readOnly: false,
   });
   try {
+    clearBackedUpMobileDevices(database);
     if (
       !database
         .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attachments'")

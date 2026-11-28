@@ -1,5 +1,7 @@
 self-hosted-runner:
   labels:
+    # GitHub's Xcode 27 image label postdates the pinned actionlint version.
+    - xcode-27
     - f5-computer-interactive
     - windows-10
     - windows-11

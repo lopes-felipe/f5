@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./messageMerge": "./src/messageMerge.ts",
+    "./pendingApprovals": "./src/pendingApprovals.ts",
+    "./approvalOptions": "./src/approvalOptions.ts",
+    "./pendingQuestionAnswers": "./src/pendingQuestionAnswers.ts",
+    "./threadAttention": "./src/threadAttention.ts",
+    "./threadOrdering": "./src/threadOrdering.ts",
     "./editorLinks": {
       "types": "./src/editorLinks.ts",
       "import": "./src/editorLinks.ts"

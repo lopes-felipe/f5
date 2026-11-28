@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
+import { pendingApprovalActivities as serverPendingApprovals } from "../../server/src/orchestration/pendingApprovals";
 import {
   createLocalDispatchSnapshot,
   deriveActiveWorkStartedAt,
@@ -534,7 +535,8 @@ describe("derivePendingApprovals", () => {
       }),
     ];
 
-    expect(derivePendingApprovals(activities)).toEqual([
+    const webPending = derivePendingApprovals(activities);
+    expect(webPending).toEqual([
       {
         requestId: "req-1",
         requestKind: "command",
@@ -542,6 +544,11 @@ describe("derivePendingApprovals", () => {
         detail: "bun run lint",
       },
     ]);
+    expect(
+      serverPendingApprovals({ activities }).map(
+        ({ payload }) => (payload as { requestId: string }).requestId,
+      ),
+    ).toEqual(webPending.map(({ requestId }) => requestId));
   });
 
   it("maps canonical requestType payloads into pending approvals", () => {

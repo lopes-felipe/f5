@@ -16,19 +16,9 @@ import {
 } from "@t3tools/shared/backendPaths";
 import { Cause, Effect, Exit, type FileSystem, Option, type Path, Schema } from "effect";
 
-import {
-  IMMUTABLE_PRIVATE_CACHE_CONTROL,
-  openContainedFile,
-  serveAsset,
-  streamFileHandle,
-} from "../../assetHttp.ts";
-import {
-  ATTACHMENTS_ROUTE_PREFIX,
-  normalizeAttachmentRelativePath,
-  resolveAttachmentRelativePath,
-} from "../../attachmentPaths.ts";
-import { resolveAttachmentPathById } from "../../attachmentStore.ts";
-import { AttachmentUploadError, type makeAttachmentUploads } from "../../attachmentUploads.ts";
+import { openContainedFile, streamFileHandle } from "../../assetHttp.ts";
+import type { makeAttachmentUploads } from "../../attachmentUploads.ts";
+import { makeAttachmentHttpRoutes } from "./attachmentRoutes.ts";
 import type { makeBackupService } from "../../backupService.ts";
 import type { ProfileGithubAccount } from "../../git/ProfileGithubAccount.ts";
 import type { makeHtmlPreviewBroker } from "../../htmlRender/HtmlPreviewBroker.ts";
@@ -118,6 +108,12 @@ export function createHttpRequestListener(
     fileSystem,
     path,
   } = deps;
+  const attachments = makeAttachmentHttpRoutes({
+    attachmentsDir,
+    attachmentUploads,
+    fileSystem,
+    path,
+  });
 
   return (req, res) => {
     const respond = (
@@ -505,72 +501,7 @@ export function createHttpRequestListener(
           );
           return;
         }
-        if (
-          url.pathname.startsWith("/api/attachments/uploads/") &&
-          (req.method === "GET" || req.method === "HEAD")
-        ) {
-          const id = url.pathname.slice("/api/attachments/uploads/".length);
-          const opened = yield* Effect.exit(attachmentUploads.openUpload(id));
-          if (Exit.isFailure(opened))
-            respond(410, { "Cache-Control": "no-store" }, "Upload expired. Re-attach the file.");
-          else
-            yield* Effect.promise(() =>
-              serveAsset(req, res, opened.value.file, opened.value.name).catch(() => {
-                if (!res.destroyed) res.destroy();
-              }),
-            );
-          return;
-        }
-        if (url.pathname === "/api/attachments/uploads" && req.method === "POST") {
-          const threadId = url.searchParams.get("threadId");
-          const client = req.headers["x-f5-upload-client"];
-          if (!threadId || threadId.length > 128 || !/^[a-zA-Z0-9_-]+$/u.test(threadId)) {
-            respond(
-              400,
-              { "Content-Type": "application/json" },
-              JSON.stringify({ error: "Invalid draft thread ID." }),
-            );
-            return;
-          }
-          const result = yield* Effect.exit(
-            attachmentUploads.upload({
-              req,
-              threadId: ThreadId.makeUnsafe(threadId),
-              ...(url.searchParams.get("source") === "pasted-text" ||
-              url.searchParams.get("source") === "snapshot"
-                ? { source: url.searchParams.get("source") as "pasted-text" | "snapshot" }
-                : {}),
-              clientId:
-                typeof client === "string" && client.length <= 128
-                  ? client
-                  : (req.socket.remoteAddress ?? "unknown"),
-            }),
-          );
-          if (Exit.isFailure(result)) {
-            const failure = Cause.squash(result.cause);
-            const status = Schema.is(AttachmentUploadError)(failure) ? failure.status : 500;
-            respond(
-              status,
-              {
-                "Content-Type": "application/json",
-                "Cache-Control": "no-store",
-                ...(status === 429 || status === 507 ? { "Retry-After": "2" } : {}),
-              },
-              JSON.stringify({
-                error: Schema.is(AttachmentUploadError)(failure)
-                  ? failure.message
-                  : "Attachment upload failed.",
-              }),
-            );
-          } else {
-            respond(
-              201,
-              { "Content-Type": "application/json", "Cache-Control": "no-store" },
-              JSON.stringify(result.value),
-            );
-          }
-          return;
-        }
+        if (yield* attachments(req, res, url)) return;
         if (
           yield* Effect.promise(() =>
             tryHandleProjectFaviconRequest(
@@ -583,63 +514,6 @@ export function createHttpRequestListener(
             ),
           )
         ) {
-          return;
-        }
-
-        if (url.pathname.startsWith(ATTACHMENTS_ROUTE_PREFIX)) {
-          if (req.method !== "GET" && req.method !== "HEAD") {
-            respond(405, { Allow: "GET, HEAD" }, "Method not allowed");
-            return;
-          }
-          const rawRelativePath = url.pathname.slice(ATTACHMENTS_ROUTE_PREFIX.length);
-          const normalizedRelativePath = normalizeAttachmentRelativePath(rawRelativePath);
-          if (!normalizedRelativePath) {
-            respond(400, { "Content-Type": "text/plain" }, "Invalid attachment path");
-            return;
-          }
-
-          const isIdLookup =
-            !normalizedRelativePath.includes("/") && !normalizedRelativePath.includes(".");
-          const filePath = isIdLookup
-            ? resolveAttachmentPathById({
-                attachmentsDir,
-                attachmentId: normalizedRelativePath,
-              })
-            : resolveAttachmentRelativePath({
-                attachmentsDir,
-                relativePath: normalizedRelativePath,
-              });
-          if (!filePath) {
-            respond(
-              isIdLookup ? 404 : 400,
-              { "Content-Type": "text/plain" },
-              isIdLookup ? "Not Found" : "Invalid attachment path",
-            );
-            return;
-          }
-
-          const fileInfo = yield* fileSystem
-            .stat(filePath)
-            .pipe(Effect.catch(() => Effect.succeed(null)));
-          if (!fileInfo || fileInfo.type !== "File") {
-            respond(404, { "Content-Type": "text/plain" }, "Not Found");
-            return;
-          }
-
-          yield* Effect.promise(async () => {
-            try {
-              const file = await openContainedFile(
-                attachmentsDir,
-                path.relative(attachmentsDir, filePath),
-              );
-              await serveAsset(req, res, file, filePath, {
-                cacheControl: IMMUTABLE_PRIVATE_CACHE_CONTROL,
-              });
-            } catch {
-              if (res.headersSent) res.destroy();
-              else respond(404, { "Content-Type": "text/plain" }, "Not Found");
-            }
-          });
           return;
         }
 

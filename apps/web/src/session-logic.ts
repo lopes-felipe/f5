@@ -1,5 +1,14 @@
 import { readMcpAppView, type McpAppView } from "@t3tools/shared/mcpApp";
-import { isApprovalClosingActivity } from "@t3tools/shared/pendingActivityWindow";
+import {
+  derivePendingApprovals,
+  requestKindFromRequestType,
+  type PendingApproval,
+} from "@t3tools/shared/pendingApprovals";
+import {
+  findLatestProposedPlan,
+  hasActionableProposedPlan,
+  isLatestTurnSettled as latestTurnSettled,
+} from "@t3tools/shared/threadAttention";
 import { HtmlRenderReference } from "@t3tools/contracts";
 import { recordBrowserWork } from "./lib/performanceCounters";
 import { messageListStructure } from "./lib/streamingTextRevision";
@@ -11,8 +20,6 @@ import {
   WORKSPACE_BRANCH_CHANGED_ACTIVITY_KIND,
   WORKSPACE_NOTE_ACTIVITY_KIND,
   ApprovalRequestId,
-  ProviderApprovalOption,
-  ProviderApprovalPresentation,
   ElicitationDescriptor,
   type ElicitationReceiptState,
   type CodexCollaborationTool,
@@ -26,7 +33,6 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
   type ProviderKind,
-  type ProviderRequestKind,
   type ToolLifecycleItemType,
   type UserInputQuestion,
   type ThreadId,
@@ -34,7 +40,7 @@ import {
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { automationToolSurface } from "@t3tools/shared/computerAction";
-import { ELICITATION_SUBMITTED_ACTIVITY_KIND } from "@t3tools/shared/pendingUserInputs";
+import { projectPendingUserInputActivity } from "@t3tools/shared/pendingUserInputs";
 import { answerMessageLinkId, parseAnswerDeliveryRecord } from "@t3tools/shared/answerDelivery";
 import {
   normalizeCodexCollaborationTool,
@@ -197,17 +203,12 @@ export interface WorkLogUserInput {
   answerMessageId?: string;
 }
 
-export interface PendingApproval {
-  requestId: ApprovalRequestId;
-  requestKind: ProviderRequestKind;
-  appName?: string;
-  approvalOptions?: ReadonlyArray<ProviderApprovalOption>;
-  presentation?: ProviderApprovalPresentation;
-  requestType?: string;
-  createdAt: string;
-  detail?: string;
-  requestedPermissions?: Record<string, unknown>;
-}
+export {
+  derivePendingApprovals,
+  findLatestProposedPlan,
+  hasActionableProposedPlan,
+  type PendingApproval,
+};
 
 export interface PendingUserInput {
   responseMode?: "message" | undefined;
@@ -364,11 +365,7 @@ export function isLatestTurnSettled(
   latestTurn: LatestTurnTiming | null,
   session: SessionActivityState | null,
 ): boolean {
-  if (!latestTurn?.startedAt) return false;
-  if (!latestTurn.completedAt) return false;
-  if (!session) return true;
-  if (session.orchestrationStatus === "running") return false;
-  return true;
+  return latestTurnSettled(latestTurn, session?.orchestrationStatus ?? null);
 }
 
 export function deriveActiveWorkStartedAt(
@@ -382,99 +379,10 @@ export function deriveActiveWorkStartedAt(
   return sendStartedAt;
 }
 
-function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {
-  switch (requestType) {
-    case "command_execution_approval":
-    case "exec_command_approval":
-      return "command";
-    case "file_read_approval":
-      return "file-read";
-    case "file_change_approval":
-    case "apply_patch_approval":
-      return "file-change";
-    case "mcp_elicitation_approval":
-      return "mcp-elicitation";
-    case "permissions_approval":
-      return "permission";
-    default:
-      return typeof requestType === "string" && requestType.trim().length > 0 ? "unknown" : null;
-  }
-}
-
 function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
-}
-
-export function derivePendingApprovals(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-): PendingApproval[] {
-  const openByRequestId = new Map<ApprovalRequestId, PendingApproval>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
-
-  for (const activity of ordered) {
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const requestId =
-      payload && typeof payload.requestId === "string"
-        ? ApprovalRequestId.makeUnsafe(payload.requestId)
-        : null;
-    const requestKind =
-      payload &&
-      (payload.requestKind === "command" ||
-        payload.requestKind === "file-read" ||
-        payload.requestKind === "file-change" ||
-        payload.requestKind === "permission" ||
-        payload.requestKind === "mcp-elicitation" ||
-        payload.requestKind === "unknown")
-        ? payload.requestKind
-        : payload
-          ? requestKindFromRequestType(payload.requestType)
-          : null;
-    const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
-    const requestType =
-      payload && typeof payload.requestType === "string" ? payload.requestType : undefined;
-    const requestedPermissions = asUnknownRecord(payload?.requestedPermissions);
-
-    if (activity.kind === "approval.requested" && requestId && requestKind) {
-      const approvalOptions = Array.isArray(payload?.approvalOptions)
-        ? payload.approvalOptions.filter(Schema.is(ProviderApprovalOption))
-        : undefined;
-      const presentation = Schema.decodeUnknownOption(ProviderApprovalPresentation)(
-        payload?.presentation,
-      );
-      openByRequestId.set(requestId, {
-        requestId,
-        requestKind,
-        createdAt: activity.createdAt,
-        ...(requestKind === "mcp-elicitation"
-          ? {
-              appName: typeof payload?.appName === "string" ? payload.appName : "MCP app",
-              approvalOptions: approvalOptions ?? [],
-            }
-          : approvalOptions?.length
-            ? { approvalOptions }
-            : {}),
-        ...(presentation._tag === "Some" ? { presentation: presentation.value } : {}),
-        ...(requestKind === "unknown" && requestType ? { requestType } : {}),
-        ...(detail ? { detail } : {}),
-        ...(requestedPermissions ? { requestedPermissions } : {}),
-      });
-      continue;
-    }
-
-    if (isApprovalClosingActivity(activity) && requestId) {
-      openByRequestId.delete(requestId);
-      continue;
-    }
-  }
-
-  return [...openByRequestId.values()].toSorted((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  );
 }
 
 function parseUserInputQuestions(
@@ -546,63 +454,29 @@ function parseUserInputQuestions(
 export function derivePendingUserInputs(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): PendingUserInput[] {
-  const openByRequestId = new Map<ApprovalRequestId, PendingUserInput>();
-  const ordered = [...activities].toSorted(compareActivitiesByOrder);
-
-  for (const activity of ordered) {
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const requestId =
-      payload && typeof payload.requestId === "string"
-        ? ApprovalRequestId.makeUnsafe(payload.requestId)
-        : null;
-
-    if (activity.kind === "user-input.requested" && requestId) {
-      const elicitation = Schema.decodeUnknownOption(ElicitationDescriptor)(payload?.elicitation);
-      const questions =
-        parseUserInputQuestions(payload) ?? (elicitation._tag === "Some" ? [] : null);
-      if (!questions) {
-        continue;
-      }
-      openByRequestId.set(requestId, {
-        requestId,
-        ...(payload?.responseMode === "message" ? { responseMode: "message" as const } : {}),
-        ...(payload?.blocking === false ? { blocking: false } : {}),
-        ...(elicitation._tag === "Some" ? { elicitation: elicitation.value } : {}),
-        createdAt: activity.createdAt,
-        questions,
-      });
-      continue;
-    }
-
-    if (activity.kind === ELICITATION_SUBMITTED_ACTIVITY_KIND && requestId) {
-      const open = openByRequestId.get(requestId);
-      if (open?.elicitation && !open.receipt)
-        openByRequestId.set(requestId, { ...open, receipt: "submitted" });
-      continue;
-    }
-
-    if (activity.kind === "user-input.resolved" && requestId) {
-      const open = openByRequestId.get(requestId);
-      if (payload?.receipt === "indeterminate" && open) {
-        openByRequestId.set(requestId, { ...open, receipt: "indeterminate" });
-        continue;
-      }
-      if (
-        open?.receipt === "indeterminate" &&
-        payload?.receipt !== "resolved" &&
-        payload?.receipt !== "cancelled"
-      )
-        continue;
-      openByRequestId.delete(requestId);
-    }
+  let pending: readonly PendingUserInput[] = [];
+  for (const activity of activities.toSorted(compareActivitiesByOrder)) {
+    pending = projectPendingUserInputActivity(
+      pending,
+      activity,
+      (request, payload) => {
+        const elicitation = Schema.decodeUnknownOption(ElicitationDescriptor)(payload.elicitation);
+        const questions =
+          parseUserInputQuestions(payload) ?? (elicitation._tag === "Some" ? [] : null);
+        if (!questions || typeof payload.requestId !== "string") return null;
+        return {
+          requestId: ApprovalRequestId.makeUnsafe(payload.requestId),
+          ...(payload.responseMode === "message" ? { responseMode: "message" as const } : {}),
+          ...(payload.blocking === false ? { blocking: false } : {}),
+          ...(elicitation._tag === "Some" ? { elicitation: elicitation.value } : {}),
+          createdAt: request.createdAt,
+          questions,
+        };
+      },
+      true,
+    );
   }
-
-  return [...openByRequestId.values()].toSorted((left, right) =>
-    left.createdAt.localeCompare(right.createdAt),
-  );
+  return pending.toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 export function deriveActivePlanState(
@@ -694,58 +568,6 @@ export function deriveActivePlanState(
       : {}),
     steps: planSteps,
   };
-}
-
-export function findLatestProposedPlan(
-  proposedPlans: ReadonlyArray<ProposedPlan>,
-  latestTurnId: TurnId | string | null | undefined,
-): LatestProposedPlanState | null {
-  if (latestTurnId) {
-    const matchingTurnPlan = [...proposedPlans]
-      .filter((proposedPlan) => proposedPlan.turnId === latestTurnId)
-      .toSorted(
-        (left, right) =>
-          left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
-      )
-      .at(-1);
-    if (matchingTurnPlan) {
-      return {
-        id: matchingTurnPlan.id,
-        createdAt: matchingTurnPlan.createdAt,
-        updatedAt: matchingTurnPlan.updatedAt,
-        turnId: matchingTurnPlan.turnId,
-        planMarkdown: matchingTurnPlan.planMarkdown,
-        implementedAt: matchingTurnPlan.implementedAt,
-        implementationThreadId: matchingTurnPlan.implementationThreadId,
-      };
-    }
-  }
-
-  const latestPlan = [...proposedPlans]
-    .toSorted(
-      (left, right) =>
-        left.updatedAt.localeCompare(right.updatedAt) || left.id.localeCompare(right.id),
-    )
-    .at(-1);
-  if (!latestPlan) {
-    return null;
-  }
-
-  return {
-    id: latestPlan.id,
-    createdAt: latestPlan.createdAt,
-    updatedAt: latestPlan.updatedAt,
-    turnId: latestPlan.turnId,
-    planMarkdown: latestPlan.planMarkdown,
-    implementedAt: latestPlan.implementedAt,
-    implementationThreadId: latestPlan.implementationThreadId,
-  };
-}
-
-export function hasActionableProposedPlan(
-  proposedPlan: LatestProposedPlanState | Pick<ProposedPlan, "implementedAt"> | null,
-): boolean {
-  return proposedPlan !== null && proposedPlan.implementedAt === null;
 }
 
 const ALWAYS_VISIBLE_KINDS = new Set([

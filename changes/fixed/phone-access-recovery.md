@@ -1,0 +1,2 @@
+- Keep iPhones paired across host restarts and temporary listener changes. Large transcripts can open with pending decisions, rewinds discard stale history, and approval cards show why the host is asking.
+- Register iPhone notifications after permission is granted and clear duplicate push registrations when a phone is paired again.

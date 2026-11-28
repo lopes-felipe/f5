@@ -1,0 +1,60 @@
+name: Upload iOS build to TestFlight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-mobile-ios
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    if: github.ref == 'refs/heads/main'
+    environment: testflight
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      CI: "1"
+      F5_SKIP_ELECTRON_INSTALL: "1"
+      F5_IOS_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Generate the iOS project
+        working-directory: apps/mobile
+        run: |
+          bun run expo prebuild --platform ios --no-install
+          pod install --project-directory=ios
+      - name: Archive and upload
+        working-directory: apps/mobile
+        env:
+          ASC_TEAM_ID: ${{ vars.ASC_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          : "${ASC_TEAM_ID:?Set ASC_TEAM_ID on the testflight environment}"
+          : "${ASC_KEY_ID:?Missing App Store Connect key ID}"
+          : "${ASC_ISSUER_ID:?Missing App Store Connect issuer ID}"
+          : "${ASC_KEY_P8:?Missing App Store Connect API key}"
+          umask 077
+          key="$(mktemp "$RUNNER_TEMP/f5-asc.XXXXXX")"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$ASC_KEY_P8" > "$key"
+          archive="$RUNNER_TEMP/F5.xcarchive"
+          export_options="$RUNNER_TEMP/F5-export.plist"
+          /usr/libexec/PlistBuddy -c 'Clear dict' -c 'Add method string app-store-connect' \
+            -c 'Add destination string upload' -c 'Add signingStyle string automatic' \
+            -c "Add teamID string $ASC_TEAM_ID" "$export_options"
+          auth=(-allowProvisioningUpdates -authenticationKeyPath "$key" \
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          xcodebuild archive -workspace ios/F5.xcworkspace -scheme F5 -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$archive" \
+            "DEVELOPMENT_TEAM=$ASC_TEAM_ID" CODE_SIGN_STYLE=Automatic "${auth[@]}"
+          xcodebuild -exportArchive -archivePath "$archive" -exportPath "$RUNNER_TEMP/f5-export" \
+            -exportOptionsPlist "$export_options" "${auth[@]}"

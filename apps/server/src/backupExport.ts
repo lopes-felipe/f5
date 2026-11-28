@@ -12,6 +12,8 @@ import {
 } from "./auth/secretStoreKey.ts";
 import { version as appVersion } from "../package.json" with { type: "json" };
 import { openRuntimeSqliteDatabase } from "./persistence/runtimeSqlite.ts";
+import { clearBackedUpMobileDevices } from "./backupDatabase.ts";
+import { MOBILE_APNS_KEY_SECRET, MOBILE_ID_SECRET } from "./mobileAccess/apnsClient.ts";
 import { validateBackupDatabase } from "./backupDatabase.ts";
 import { exists, isInside, listRegularFiles, archivePathForFile } from "./backupFiles.ts";
 import {
@@ -95,6 +97,7 @@ export async function buildBackupArchive(input: {
   const snapshot = await openRuntimeSqliteDatabase(databaseSnapshot, { readOnly: false });
   const attachmentFiles = new Set<string>();
   try {
+    clearBackedUpMobileDevices(snapshot);
     const hasRegistry = snapshot
       .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='attachment_owners'")
       .get();
@@ -147,6 +150,7 @@ export async function buildBackupArchive(input: {
       input.secretStoreKey,
     );
     for (const file of await listRegularFiles(config.secretsDir)) {
+      if (isMobileSecretFile(file)) continue;
       entries.push({
         archivePath: archivePathForFile("secrets", config.secretsDir, file),
         sourcePath: plainSecrets.get(file) ?? file,
@@ -197,6 +201,7 @@ export async function exportableSecrets(
   if (fileKey?.length === 32) keys.push(fileKey);
   const copies = new Map<string, string>();
   for (const file of await listRegularFiles(secretsDir)) {
+    if (isMobileSecretFile(file)) continue;
     const filename = basename(file);
     if (!filename.endsWith(".bin")) continue;
     const name = filename.slice(0, -".bin".length);
@@ -213,4 +218,9 @@ export async function exportableSecrets(
     }
   }
   return copies;
+}
+
+function isMobileSecretFile(path: string) {
+  const filename = basename(path);
+  return filename === MOBILE_APNS_KEY_SECRET + ".bin" || filename === MOBILE_ID_SECRET + ".bin";
 }

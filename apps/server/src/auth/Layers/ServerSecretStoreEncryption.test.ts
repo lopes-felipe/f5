@@ -128,39 +128,42 @@ describe("secrets encrypted at rest", () => {
     }
   });
 
-  it("moves secrets from the headless key file to the desktop key", async () => {
-    const dir = await stateDir();
-    await run(
-      dir,
-      undefined,
-      Effect.gen(function* () {
-        yield* (yield* ServerSecretStore).set("mcp-secret-b", text("value-b"));
-      }),
-    );
-    const before = await readFile(secretFile(dir, "mcp-secret-b"));
-    const desktopKey = Uint8Array.from(randomBytes(32));
-    const read = await run(
-      dir,
-      desktopKey,
-      Effect.gen(function* () {
-        return decode(yield* (yield* ServerSecretStore).get("mcp-secret-b"));
-      }),
-    );
-    expect(read).toBe("value-b");
-    const after = await readFile(secretFile(dir, "mcp-secret-b"));
-    expect(after.equals(before)).toBe(false);
-    // Nothing needs the key file any more, so the store removed it.
-    await expect(stat(secretFile(dir, "secret-store-key"))).rejects.toThrow();
-    expect(
+  it.each(["mcp-secret-b", "mobile-apns-p8"])(
+    "moves %s from the headless key file to the desktop key",
+    async (name) => {
+      const dir = await stateDir();
       await run(
+        dir,
+        undefined,
+        Effect.gen(function* () {
+          yield* (yield* ServerSecretStore).set(name, text("value-b"));
+        }),
+      );
+      const before = await readFile(secretFile(dir, name));
+      const desktopKey = Uint8Array.from(randomBytes(32));
+      const read = await run(
         dir,
         desktopKey,
         Effect.gen(function* () {
-          return decode(yield* (yield* ServerSecretStore).get("mcp-secret-b"));
+          return decode(yield* (yield* ServerSecretStore).get(name));
         }),
-      ),
-    ).toBe("value-b");
-  });
+      );
+      expect(read).toBe("value-b");
+      const after = await readFile(secretFile(dir, name));
+      expect(after.equals(before)).toBe(false);
+      // Nothing needs the key file any more, so the store removed it.
+      await expect(stat(secretFile(dir, "secret-store-key"))).rejects.toThrow();
+      expect(
+        await run(
+          dir,
+          desktopKey,
+          Effect.gen(function* () {
+            return decode(yield* (yield* ServerSecretStore).get(name));
+          }),
+        ),
+      ).toBe("value-b");
+    },
+  );
 
   it("refuses a value encrypted with another key or moved to another name", async () => {
     const dir = await stateDir();
