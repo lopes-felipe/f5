@@ -27714,11 +27714,22 @@
     },
     {
       "createdAt": "2026-11-13T14:39:02.847Z",
-      "decidedAt": "2026-11-20T11:45:15.779Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-28T15:51:55.791Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/nextTurnQueue/Layers/NextTurnQueueStore.ts:327",
+          "apps/server/src/nextTurnQueue/cancelSubmission.ts:6",
+          "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:335"
+        ],
+        "f5Refs": [
+          "399ab1b6b8f4658ac79cc08b858ffef08042251b"
+        ]
+      },
       "id": "pr-29521",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "performance",
@@ -53264,11 +53275,22 @@
     },
     {
       "createdAt": "2026-11-13T14:39:02.847Z",
-      "decidedAt": "2026-11-20T11:45:27.611Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-28T15:51:55.793Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/usage/nativeHistory.ts:52",
+          "apps/server/src/usage/Layers/UsageService.ts:359",
+          "apps/web/src/lib/usageReactQuery.ts:143"
+        ],
+        "f5Refs": [
+          "399ab1b6b8f4658ac79cc08b858ffef08042251b"
+        ]
+      },
       "id": "pr-33993",
-      "status": "port",
+      "reason": "Already present in f5",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "usage",
@@ -55812,14 +55834,24 @@
     },
     {
       "createdAt": "2026-11-12T11:14:04.510Z",
-      "decidedAt": "2026-11-20T11:45:15.779Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-28T15:51:55.794Z",
+      "decidedBy": "llm",
       "epoch": 1,
+      "equivalence": {
+        "evidence": [
+          "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts:1633",
+          "apps/server/src/persistence/Migrations/036_ProjectionThreadMessagesCreatedMessageId.ts:8"
+        ],
+        "f5Refs": [
+          "399ab1b6b8f4658ac79cc08b858ffef08042251b"
+        ]
+      },
       "id": "pr-34490",
+      "reason": "Already present in f5",
       "relatedTopics": [
         "pr-33305"
       ],
-      "status": "port",
+      "status": "equivalent",
       "suggestion": {
         "areas": [
           "threads",
@@ -62660,14 +62692,16 @@
     },
     {
       "createdAt": "2026-11-14T11:13:10.842Z",
-      "decidedAt": "2026-11-20T11:45:15.779Z",
-      "decidedBy": "user",
+      "decidedAt": "2026-11-28T15:51:55.791Z",
+      "decidedBy": "llm",
       "epoch": 1,
       "id": "pr-35346",
+      "reason": "F5 updates standalone servers through its CLI and has no combined server and provider update action.",
+      "reasonKey": "not-applicable",
       "relatedTopics": [
         "pr-35327"
       ],
-      "status": "port",
+      "status": "skip",
       "suggestion": {
         "areas": [
           "desktop",
