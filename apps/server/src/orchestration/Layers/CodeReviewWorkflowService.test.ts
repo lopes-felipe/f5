@@ -4019,6 +4019,23 @@ const PULL_REQUEST = {
   url: "https://github.com/acme/app/pull/42",
   key: "github:github.com/acme/app#42",
 };
+const REVIEWED_PULL_REQUEST_LINK = {
+  provider: "github",
+  host: "github.com",
+  repository: "acme/app",
+  number: 42,
+  title: "Pull request #42",
+  url: PULL_REQUEST.url,
+};
+
+/** The reviewed-PR links the service attached, in dispatch order. */
+function reviewedPullRequestLinks(dispatched: ReadonlyArray<OrchestrationCommand>) {
+  return dispatched.flatMap((command) =>
+    command.type === "thread.meta.update" && command.pullRequest
+      ? [{ threadId: command.threadId, link: command.pullRequest }]
+      : [],
+  );
+}
 const MERGE_THREAD_ID = ThreadId.makeUnsafe("review-merge");
 const REVIEW_SLOTS = {
   reviewerA: { provider: "codex", model: "gpt-5-codex" },
@@ -4273,6 +4290,77 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     );
 
     expect(harness.getSnapshot().codeReviewWorkflows[0]?.pullRequest).toEqual(PULL_REQUEST);
+    expect(reviewedPullRequestLinks(harness.dispatched)).toEqual(
+      harness.dispatched
+        .filter((command) => command.type === "thread.create")
+        .map((command) => ({ threadId: command.threadId, link: REVIEWED_PULL_REQUEST_LINK })),
+    );
+  });
+
+  it("links the reviewed PR to every reviewer thread", async () => {
+    const prHub = makeFakePrHub();
+    harness = await createHarness(makeReadModel({}), { prHubFederation: prHub.federation });
+
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review https://github.com/acme/app/pull/42",
+        ...REVIEW_SLOTS,
+      }),
+    );
+
+    const reviewerThreadIds = harness.dispatched
+      .filter((command) => command.type === "thread.create")
+      .map((command) => command.threadId);
+    expect(reviewerThreadIds).toHaveLength(2);
+    expect(reviewedPullRequestLinks(harness.dispatched)).toEqual(
+      reviewerThreadIds.map((threadId) => ({ threadId, link: REVIEWED_PULL_REQUEST_LINK })),
+    );
+  });
+
+  it("links no PR when the review names none", async () => {
+    harness = await createHarness(makeReadModel({}));
+
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review the implementation",
+        ...REVIEW_SLOTS,
+      }),
+    );
+
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.pullRequest).toBeNull();
+    expect(reviewedPullRequestLinks(harness.dispatched)).toEqual([]);
+  });
+
+  it("still runs the review when linking the PR fails", async () => {
+    const prHub = makeFakePrHub();
+    harness = await createHarness(makeReadModel({}), {
+      prHubFederation: prHub.federation,
+      failDispatch: (command) =>
+        command.type === "thread.meta.update" && command.pullRequest
+          ? new Error("link failed")
+          : undefined,
+    });
+
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review https://github.com/acme/app/pull/42",
+        ...REVIEW_SLOTS,
+      }),
+    );
+
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.deletedAt).toBeNull();
+    expect(
+      harness.dispatched.some((command) => command.type === "project.code-review-workflow.delete"),
+    ).toBe(false);
+    expect(
+      harness.dispatched.filter((command) => command.type === "thread.turn.start"),
+    ).toHaveLength(2);
   });
 
   it("rejects auto-post when no GitHub pull request resolves", async () => {
@@ -4324,6 +4412,11 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     expect(mergeTurn?.message.text).toContain(
       `linking the pull request as [acme/app#42](${PULL_REQUEST.url})`,
     );
+    const mergeCreate = harness.dispatched.find((command) => command.type === "thread.create");
+    expect(mergeCreate).toBeDefined();
+    expect(reviewedPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: mergeCreate!.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+    ]);
   });
 
   it("auto-posts once when the merge completes", async () => {

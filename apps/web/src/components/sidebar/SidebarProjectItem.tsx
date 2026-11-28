@@ -42,6 +42,7 @@ import {
   isWorkflowRouteActive,
   pinnedThreadSortableId,
   workflowEntryKey,
+  workflowIndicatorsForThread,
 } from "./sidebarLists";
 import { liveSidebarActivityAt } from "./sidebarRecent";
 import { workflowActivityAt } from "./sidebarWorkflowGroups";
@@ -295,7 +296,12 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
     // by id rather than among the visible children.
     const lastThreadIndicators =
       currentStep?.state === "completed" && currentStep.targetThreadId !== null
-        ? indicatorsForThread({ id: currentStep.targetThreadId })
+        ? workflowIndicatorsForThread(
+            entry.type,
+            indicatorsForThread,
+          )({
+            id: currentStep.targetThreadId,
+          })
         : null;
     if (
       isWorkflowRouteActive(pathname, entry.workflow.id, entry.type) ||

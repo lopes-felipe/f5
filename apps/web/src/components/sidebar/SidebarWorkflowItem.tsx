@@ -48,6 +48,7 @@ import {
   type SidebarWorkflowId,
   type SidebarWorkflowType,
   isWorkflowRouteActive,
+  workflowIndicatorsForThread,
   workflowPrLabel,
   workflowRouteForType,
   workflowTypeLabel,
@@ -598,11 +599,12 @@ export function SidebarWorkflowItem(props: {
       ? workflowThreads.find((thread) => thread.id === currentStep.threadId)
       : undefined;
   const targetThreadId = currentStep?.targetThreadId ?? null;
+  const indicatorsForThread = workflowIndicatorsForThread(type, props.indicatorsForThread);
   // A finished workflow is one line: its last thread's PR (or a check) replaces the strip.
   // `workflowThreads` leaves out snoozed threads, so the last thread is looked up by id.
   const finished = currentStep?.state === "completed";
   const targetIndicators =
-    finished && targetThreadId !== null ? props.indicatorsForThread({ id: targetThreadId }) : null;
+    finished && targetThreadId !== null ? indicatorsForThread({ id: targetThreadId }) : null;
   const groups = groupWorkflowThreadsByPhase(
     props.phases ?? [],
     workflowThreads,
@@ -622,7 +624,7 @@ export function SidebarWorkflowItem(props: {
   const deliverableThreadId = finished
     ? targetThreadId
     : implementationThreadId !== null &&
-        props.indicatorsForThread({ id: implementationThreadId }).prStatus !== null
+        indicatorsForThread({ id: implementationThreadId }).prStatus !== null
       ? implementationThreadId
       : null;
   // A finished workflow's time is its newest thread's live activity, not `updatedAt`, which
@@ -631,7 +633,7 @@ export function SidebarWorkflowItem(props: {
   /** The first step status in the group that waits on the user, if any. */
   const needsYouStatusOf = (group: WorkflowSidebarPhaseGroup): ThreadStatusPill | null => {
     for (const row of group.rows) {
-      const status = props.indicatorsForThread(row.thread).threadStatus;
+      const status = indicatorsForThread(row.thread).threadStatus;
       if (isNeedsYouStatus(status)) return status;
     }
     return null;
@@ -678,7 +680,7 @@ export function SidebarWorkflowItem(props: {
         }
         isRenaming={false}
         actions={actions}
-        {...props.indicatorsForThread(thread)}
+        {...indicatorsForThread(thread)}
       />
     );
   };

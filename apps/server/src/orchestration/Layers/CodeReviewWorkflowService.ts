@@ -23,7 +23,11 @@ import {
   githubPullRequestFromRemote,
   isGitHubCodeReviewPullRequest,
 } from "@t3tools/shared/codeReviewPullRequest";
-import { parseSourceControlPullRequestUrl } from "@t3tools/shared/sourceControl";
+import {
+  parseSourceControlPullRequestKey,
+  parseSourceControlPullRequestUrl,
+  toThreadPullRequestLink,
+} from "@t3tools/shared/sourceControl";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { PrHubFederation } from "../../prHub/Layers/PrHubFederation.ts";
 import {
@@ -358,6 +362,31 @@ function dispatchWorkflowDeleteCompensation(input: {
   return dispatchWorkflowDeleteCompensationCommand({ kind: "codeReview", ...input });
 }
 
+/**
+ * Links the reviewed PR to a review thread. Review threads run in the shared project folder,
+ * so the branch they record is whatever that folder has checked out, not the PR under review;
+ * the link is what lets the sidebar and search show the right PR. Best effort: a link that
+ * cannot be written never fails the review.
+ */
+function linkReviewedPullRequest(input: {
+  orchestrationEngine: OrchestrationEngineShape;
+  workflow: CodeReviewWorkflow;
+  threadId: ThreadId;
+}) {
+  const pullRequest = input.workflow.pullRequest;
+  const ref = pullRequest ? parseSourceControlPullRequestKey(pullRequest.key) : null;
+  const link = pullRequest && ref ? toThreadPullRequestLink(ref, { url: pullRequest.url }) : null;
+  if (!link) return Effect.void;
+  return input.orchestrationEngine
+    .dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+      threadId: input.threadId,
+      pullRequest: link,
+    })
+    .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+}
+
 function createReviewerThread(input: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: CodeReviewWorkflow;
@@ -374,7 +403,7 @@ function createReviewerThread(input: {
     model: input.reviewer.slot.model,
     branch: input.workflow.branch,
     createdAt: input.createdAt,
-  });
+  }).pipe(Effect.tap(() => linkReviewedPullRequest(input)));
 }
 
 function startReviewerTurn(input: {
@@ -449,7 +478,7 @@ function createConsolidationThread(input: {
     model: input.workflow.consolidation.slot.model,
     branch: input.workflow.branch,
     createdAt: input.createdAt,
-  });
+  }).pipe(Effect.tap(() => linkReviewedPullRequest(input)));
 }
 
 /**

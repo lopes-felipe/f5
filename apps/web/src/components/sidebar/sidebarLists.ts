@@ -508,6 +508,53 @@ export function prStatusIndicator(
   };
 }
 
+/**
+ * Indicators for a thread whose branch PR isn't its own: only its linked PRs count, and
+ * there is no branch status to wait for. Review and investigation threads run in the shared
+ * project folder, so their branch is whatever that folder has checked out.
+ */
+export function withoutBranchPullRequest<
+  Indicators extends { readonly prStatus: PrStatusIndicator | null; readonly prPending: boolean },
+>(indicators: Indicators): Indicators {
+  const { prStatus } = indicators;
+  if (!indicators.prPending && !prStatus?.items.some((item) => item.source === "branch"))
+    return indicators;
+  return {
+    ...indicators,
+    prStatus: prStatus ? linkedOnlyPrStatus(prStatus) : null,
+    prPending: false,
+  };
+}
+
+/**
+ * A workflow's thread indicators. Only planning threads own their branch: the implementation
+ * thread works in its own worktree and opens that branch's PR. Review and investigation
+ * threads run in the shared project folder, so only the PRs linked to them count.
+ */
+export function workflowIndicatorsForThread<
+  Thread,
+  Indicators extends { readonly prStatus: PrStatusIndicator | null; readonly prPending: boolean },
+>(
+  type: SidebarWorkflowType,
+  indicatorsForThread: (thread: Thread) => Indicators,
+): (thread: Thread) => Indicators {
+  return type === "planning"
+    ? indicatorsForThread
+    : (thread) => withoutBranchPullRequest(indicatorsForThread(thread));
+}
+
+// Keyed by the source indicator, so rows compared by `prStatus` identity stay memoized.
+const linkedOnlyPrStatusCache = new WeakMap<PrStatusIndicator, PrStatusIndicator | null>();
+
+function linkedOnlyPrStatus(prStatus: PrStatusIndicator): PrStatusIndicator | null {
+  if (prStatus.items.every((item) => item.source !== "branch")) return prStatus;
+  const cached = linkedOnlyPrStatusCache.get(prStatus);
+  if (cached !== undefined) return cached;
+  const linked = prStatusIndicator(prStatus.items.filter((item) => item.source !== "branch"));
+  linkedOnlyPrStatusCache.set(prStatus, linked);
+  return linked;
+}
+
 /** A finished workflow's PR status tooltip: "PR #462 open", "Merged #462" or "PR #462 closed". */
 export function workflowPrLabel(pr: PrStatusIndicator): string {
   switch (pr.state) {
