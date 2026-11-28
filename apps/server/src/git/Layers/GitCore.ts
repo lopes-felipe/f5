@@ -3317,7 +3317,7 @@ const makeGitCore = Effect.gen(function* () {
           ),
         };
       }
-      const targetBranch = input.newBranch ?? input.branch;
+      let targetBranch = input.newBranch ?? input.branch;
       const baseRefName = input.baseRefName ?? input.branch;
       // worktree add can invoke git branch internally; a terminator before
       // the path does not protect the new branch argument passed to that command.
@@ -3333,6 +3333,11 @@ const makeGitCore = Effect.gen(function* () {
         input.path ?? (yield* allocateWorktreePath({ cwd: input.cwd, branch: targetBranch }));
       const operationId = input.preparation?.operationId ?? crypto.randomUUID();
       const create = Effect.gen(function* () {
+        if (input.resolveAvailableNewBranch && input.newBranch) {
+          const available = yield* resolveAvailableBranchName(input.cwd, input.newBranch);
+          input = { ...input, newBranch: available };
+          targetBranch = available;
+        }
         const resolvedBase = yield* runGitStdout(
           "GitCore.createWorktree.verifyBaseRef",
           input.cwd,

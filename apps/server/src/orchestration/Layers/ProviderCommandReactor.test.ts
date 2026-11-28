@@ -104,6 +104,7 @@ import { makeTraceSink } from "../../observability/TraceSink.ts";
 import { makeLocalFileTracer } from "../../observability/LocalFileTracer.ts";
 import { dispatchBootstrapTurnStart } from "../../wsServer/bootstrapTurnStart.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import type { WorktreePreparationReceipt } from "../../persistence/Services/WorktreePreparations.ts";
 
 it.each([
   [new WorktreeInspectionError("Git inspection timed out"), true],
@@ -672,9 +673,24 @@ describe("ProviderCommandReactor", () => {
 
     let readWorkspaceModel: OrchestrationEngineShape["getReadModel"] = () =>
       Effect.die("workspace model not ready");
+    // The worktree preparation receipt that proves F5 created the thread's branch.
+    const placeholderReceipt: { namingIntent: "temporary" | "explicit" | null } = {
+      namingIntent: "temporary",
+    };
     const workspaceGit = makeFakeGitCore({
       renameBranch,
       ensureWorktree,
+      readWorktreePreparation: (worktreePath) =>
+        Effect.gen(function* () {
+          if (placeholderReceipt.namingIntent === null) return null;
+          const model = yield* readWorkspaceModel();
+          const thread = model.threads.find((entry) => entry.worktreePath === worktreePath);
+          if (!thread?.branch) return null;
+          return {
+            namingIntent: placeholderReceipt.namingIntent,
+            branch: thread.branch,
+          } as unknown as WorktreePreparationReceipt;
+        }),
       resolveCommonDir: () => Effect.promise(() => canonicalWorktreePath(workspaceRoot)),
       listWorktrees: () =>
         Effect.gen(function* () {
@@ -976,6 +992,7 @@ describe("ProviderCommandReactor", () => {
       stopSession,
       renameBranch,
       ensureWorktree,
+      placeholderReceipt,
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
@@ -4677,6 +4694,52 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it.each([
+    ["a look-alike branch under another prefix", "alice/wip/spike", "temporary"],
+    ["a placeholder-shaped branch the user chose", "f5/wip/spike", "explicit"],
+  ] as const)("never renames %s on the first turn", async (_label, branch, namingIntent) => {
+    const harness = await createHarness();
+    harness.placeholderReceipt.namingIntent = namingIntent;
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const worktreePath = path.join(harness.workspaceRoot, "user-worktree");
+    fs.mkdirSync(worktreePath);
+    harness.generateBranchName.mockImplementation(() =>
+      Effect.succeed({ type: "fix" as const, branch: "safe-name" }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("user-meta"),
+        threadId,
+        branch,
+        worktreePath,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("user-start"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        provider: "codex",
+        model: "gpt-5.4",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.generateBranchName).not.toHaveBeenCalled();
+    expect(harness.renameBranch).not.toHaveBeenCalled();
+    const model = await Effect.runPromise(harness.engine.getReadModel());
+    expect(model.threads.find((thread) => thread.id === threadId)?.branch).toBe(branch);
   });
 
   it("finishes first-turn branch naming before session startup and delivery", async () => {

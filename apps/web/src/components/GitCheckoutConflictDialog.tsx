@@ -1,9 +1,7 @@
 import type { GitCheckoutConflict, ThreadId } from "@t3tools/contracts";
-import { buildPlaceholderBranchName } from "@t3tools/shared/branchNaming";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import { useSettings } from "~/hooks/useSettings";
 import { invalidateGitQueries } from "~/lib/gitReactQuery";
 import { readNativeApi } from "~/nativeApi";
 import { Button } from "./ui/button";
@@ -43,21 +41,6 @@ export function GitCheckoutConflictDialog({
   const queryClient = useQueryClient();
   const pendingRef = useRef(false);
   const mounted = useRef(false);
-  const branchNamePrefix = useSettings(
-    (settings) => settings.sourceControlWriting.branchNamePrefix,
-  );
-  // Preparation is idempotent per branch name, so the name must stay the same across
-  // retries yet differ between threads: suffix the thread's own id.
-  const [newBranch] = useState(
-    () =>
-      `${buildPlaceholderBranchName({
-        prefix: branchNamePrefix,
-        sourceText: conflict.branch.replace(/[\\/]+/g, " "),
-      })}-${threadId
-        .replace(/[^a-z0-9]/gi, "")
-        .slice(0, 4)
-        .toLowerCase()}`,
-  );
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,10 +64,10 @@ export function GitCheckoutConflictDialog({
     setError(null);
     try {
       // A fresh branch also works for remote refs and branches claimed by another checkout.
+      // The server names it under the project's Branch prefix, the same for every retry.
       const result = await api.git.prepareWorktree({
         cwd: conflict.cwd,
         branch: conflict.branch,
-        newBranch,
         threadId,
         projectCwd,
       });

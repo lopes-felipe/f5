@@ -101,13 +101,14 @@ interface BootstrapTurnStartBaseDependencies {
   /**
    * The branch a new worktree is created on: the requested one, or a placeholder
    * named from the first message under the project's Branch prefix. Defaults to
-   * an `f5/wip/<slug>` placeholder without checking for collisions.
+   * an `f5/wip/<slug>` placeholder. An automatic name takes the next free suffix
+   * when the worktree is created.
    */
   readonly resolveNewWorktreeBranch?: (input: {
     readonly projectCwd: string;
     readonly requested: string | undefined;
     readonly sourceText: string;
-  }) => Effect.Effect<string, GitCommandError>;
+  }) => Effect.Effect<{ readonly branch: string; readonly automatic: boolean }, GitCommandError>;
   /**
    * Reports how a failed bootstrap left the thread it was asked to create:
    * `deleted` after a confirmed rollback, `not-created` when creation never
@@ -558,7 +559,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
 
       if (shouldPrepareWorktree && bootstrap.prepareWorktree) {
         failureStage = "worktree-create";
-        const newBranch = input.resolveNewWorktreeBranch
+        const { branch: newBranch, automatic } = input.resolveNewWorktreeBranch
           ? yield* input.resolveNewWorktreeBranch({
               projectCwd: bootstrap.prepareWorktree.projectCwd,
               requested: bootstrap.prepareWorktree.branch,
@@ -615,6 +616,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             branch: bootstrap.prepareWorktree.baseBranch,
             baseRefName: baseSha,
             newBranch,
+            ...(automatic ? { resolveAvailableNewBranch: true } : {}),
             path: yield* input.git.allocateWorktreePath({
               cwd: bootstrap.prepareWorktree.projectCwd,
               branch: newBranch,

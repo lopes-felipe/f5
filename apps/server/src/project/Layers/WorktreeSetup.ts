@@ -6,7 +6,10 @@ import {
 import { WorkspaceTransition } from "../Services/WorkspaceTransition.ts";
 import { dispatchVerifiedWorkspace } from "../workspaceTransitionContext.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
-import { placeholderBranchFor, resolvePlaceholderBranch } from "../../git/placeholderBranch.ts";
+import {
+  placeholderBranchFor,
+  resolvePlaceholderBranchAcross,
+} from "../../git/placeholderBranch.ts";
 import { readBranchNamePrefix } from "../branchNamePrefix.ts";
 import { isPlaceholderBranch, canonicalWorktreePath } from "../../git/worktreePaths.ts";
 import {
@@ -595,7 +598,8 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         !plainGroup &&
         !layoutCreate &&
         !initial.createdWorktree &&
-        isPlaceholderBranch(request.branch) &&
+        // Only a branch F5 created as a placeholder is renamed.
+        (request.namingIntent ?? "temporary") === "temporary" &&
         queued &&
         (queued.command.message.text.trim() || queued.command.message.attachments.length > 0)
           ? yield* textGeneration
@@ -670,13 +674,30 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           const first = selectedRepositories[0];
           if (!first || !git.prepareWorktreeGroup)
             return yield* failFor("Select at least one repository to create a worktree.");
-          if (worktreePath === null)
+          if (worktreePath === null) {
+            // Every selected repository gets the same branch, so a placeholder must
+            // be free in all of them. The name is recorded with the path for retries.
+            if ((request.namingIntent ?? "temporary") === "temporary")
+              request = {
+                ...request,
+                branch: yield* resolvePlaceholderBranchAcross(
+                  git,
+                  selectedRepositories.map((repository) => repository.path),
+                  request.branch,
+                ),
+              };
             worktreePath = yield* git.allocateWorktreePath({
               cwd: first.path,
               branch: request.branch,
             });
+          }
           const destination = worktreePath;
-          yield* commit(threadId, (snapshot) => ({ ...snapshot, worktreePath: destination }), true);
+          const chosen = request;
+          yield* commit(
+            threadId,
+            (snapshot) => ({ ...snapshot, worktreePath: destination, request: chosen }),
+            true,
+          );
           update(threadId, (snapshot) => stageStatus(snapshot, "checkout", "running"));
           yield* git
             .prepareWorktreeGroup({
@@ -832,11 +853,16 @@ export const makeWorktreeSetup = Effect.gen(function* () {
                 );
                 creationIntent = "generated";
               }
-              // A retry whose worktree already exists keeps the name it created.
-              if (!generatedName && !initial.createdWorktree)
-                checkoutBranch = yield* resolvePlaceholderBranch(
+              // A placeholder must be free in the project and every selected member
+              // repository. A retry whose worktree already exists keeps the name it
+              // created, which was recorded with the path below.
+              if (!generatedName && creationIntent === "temporary" && !initial.createdWorktree)
+                checkoutBranch = yield* resolvePlaceholderBranchAcross(
                   git,
-                  request.projectCwd,
+                  [
+                    request.projectCwd,
+                    ...selectedRepositories.map((repository) => repository.path),
+                  ],
                   checkoutBranch,
                 );
               worktreePath ??= yield* git.allocateWorktreePath({
@@ -873,8 +899,15 @@ export const makeWorktreeSetup = Effect.gen(function* () {
             return yield* new WorktreeSetupError({
               message: "The worktree path was not allocated.",
             });
-          // This path must survive a crash immediately before or during worktree add.
-          yield* commit(threadId, (snapshot) => ({ ...snapshot, worktreePath }), true);
+          // This path, and the branch chosen for it, must survive a crash immediately
+          // before or during worktree add: a retry then reuses both.
+          request = { ...request, branch: checkoutBranch, namingIntent: creationIntent };
+          const chosen = request;
+          yield* commit(
+            threadId,
+            (snapshot) => ({ ...snapshot, worktreePath, request: chosen }),
+            true,
+          );
           const branchExists = yield* git.branchExists(request.projectCwd, checkoutBranch);
 
           update(threadId, (snapshot) => stageStatus(snapshot, "checkout", "running"));
@@ -1237,7 +1270,7 @@ export const makeWorktreeSetup = Effect.gen(function* () {
           !layoutCreate &&
           Option.isSome(late) &&
           late.value &&
-          isPlaceholderBranch(request.branch)
+          (request.namingIntent ?? "temporary") === "temporary"
         ) {
           yield* withWorktreeLifecycleLock(
             worktreePath,
@@ -1527,17 +1560,19 @@ export const makeWorktreeSetup = Effect.gen(function* () {
         };
       }
       const threadId = input.command.threadId;
+      const branchPrefix = yield* readBranchNamePrefix(settings.getSettings, registeredProject);
       const explicit =
         prepareWorktree.namingIntent === "explicit" ||
-        (prepareWorktree.branch !== undefined && !isPlaceholderBranch(prepareWorktree.branch));
+        (prepareWorktree.branch !== undefined &&
+          !isPlaceholderBranch(prepareWorktree.branch, branchPrefix));
       const branch = explicit
         ? (prepareWorktree.branch ?? "")
         : placeholderBranchFor({
             requested: prepareWorktree.branch,
-            prefix: yield* readBranchNamePrefix(settings.getSettings, registeredProject),
+            prefix: branchPrefix,
             sourceText: input.command.message.text,
-          });
-      if (explicit && isPlaceholderBranch(branch))
+          }).branch;
+      if (explicit && isPlaceholderBranch(branch, branchPrefix))
         return yield* new WorktreeSetupError({
           message: PLACEHOLDER_BRANCH_RESERVED_MESSAGE,
           code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE,

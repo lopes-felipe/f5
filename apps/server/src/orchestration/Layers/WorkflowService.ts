@@ -3578,7 +3578,17 @@ export const makeWorkflowService = Effect.gen(function* () {
             implementation.worktreePath != null &&
             implementation.worktreePath === thread.worktreePath &&
             implementation.branch != null &&
-            isPlaceholderBranch(implementation.branch) &&
+            isPlaceholderBranch(
+              implementation.branch,
+              Option.isSome(serverSettings)
+                ? yield* readBranchNamePrefix(
+                    serverSettings.value.getSettings,
+                    (yield* orchestrationEngine.getReadModel()).projects.find(
+                      (project) => project.id === thread.projectId && project.deletedAt === null,
+                    ) ?? null,
+                  )
+                : "",
+            ) &&
             thread.branch != null &&
             (yield* orchestrationEngine
               .readEvents(0, { threadId, eventTypes: ["thread.meta-updated"] })
@@ -5894,6 +5904,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             cwd: workspaceRoot,
             branch: input.baseBranch,
             newBranch,
+            resolveAvailableNewBranch: true,
             path: yield* gitCore.allocateWorktreePath({ cwd: workspaceRoot, branch: newBranch }),
           })
           .pipe(

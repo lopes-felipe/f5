@@ -316,7 +316,7 @@ describe("workspace transition execution", { timeout: 60_000 }, () => {
     "t3code-abcdef12",
     "t3code/12345678-1234-4234-8234-123456789abc",
     "f5/wip/foo",
-    "team/wip/foo-2",
+    "F5/wip/foo-2",
   ])("reserves placeholder branch %s for managed worktrees", async (branch) => {
     const f = await fixture();
     const request = await f.request("move_to_new_worktree", { branch });

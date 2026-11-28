@@ -1,3 +1,4 @@
+import { stableShortHash } from "@t3tools/shared/branchNaming";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AGENT_BRIDGE_WS_METHODS,
@@ -3484,7 +3485,7 @@ describe("WebSocket Server", () => {
       git("branch", "t3code");
       let nativeForks = 0;
       const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
-        list: () => unsupportedProviderCall(),
+        list: () => Effect.succeed([]),
         inspect: () => unsupportedProviderCall(),
         resolve: () => unsupportedProviderCall(),
         execute: () => unsupportedProviderCall(),
@@ -3567,7 +3568,9 @@ describe("WebSocket Server", () => {
         const fork = (snapshot.result as OrchestrationReadModel).threads.find(
           (thread) => thread.id === `fork-${operationId}`,
         );
-        expect(fork?.branch).toBe(sideChat ? "main" : "f5/wip/source-abcdef12");
+        expect(fork?.branch).toBe(
+          sideChat ? "main" : `f5/wip/source-${stableShortHash(operationId)}`,
+        );
         expect(fork?.sideChatOf).toBe(sideChat ? "fork-source" : undefined);
         expect(fork?.worktreePath).toEqual(sideChat ? null : expect.any(String));
         expect(

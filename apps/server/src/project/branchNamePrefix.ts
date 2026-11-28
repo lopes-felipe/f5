@@ -17,3 +17,13 @@ export const readBranchNamePrefix = <E>(
     const settings = project ? (yield* readProjectSettings(global, project)).settings : global;
     return settings.sourceControlWriting.branchNamePrefix;
   }).pipe(Effect.orElseSucceed(() => ""));
+
+/** A per-project prefix reader, for helpers that only receive a project. */
+export const makeBranchNamePrefixReader =
+  <E>(getSettings: Effect.Effect<ServerSettings, E>) =>
+  (project: {
+    id: ProjectId;
+    workspaceRoot: string;
+    defaultEnvMode?: ThreadEnvMode | null | undefined;
+  }) =>
+    readBranchNamePrefix(getSettings, project);

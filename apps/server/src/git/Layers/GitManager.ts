@@ -2,6 +2,7 @@ import { isPrHubRepositoryExcluded } from "../../prHub/repositoryPolicy.ts";
 import { GitHubRequestPolicy } from "../githubRequestPolicy.ts";
 import { lookupBranchPullRequest } from "../branchPullRequestLookup.ts";
 import { GitWorkspaceSwitch } from "../workspaceSwitch.ts";
+import { GitPlaceholderRename } from "../placeholderRename.ts";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { readProjectSettings, readProjectForCwd } from "../../project/projectSettings";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects";
@@ -1755,7 +1756,9 @@ export const makeGitManager = Effect.gen(function* () {
       const preferredBranch = buildFinalBranchName({
         prefix: settings.sourceControlWriting.branchNamePrefix,
         type: conventional.type,
-        slug: suggestion.branch ?? conventional.text,
+        // `sanitizeFeatureBranchName` files unprefixed names under `feature/`; that is
+        // not a type the model chose, so the slug's own words decide it instead.
+        slug: (suggestion.branch ?? conventional.text).replace(/^feature\//, ""),
       });
       const existingBranchNames = yield* gitCore.listLocalBranchNames(cwd);
       const resolvedBranch = resolveAutoFeatureBranchName(existingBranchNames, preferredBranch);
@@ -1794,7 +1797,7 @@ export const makeGitManager = Effect.gen(function* () {
         );
       }
 
-      let branchStep: { status: "created" | "skipped_not_requested"; name?: string };
+      let branchStep: { status: "created" | "renamed" | "skipped_not_requested"; name?: string };
       let workspaceSwitched = false;
       let commitMessageForStep = input.commitMessage;
       let preResolvedCommitSuggestion: CommitAndBranchSuggestion | undefined = undefined;
@@ -1838,28 +1841,51 @@ export const makeGitManager = Effect.gen(function* () {
         };
 
       // A placeholder branch gets its final name before it is first pushed, so
-      // `wip/` branches never reach the remote.
+      // `wip/` branches never reach the remote. Only the worktree's own F5
+      // placeholder qualifies: its receipt proves F5 created it.
+      const branchPrefix = settings.sourceControlWriting.branchNamePrefix;
       if (
         wantsPush &&
+        branchStep.status === "skipped_not_requested" &&
         currentBranch &&
-        isPlaceholderBranch(currentBranch) &&
-        (yield* gitCore.statusDetails(input.cwd, { refreshUpstream: false })).upstreamRef === null
+        initialStatus.upstreamRef === null &&
+        isPlaceholderBranch(currentBranch, branchPrefix)
       ) {
-        const conventional = splitConventionalSubject(
-          commit.status === "created" ? commit.subject : "",
-        );
-        const placeholderSlug = currentBranch.slice(currentBranch.lastIndexOf("/") + 1);
-        const renamed = yield* gitCore.renameBranch({
-          cwd: input.cwd,
-          oldBranch: currentBranch,
-          newBranch: buildFinalBranchName({
-            prefix: settings.sourceControlWriting.branchNamePrefix,
+        const placeholder = currentBranch;
+        const receipt = yield* gitCore
+          .readWorktreePreparation(input.cwd)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (receipt?.namingIntent === "temporary" && receipt.branch === placeholder) {
+          // A new commit's subject is published anyway; with nothing new, the
+          // placeholder's message-derived slug is not, so it falls back to `update`.
+          const conventional = splitConventionalSubject(
+            commit.status === "created" ? commit.subject : "",
+          );
+          const newBranch = buildFinalBranchName({
+            prefix: branchPrefix,
             type: conventional.type,
-            slug: conventional.text.trim() || placeholderSlug,
-          }),
-        });
-        currentBranch = renamed.branch;
-        branchStep = { status: "created" as const, name: renamed.branch };
+            slug: conventional.text.trim() || "update",
+          });
+          const renamePlaceholder = yield* GitPlaceholderRename;
+          const renamed = renamePlaceholder
+            ? yield* renamePlaceholder({ cwd: input.cwd, oldBranch: placeholder, newBranch }).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new GitManagerError({
+                      operation: "runStackedAction",
+                      detail: error.message,
+                    }),
+                ),
+              )
+            : yield* gitCore.renameBranch({ cwd: input.cwd, oldBranch: placeholder, newBranch });
+          // Null: another rename got there first; push whatever is checked out now.
+          currentBranch = renamed
+            ? renamed.branch
+            : ((yield* gitCore.statusDetails(input.cwd, { refreshUpstream: false })).branch ??
+              placeholder);
+          if (currentBranch !== placeholder)
+            branchStep = { status: "renamed" as const, name: currentBranch };
+        }
       }
 
       const push = wantsPush

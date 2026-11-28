@@ -7,7 +7,7 @@ import {
   PLACEHOLDER_BRANCH_RESERVED_MESSAGE,
 } from "@t3tools/shared/branchNaming";
 import { resolvePlaceholderBranch } from "../../git/placeholderBranch.ts";
-import { readBranchNamePrefix } from "../branchNamePrefix.ts";
+import { makeBranchNamePrefixReader, readBranchNamePrefix } from "../branchNamePrefix.ts";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -983,7 +983,13 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
         completed.result.branch
       )
         yield* syncObservedCheckout(
-          { engine, git },
+          {
+            engine,
+            git,
+            ...(Option.isSome(settings)
+              ? { readBranchNamePrefix: makeBranchNamePrefixReader(settings.value.getSettings) }
+              : {}),
+          },
           completed.result.worktreePath,
           completed.result.branch,
         ).pipe(Effect.ignore);
@@ -1213,7 +1219,10 @@ export const makeWorkspaceTransition = Effect.gen(function* () {
           );
         let branch = input.branch;
         if (branch) {
-          if (isPlaceholderBranch(branch))
+          const branchPrefix = Option.isSome(settings)
+            ? yield* readBranchNamePrefix(settings.value.getSettings, project)
+            : "";
+          if (isPlaceholderBranch(branch, branchPrefix))
             return yield* Effect.fail(new Error(PLACEHOLDER_BRANCH_RESERVED_MESSAGE));
           if (!(yield* git.isValidBranchName(branch)))
             return yield* Effect.fail(new Error("Invalid branch name."));

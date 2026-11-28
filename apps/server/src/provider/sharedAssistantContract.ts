@@ -442,7 +442,8 @@ function buildUntrustedResumedSection(input: {
 
 /** How agents name branches they create, matching the names F5 gives its own. */
 export function buildBranchNamingLine(prefix: string | undefined): string {
-  return `- Branch naming: name new branches ${normalizeBranchPrefix(prefix)}/<type>/<kebab-slug> (types: ${BRANCH_TYPES.join(", ")}); never use t3code/ or wip/.`;
+  const resolved = normalizeBranchPrefix(prefix);
+  return `- Branch naming: name new branches ${resolved}/<type>/<kebab-slug> (types: ${BRANCH_TYPES.join(", ")}); never use t3code/ or wip/. A ${resolved}/wip/ branch is a placeholder F5 renames: rename it to that form before pushing it yourself.`;
 }
 
 function buildRuntimeContextSection(input: SharedInstructionInput): string | undefined {

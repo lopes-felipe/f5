@@ -570,6 +570,7 @@ describe("dispatchBootstrapTurnStart", () => {
       branch: "main",
       baseRefName: "0123456789abcdef0123456789abcdef01234567",
       newBranch: "f5/wip/hello",
+      resolveAvailableNewBranch: true,
       path: "/repo/project/worktrees/f5/wip/hello",
       preparation: { owner: `thread:${THREAD_ID}`, runSetupScript: false, setupIdentity: null },
     });
@@ -586,7 +587,7 @@ describe("dispatchBootstrapTurnStart", () => {
     );
     const resolveNewWorktreeBranch = vi.fn(
       (input: { projectCwd: string; requested: string | undefined; sourceText: string }) =>
-        Effect.succeed(`team/wip/${input.sourceText}-1`),
+        Effect.succeed({ branch: `team/wip/${input.sourceText}-1`, automatic: true }),
     );
 
     await Effect.runPromise(
@@ -605,7 +606,10 @@ describe("dispatchBootstrapTurnStart", () => {
       }),
     );
 
-    expect(createWorktree).toHaveBeenCalledWith(expect.objectContaining({ newBranch: expected }));
+    // Automatic names take the next free suffix under the repository lock.
+    expect(createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ newBranch: expected, resolveAvailableNewBranch: true }),
+    );
     if (injected)
       expect(resolveNewWorktreeBranch).toHaveBeenCalledWith({
         projectCwd: "/repo/project",

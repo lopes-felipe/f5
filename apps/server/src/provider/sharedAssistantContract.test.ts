@@ -438,7 +438,7 @@ describe("sharedAssistantContract", () => {
     expect(text).not.toContain("Recorded turns in this thread");
     expect(text).toContain('Working directory: "/tmp/f3-code"');
     expect(text).toContain(
-      "- Branch naming: name new branches f5/<type>/<kebab-slug> (types: feat, fix, refactor, chore, docs, perf, test); never use t3code/ or wip/.",
+      "- Branch naming: name new branches f5/<type>/<kebab-slug> (types: feat, fix, refactor, chore, docs, perf, test); never use t3code/ or wip/. A f5/wip/ branch is a placeholder F5 renames: rename it to that form before pushing it yourself.",
     );
     expect(text).toContain("Runtime mode: full-access");
     expect(text).toContain("Active model: claude-sonnet-4-6");

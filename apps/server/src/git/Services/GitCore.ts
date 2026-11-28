@@ -424,6 +424,12 @@ export interface GitCoreShape extends MoveSnapshotOperations {
       };
       /** Live checkout and submodule progress, for the worktree setup card. */
       progress?: GitWorktreeProgress;
+      /**
+       * Create `newBranch` under the next free `-1`, `-2`… name, chosen under the
+       * repository lock so concurrent requests for the same placeholder cannot
+       * collide. The result reports the name used.
+       */
+      resolveAvailableNewBranch?: boolean;
     },
   ) => Effect.Effect<GitCreateWorktreeResult, GitCommandError>;
 

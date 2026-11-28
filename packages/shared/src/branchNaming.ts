@@ -51,7 +51,7 @@ const STOPWORDS = new Set([
 
 const LEGACY_PLACEHOLDER_PATTERN =
   /^t3code(?:-[0-9a-f]{8}|\/(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}))$/;
-const PLACEHOLDER_PATTERN = /^[a-z0-9_-]+(?:\/[a-z0-9_-]+)*\/wip\/[a-z0-9][a-z0-9-]*$/;
+const PLACEHOLDER_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 const BRANCH_TYPE_SET: ReadonlySet<string> = new Set(BRANCH_TYPES);
 
@@ -80,7 +80,8 @@ export function normalizeBranchPrefix(raw: string | null | undefined): string {
     .replace(/-+/g, "-")
     .split("/")
     .map((segment) => segment.replace(/^[-_]+|[-_]+$/g, ""))
-    .filter(Boolean)
+    // `wip` marks placeholders, so it cannot be part of the prefix.
+    .filter((segment) => segment.length > 0 && segment !== PLACEHOLDER_BRANCH_SEGMENT)
     .join("/");
   return prefix || DEFAULT_BRANCH_PREFIX;
 }
@@ -94,7 +95,7 @@ function capSlug(words: ReadonlyArray<string>): string {
 function slugWords(text: string): string[] {
   return text
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/['’]/g, "")
     .split(/[^a-z0-9]+/)
@@ -179,12 +180,27 @@ export function buildFinalBranchName(input: {
   return `${prefix}/${type}/${slug}`;
 }
 
-/** True for F5 placeholder branches, current (`<prefix>/wip/<slug>`) and legacy (`t3code/<hex>`). */
-export function isPlaceholderBranch(branch: string): boolean {
-  const trimmed = branch.trim();
-  return (
-    LEGACY_PLACEHOLDER_PATTERN.test(trimmed.toLowerCase()) || PLACEHOLDER_PATTERN.test(trimmed)
-  );
+/**
+ * True for F5 placeholder branches: `<prefix>/wip/<slug>` under the effective Branch
+ * prefix (empty means `f5`), and the `t3code/<hex>` names older builds created.
+ * Only the configured prefix counts, so `alice/wip/spike` or `f5/pr-1/wip/x` is
+ * never mistaken for one. Matching ignores case, as refs do on macOS and Windows.
+ */
+export function isPlaceholderBranch(branch: string, prefix?: string | null): boolean {
+  const name = branch.trim().toLowerCase();
+  if (LEGACY_PLACEHOLDER_PATTERN.test(name)) return true;
+  const lead = `${normalizeBranchPrefix(prefix)}/${PLACEHOLDER_BRANCH_SEGMENT}/`;
+  return name.startsWith(lead) && PLACEHOLDER_SLUG_PATTERN.test(name.slice(lead.length));
+}
+
+/** 8 hex characters that stay the same for the same input (FNV-1a). */
+export function stableShortHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 /** True only for the `t3code/<hex>` placeholders older builds created. */
@@ -199,6 +215,22 @@ export function flattenLegacyPlaceholderBranchName(branch: string): string {
     .toLowerCase()
     .slice(LEGACY_BRANCH_PREFIX.length + 1, LEGACY_BRANCH_PREFIX.length + 9);
   return `${LEGACY_BRANCH_PREFIX}-${token}`;
+}
+
+/**
+ * The placeholder for a new worktree opened because `branch` is checked out
+ * elsewhere. Preparation is idempotent per branch name, so the name stays the same
+ * for the same thread and differs between threads.
+ */
+export function buildCheckoutConflictBranchName(input: {
+  readonly prefix?: string | null | undefined;
+  readonly branch: string;
+  readonly threadId: string;
+}): string {
+  return `${buildPlaceholderBranchName({
+    prefix: input.prefix,
+    sourceText: input.branch.replace(/[\\/]+/g, " "),
+  })}-${stableShortHash(input.threadId)}`;
 }
 
 /** `<prefix>/pr-<number>/<head>`: the local branch for a cross-repository pull request. */

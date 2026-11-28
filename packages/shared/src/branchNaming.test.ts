@@ -10,6 +10,7 @@ import {
   isPlaceholderBranch,
   normalizeBranchPrefix,
   slugifyBranchText,
+  stableShortHash,
 } from "./branchNaming";
 
 describe("normalizeBranchPrefix", () => {
@@ -22,6 +23,9 @@ describe("normalizeBranchPrefix", () => {
     ["team/me", "team/me"],
     ["/team//me/", "team/me"],
     ["--odd__", "odd"],
+    ["wip", "f5"],
+    ["team/wip", "team"],
+    ["WIP/me", "me"],
   ])("normalizes %j to %s", (raw, expected) => {
     expect(normalizeBranchPrefix(raw)).toBe(expected);
   });
@@ -149,35 +153,52 @@ describe("inferBranchType", () => {
 
 describe("isPlaceholderBranch", () => {
   it.each([
-    "t3code/abcd1234",
-    "t3code-abcd1234",
-    "t3code/f4ae4e0e-f971-4d48-b4f2-9cf0aa54ab12",
-    "f5/wip/x",
-    "team/me/wip/x-2",
-    "f5/wip/mcp-import-detection-panel",
-  ])("accepts %s", (branch) => {
-    expect(isPlaceholderBranch(branch)).toBe(true);
+    ["t3code/abcd1234", undefined],
+    ["t3code-abcd1234", undefined],
+    ["t3code/f4ae4e0e-f971-4d48-b4f2-9cf0aa54ab12", undefined],
+    ["T3CODE/ABCD1234", "team"],
+    ["f5/wip/x", undefined],
+    ["f5/wip/x", ""],
+    ["F5/WIP/Foo", undefined],
+    ["team/me/wip/x-2", "team/me"],
+    ["team/me/wip/x-2", "Team/Me/"],
+    ["f5/wip/mcp-import-detection-panel", null],
+  ])("accepts %s with prefix %j", (branch, prefix) => {
+    expect(isPlaceholderBranch(branch, prefix)).toBe(true);
   });
 
   it.each([
-    "main",
-    "wip/x",
-    "f5/fix/x",
-    "feature/wip-x",
-    "f5/wip",
-    "f5/wip/x/y",
-    "t3code",
-    "t3code-feature",
-    "t3code-abcd1234-extra",
-    "t3code/feature/demo",
-  ])("rejects %s", (branch) => {
-    expect(isPlaceholderBranch(branch)).toBe(false);
+    ["main", undefined],
+    ["wip/x", undefined],
+    ["f5/fix/x", undefined],
+    ["feature/wip-x", undefined],
+    ["f5/wip", undefined],
+    ["f5/wip/x/y", undefined],
+    ["alice/wip/spike", undefined],
+    ["team/wip/experiment", undefined],
+    ["f5/pr-12/wip/foo", undefined],
+    ["f5/wip/x", "team"],
+    ["team/me/wip/x-2", undefined],
+    ["t3code", undefined],
+    ["t3code-feature", undefined],
+    ["t3code-abcd1234-extra", undefined],
+    ["t3code/feature/demo", undefined],
+  ])("rejects %s with prefix %j", (branch, prefix) => {
+    expect(isPlaceholderBranch(branch, prefix)).toBe(false);
   });
 
   it("flattens legacy names into another legacy placeholder", () => {
     expect(flattenLegacyPlaceholderBranchName("t3code/abcd1234")).toBe("t3code-abcd1234");
     expect(isLegacyPlaceholderBranch("t3code-abcd1234")).toBe(true);
     expect(isLegacyPlaceholderBranch("f5/wip/x")).toBe(false);
+  });
+});
+
+describe("stableShortHash", () => {
+  it("is stable, 8 hex characters, and differs between inputs", () => {
+    expect(stableShortHash("fork-abc")).toMatch(/^[0-9a-f]{8}$/);
+    expect(stableShortHash("fork-abc")).toBe(stableShortHash("fork-abc"));
+    expect(stableShortHash("fork-abc")).not.toBe(stableShortHash("fork-abd"));
   });
 });
 

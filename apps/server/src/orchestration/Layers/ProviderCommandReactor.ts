@@ -2683,9 +2683,6 @@ const make = Effect.gen(function* () {
     if (!input.branch || !input.worktreePath) {
       return;
     }
-    if (!isPlaceholderBranch(input.branch)) {
-      return;
-    }
 
     const thread = yield* resolveThread(input.threadId);
     if (!thread) {
@@ -2704,6 +2701,11 @@ const make = Effect.gen(function* () {
     const attachments = input.attachments ?? [];
     const settings = yield* settingsForThread(thread);
     const writingPreferences = settings.sourceControlWriting;
+    if (!isPlaceholderBranch(oldBranch, writingPreferences.branchNamePrefix)) return;
+    // Only a branch F5 created as this worktree's placeholder is renamed, never one
+    // the user picked that merely looks like one.
+    const receipt = yield* git.readWorktreePreparation(cwd).pipe(Effect.orElseSucceed(() => null));
+    if (receipt?.namingIntent !== "temporary" || receipt.branch !== oldBranch) return;
     yield* textGeneration
       .generateBranchName({
         cwd,

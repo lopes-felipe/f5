@@ -2469,6 +2469,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
             "--show-current",
           ])).stdout.trim(),
         ).toBe("f5/pr-91/main");
+
+        // A push from the prefixed alias lands on the PR head, not a new remote branch.
+        const worktreePath = result.worktreePath as string;
+        fs.writeFileSync(path.join(worktreePath, "fork-fix.txt"), "fork fix\n");
+        const pushed = yield* runStackedAction(manager, {
+          cwd: worktreePath,
+          action: "commit_push",
+        });
+        expect(pushed.push.status).toBe("pushed");
+        const head = (yield* runGit(worktreePath, ["rev-parse", "HEAD"])).stdout.trim();
+        const forkHeads = (yield* runGit(worktreePath, ["ls-remote", "--heads", forkDir])).stdout;
+        expect(forkHeads).toContain(`${head}\trefs/heads/main`);
+        expect(forkHeads).not.toContain("refs/heads/f5/");
       }),
   );
 
