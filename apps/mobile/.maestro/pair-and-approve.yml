@@ -1,7 +1,6 @@
 appId: io.github.lopesfelipe.f5.mobile
 ---
-- launchApp:
-    clearState: true
+- launchApp
 - tapOn: "Pair a phone"
 - tapOn:
     id: "phone-pair-origin"

@@ -49,12 +49,16 @@ jobs:
           for component in "$app"/Frameworks/*.framework "$app"/Frameworks/*.dylib; do
             if [ -e "$component" ]; then codesign --force --sign - "$component"; fi
           done
-          codesign --force --sign - --entitlements "$entitlements" "$app"
+          codesign --force --sign - --entitlements "$entitlements" --generate-entitlement-der "$app"
           codesign --verify --strict "$app"
           udid="$(xcrun simctl list devices available -j | jq -er '[.devices | to_entries[] | select(.key | contains(".iOS-")) | .value[] | select(.name | startswith("iPhone"))][0].udid')"
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
           xcrun simctl install "$udid" "$app"
+          installed_app="$(xcrun simctl get_app_container "$udid" "$bundle_id" app)"
+          installed_id="$(codesign -d --entitlements :- "$installed_app" | plutil -extract application-identifier raw -o - -)"
+          test "$installed_id" = "F5CI000000.$bundle_id"
+          xcrun simctl launch "$udid" "$bundle_id"
           echo "F5_SIM_UDID=$udid" >> "$GITHUB_ENV"
       - name: Install Maestro
         run: |
