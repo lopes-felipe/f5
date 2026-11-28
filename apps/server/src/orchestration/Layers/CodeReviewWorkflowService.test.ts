@@ -4028,8 +4028,17 @@ const REVIEWED_PULL_REQUEST_LINK = {
   url: PULL_REQUEST.url,
 };
 
-/** The reviewed-PR links the service attached, in dispatch order. */
-function reviewedPullRequestLinks(dispatched: ReadonlyArray<OrchestrationCommand>) {
+/** The PR links stage threads were created with, in dispatch order. */
+function createdPullRequestLinks(dispatched: ReadonlyArray<OrchestrationCommand>) {
+  return dispatched.flatMap((command) =>
+    command.type === "thread.create"
+      ? [{ threadId: command.threadId, link: command.pullRequest ?? null }]
+      : [],
+  );
+}
+
+/** The PR links added to existing threads, in dispatch order. */
+function backfilledPullRequestLinks(dispatched: ReadonlyArray<OrchestrationCommand>) {
   return dispatched.flatMap((command) =>
     command.type === "thread.meta.update" && command.pullRequest
       ? [{ threadId: command.threadId, link: command.pullRequest }]
@@ -4290,14 +4299,15 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     );
 
     expect(harness.getSnapshot().codeReviewWorkflows[0]?.pullRequest).toEqual(PULL_REQUEST);
-    expect(reviewedPullRequestLinks(harness.dispatched)).toEqual(
-      harness.dispatched
-        .filter((command) => command.type === "thread.create")
-        .map((command) => ({ threadId: command.threadId, link: REVIEWED_PULL_REQUEST_LINK })),
-    );
+    const links = createdPullRequestLinks(harness.dispatched);
+    expect(links).toHaveLength(2);
+    expect(links.map((entry) => entry.link)).toEqual([
+      REVIEWED_PULL_REQUEST_LINK,
+      REVIEWED_PULL_REQUEST_LINK,
+    ]);
   });
 
-  it("links the reviewed PR to every reviewer thread", async () => {
+  it("creates every reviewer thread with the reviewed PR linked, in one event", async () => {
     const prHub = makeFakePrHub();
     harness = await createHarness(makeReadModel({}), { prHubFederation: prHub.federation });
 
@@ -4310,13 +4320,13 @@ describe("CodeReviewWorkflowService pull request posting", () => {
       }),
     );
 
-    const reviewerThreadIds = harness.dispatched
-      .filter((command) => command.type === "thread.create")
-      .map((command) => command.threadId);
-    expect(reviewerThreadIds).toHaveLength(2);
-    expect(reviewedPullRequestLinks(harness.dispatched)).toEqual(
-      reviewerThreadIds.map((threadId) => ({ threadId, link: REVIEWED_PULL_REQUEST_LINK })),
-    );
+    const links = createdPullRequestLinks(harness.dispatched);
+    expect(links).toHaveLength(2);
+    expect(links.map((entry) => entry.link)).toEqual([
+      REVIEWED_PULL_REQUEST_LINK,
+      REVIEWED_PULL_REQUEST_LINK,
+    ]);
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([]);
   });
 
   it("links no PR when the review names none", async () => {
@@ -4332,35 +4342,11 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     );
 
     expect(harness.getSnapshot().codeReviewWorkflows[0]?.pullRequest).toBeNull();
-    expect(reviewedPullRequestLinks(harness.dispatched)).toEqual([]);
-  });
-
-  it("still runs the review when linking the PR fails", async () => {
-    const prHub = makeFakePrHub();
-    harness = await createHarness(makeReadModel({}), {
-      prHubFederation: prHub.federation,
-      failDispatch: (command) =>
-        command.type === "thread.meta.update" && command.pullRequest
-          ? new Error("link failed")
-          : undefined,
-    });
-
-    await Effect.runPromise(
-      harness.service.createWorkflow({
-        projectId: ProjectId.makeUnsafe("project-1"),
-        title: "Code Review",
-        reviewPrompt: "Review https://github.com/acme/app/pull/42",
-        ...REVIEW_SLOTS,
-      }),
-    );
-
-    expect(harness.getSnapshot().codeReviewWorkflows[0]?.deletedAt).toBeNull();
-    expect(
-      harness.dispatched.some((command) => command.type === "project.code-review-workflow.delete"),
-    ).toBe(false);
-    expect(
-      harness.dispatched.filter((command) => command.type === "thread.turn.start"),
-    ).toHaveLength(2);
+    expect(createdPullRequestLinks(harness.dispatched).map((entry) => entry.link)).toEqual([
+      null,
+      null,
+    ]);
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([]);
   });
 
   it("rejects auto-post when no GitHub pull request resolves", async () => {
@@ -4412,10 +4398,95 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     expect(mergeTurn?.message.text).toContain(
       `linking the pull request as [acme/app#42](${PULL_REQUEST.url})`,
     );
-    const mergeCreate = harness.dispatched.find((command) => command.type === "thread.create");
-    expect(mergeCreate).toBeDefined();
-    expect(reviewedPullRequestLinks(harness.dispatched)).toEqual([
-      { threadId: mergeCreate!.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+    // The merge thread is created linked; the older reviewer threads are linked on start.
+    expect(createdPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: expect.any(String), link: REVIEWED_PULL_REQUEST_LINK },
+    ]);
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: workflow.reviewerA.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+      { threadId: workflow.reviewerB.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+    ]);
+  });
+
+  it("links the reviewed PR to existing stage threads that lack it, once", async () => {
+    const workflow = makeCompletedWorkflow({ autoPost: false });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({ threadId: workflow.reviewerA.threadId, suffix: "review-a" }),
+          {
+            ...makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "review-b" }),
+            pullRequests: [REVIEWED_PULL_REQUEST_LINK],
+          },
+          mergeThread(),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: workflow.reviewerA.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+      { threadId: MERGE_THREAD_ID, link: REVIEWED_PULL_REQUEST_LINK },
+    ]);
+  });
+
+  it("starts normally when linking existing threads fails", async () => {
+    const workflow = makeCompletedWorkflow({ autoPost: false });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({ threadId: workflow.reviewerA.threadId, suffix: "review-a" }),
+          makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "review-b" }),
+          mergeThread(),
+        ],
+      }),
+      {
+        failDispatch: (command) =>
+          command.type === "thread.meta.update" && command.pullRequest
+            ? new Error("link failed")
+            : undefined,
+      },
+    );
+
+    await harness.start();
+
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([]);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation.status).toBe("completed");
+  });
+
+  it("links nothing when the stored PR key does not parse", async () => {
+    const workflow = makeCompletedWorkflow({
+      autoPost: false,
+      pullRequest: { url: PULL_REQUEST.url, key: "not-a-pull-request-key" },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({ threadId: workflow.reviewerA.threadId, suffix: "review-a" }),
+          makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "review-b" }),
+          mergeThread(),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([]);
+  });
+
+  it("creates missing reviewer threads on start with the reviewed PR linked", async () => {
+    const workflow = makeWorkflow({ pullRequest: PULL_REQUEST });
+    harness = await createHarness(makeReadModel({ workflow }));
+
+    await harness.start();
+
+    expect(createdPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: workflow.reviewerA.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+      { threadId: workflow.reviewerB.threadId, link: REVIEWED_PULL_REQUEST_LINK },
     ]);
   });
 

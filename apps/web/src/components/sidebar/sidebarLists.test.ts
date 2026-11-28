@@ -9,7 +9,6 @@ import {
   orderThreadsByPipeline,
   prStatusIndicator,
   type ThreadPr,
-  withoutBranchPullRequest,
   workflowPrLabel,
 } from "./sidebarLists";
 
@@ -80,63 +79,6 @@ describe("prStatusIndicator", () => {
     expect(indicator).toMatchObject({ state: "open", label: "PR open", number: 11 });
     expect(indicator?.items.map((item) => item.number)).toEqual([11, 10]);
     expect(indicator?.tooltip).toBe("#11 open · Linked fix\n#10 merged · Sidebar redesign");
-  });
-});
-
-describe("withoutBranchPullRequest", () => {
-  const branchPr = {
-    number: 1024,
-    title: "Fit workflow plans",
-    url: "https://github.com/acme/repo/pull/1024",
-    baseBranch: "main",
-    headBranch: "f5/plan-merge-fit-condense",
-    state: "merged",
-  } as ThreadPr;
-  const link = {
-    provider: "github" as const,
-    host: "github.com",
-    repository: "acme/repo",
-    number: 1031,
-    title: "Pull request #1031",
-    url: "https://github.com/acme/repo/pull/1031",
-  };
-  const indicators = (input: { branch: boolean; linked: boolean; prPending?: boolean }) => ({
-    threadStatus: null,
-    isUnread: false,
-    prPending: input.prPending ?? false,
-    prStatus: prStatusIndicator(
-      resolveThreadPullRequests({
-        branchPr: input.branch ? branchPr : null,
-        links: input.linked ? [link] : [],
-        linkState: () => ({ state: "open", title: "Name F5 branches" }),
-      }),
-    ),
-  });
-
-  it("keeps only linked PRs", () => {
-    const result = withoutBranchPullRequest(indicators({ branch: true, linked: true }));
-    expect(result.prStatus).toMatchObject({ state: "open", number: 1031 });
-    expect(result.prStatus?.items.map((item) => item.number)).toEqual([1031]);
-  });
-
-  it("drops a branch-only PR and stops waiting on git status", () => {
-    const result = withoutBranchPullRequest(
-      indicators({ branch: true, linked: false, prPending: true }),
-    );
-    expect(result.prStatus).toBeNull();
-    expect(result.prPending).toBe(false);
-  });
-
-  it("returns the same indicators when there is no branch PR", () => {
-    const input = indicators({ branch: false, linked: true });
-    expect(withoutBranchPullRequest(input)).toBe(input);
-  });
-
-  it("returns a stable indicator for the same source, so memoized rows don't re-render", () => {
-    const input = indicators({ branch: true, linked: true });
-    expect(withoutBranchPullRequest(input).prStatus).toBe(
-      withoutBranchPullRequest({ ...input }).prStatus,
-    );
   });
 });
 

@@ -24,6 +24,7 @@ import {
   isGitHubCodeReviewPullRequest,
 } from "@t3tools/shared/codeReviewPullRequest";
 import {
+  hasThreadPullRequestLink,
   parseSourceControlPullRequestKey,
   parseSourceControlPullRequestUrl,
   toThreadPullRequestLink,
@@ -363,28 +364,50 @@ function dispatchWorkflowDeleteCompensation(input: {
 }
 
 /**
- * Links the reviewed PR to a review thread. Review threads run in the shared project folder,
- * so the branch they record is whatever that folder has checked out, not the PR under review;
- * the link is what lets the sidebar and search show the right PR. Best effort: a link that
- * cannot be written never fails the review.
+ * The reviewed PR as a thread link. Review threads run in the shared project folder, so the
+ * branch they record is whatever that folder has checked out, not the PR under review; the
+ * link is what lets the sidebar and search show the right PR.
  */
-function linkReviewedPullRequest(input: {
+function reviewedPullRequestLink(workflow: CodeReviewWorkflow) {
+  const pullRequest = workflow.pullRequest;
+  const ref = pullRequest ? parseSourceControlPullRequestKey(pullRequest.key) : null;
+  return pullRequest && ref ? toThreadPullRequestLink(ref, { url: pullRequest.url }) : null;
+}
+
+/**
+ * Links the reviewed PR to the workflow's existing stage threads that lack it: reviews from
+ * before threads were linked at creation. Best effort; it never fails reconciliation.
+ */
+function linkReviewedPullRequestToExistingThreads(input: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: CodeReviewWorkflow;
-  threadId: ThreadId;
+  snapshot: OrchestrationReadModel;
 }) {
-  const pullRequest = input.workflow.pullRequest;
-  const ref = pullRequest ? parseSourceControlPullRequestKey(pullRequest.key) : null;
-  const link = pullRequest && ref ? toThreadPullRequestLink(ref, { url: pullRequest.url }) : null;
+  const link = reviewedPullRequestLink(input.workflow);
   if (!link) return Effect.void;
-  return input.orchestrationEngine
-    .dispatch({
-      type: "thread.meta.update",
-      commandId: CommandId.makeUnsafe(timeOrderedUuid()),
-      threadId: input.threadId,
-      pullRequest: link,
-    })
-    .pipe(Effect.asVoid, Effect.ignoreCause({ log: true }));
+  const stageThreadIds = new Set<ThreadId | null>([
+    ...codeReviewReviewers(input.workflow).map(({ reviewer }) => reviewer.threadId),
+    input.workflow.consolidation.threadId,
+  ]);
+  const unlinked = input.snapshot.threads.filter(
+    (thread) =>
+      stageThreadIds.has(thread.id) &&
+      thread.deletedAt === null &&
+      !hasThreadPullRequestLink(thread.pullRequests, link),
+  );
+  return Effect.forEach(
+    unlinked,
+    (thread) =>
+      input.orchestrationEngine
+        .dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe(timeOrderedUuid()),
+          threadId: thread.id,
+          pullRequest: link,
+        })
+        .pipe(Effect.ignoreCause({ log: true })),
+    { discard: true },
+  );
 }
 
 function createReviewerThread(input: {
@@ -402,8 +425,9 @@ function createReviewerThread(input: {
     title: input.title,
     model: input.reviewer.slot.model,
     branch: input.workflow.branch,
+    pullRequest: reviewedPullRequestLink(input.workflow),
     createdAt: input.createdAt,
-  }).pipe(Effect.tap(() => linkReviewedPullRequest(input)));
+  });
 }
 
 function startReviewerTurn(input: {
@@ -477,8 +501,9 @@ function createConsolidationThread(input: {
     title: "Review Merge",
     model: input.workflow.consolidation.slot.model,
     branch: input.workflow.branch,
+    pullRequest: reviewedPullRequestLink(input.workflow),
     createdAt: input.createdAt,
-  }).pipe(Effect.tap(() => linkReviewedPullRequest(input)));
+  });
 }
 
 /**
@@ -1307,6 +1332,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         return;
       }
       if (!isArchivedWorkflow(workflow)) yield* ensureReviewerThreads(workflow, snapshot);
+      yield* linkReviewedPullRequestToExistingThreads({ orchestrationEngine, workflow, snapshot });
       const updatedAt = new Date().toISOString();
       let reconciledWorkflow = workflow;
 

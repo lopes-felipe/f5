@@ -44,10 +44,13 @@ export function linkedRepositoryCwd(
 
 const targetKey = (cwd: string | null, url: string) => `${cwd ?? ""}\0${url}`;
 
-/** Resolved states of linked PRs; a target that has not resolved yet reads as undefined. */
+/**
+ * Resolved states of linked PRs; a target that has not resolved yet reads as undefined.
+ * `isPending` tells a lookup that is still loading from one that failed or is disabled.
+ */
 export function useLinkedPullRequestStates(
   targets: ReadonlyArray<LinkedPullRequestTarget>,
-): LinkedPullRequestStateLookup {
+): LinkedPullRequestStateLookup & { readonly isPending: (cwd: string | null, url: string) => boolean } {
   const unique = useMemo(() => {
     const byKey = new Map<string, LinkedPullRequestTarget>();
     for (const target of targets) {
@@ -72,11 +75,23 @@ export function useLinkedPullRequestStates(
         : [];
     }),
   );
+  // A disabled query also reads as pending in React Query, so only enabled lookups count.
+  const pendingSignature = JSON.stringify(
+    unique.flatMap((target, index) =>
+      target.enabled && target.cwd !== null && queries[index]?.status === "pending"
+        ? [targetKey(target.cwd, target.url)]
+        : [],
+    ),
+  );
   return useMemo(() => {
     const entries = JSON.parse(signature) as Array<
       readonly [string, LinkedPullRequestState["state"], string]
     >;
     const states = new Map(entries.map(([key, state, title]) => [key, { state, title }] as const));
-    return (cwd, url) => states.get(targetKey(cwd, url));
-  }, [signature]);
+    const pending = new Set(JSON.parse(pendingSignature) as string[]);
+    return Object.assign(
+      (cwd: string | null, url: string) => states.get(targetKey(cwd, url)),
+      { isPending: (cwd: string | null, url: string) => pending.has(targetKey(cwd, url)) },
+    );
+  }, [pendingSignature, signature]);
 }

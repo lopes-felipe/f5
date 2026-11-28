@@ -89,6 +89,7 @@ import { setWorkflowArchived } from "../archiveActions";
 import {
   findShelfBucketForThread,
   polledSidebarGitStatusCwds,
+  sharedFolderWorkflowThreadIds,
   sidebarPullRequestLinkTargets,
   reconcileFrozenOrder,
   type SidebarShelfBucket,
@@ -292,15 +293,29 @@ export default function Sidebar() {
     () => new Map(projects.map((project) => [project.id, project] as const)),
     [projects],
   );
+  const sharedFolderThreadIds = useMemo(
+    () =>
+      sharedFolderWorkflowThreadIds({
+        planningWorkflows,
+        codeReviewWorkflows,
+        investigationWorkflows,
+      }),
+    [codeReviewWorkflows, investigationWorkflows, planningWorkflows],
+  );
   const threadGitTargets = useMemo(
     () =>
       threads.map((thread) => ({
         threadId: thread.id,
-        branch: thread.branch,
+        // A workflow thread in the shared project folder has no branch PR of its own: its
+        // recorded branch is the folder's checkout. Only its linked PRs (the reviewed PR) count.
+        branch:
+          thread.worktreePath === null && sharedFolderThreadIds.has(thread.id)
+            ? null
+            : thread.branch,
         archived: thread.archivedAt !== null,
         cwd: threadWorkspaceCwd(thread, projectById.get(thread.projectId)) ?? null,
       })),
-    [projectById, threads],
+    [projectById, sharedFolderThreadIds, threads],
   );
   const threadGitStatusCwds = useMemo(
     () => [
@@ -456,11 +471,31 @@ export default function Sidebar() {
       threads,
     ],
   );
+  // Threads with a linked PR whose state is still loading: like a branch PR's git status,
+  // "no PR" isn't known for them yet.
+  const linkPendingThreadIds = useMemo(
+    () =>
+      new Set(
+        threads.flatMap((thread) => {
+          const lookupCwd = threadPullRequestLookupCwds.get(thread.id) ?? null;
+          const externalCwds = externalCwdsByProject.get(thread.projectId);
+          return thread.pullRequests?.some((link) =>
+            linkedPullRequestState.isPending(
+              linkedRepositoryCwd(lookupCwd, link.repositoryPath, externalCwds),
+              link.url,
+            ),
+          )
+            ? [thread.id]
+            : [];
+        }),
+      ),
+    [externalCwdsByProject, linkedPullRequestState, threadPullRequestLookupCwds, threads],
+  );
   const indicatorsForThread: SidebarIndicatorsForThread = (thread) => ({
     threadStatus: pillForStatus(threadStatusById.get(thread.id) ?? "none"),
     isUnread: unreadThreadIds.has(thread.id),
     prStatus: prStatusByThreadId.get(thread.id) ?? null,
-    prPending: prPendingThreadIds.has(thread.id),
+    prPending: prPendingThreadIds.has(thread.id) || linkPendingThreadIds.has(thread.id),
   });
   const projectSidebarListsById = useMemo(
     () =>

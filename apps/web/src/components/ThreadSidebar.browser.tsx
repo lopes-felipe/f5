@@ -4871,6 +4871,16 @@ describe("Thread sidebar", () => {
     });
     const linked = ids("linked");
     const unlinked = ids("unlinked");
+    const samePr = ids("same-pr");
+    // The PR of the folder's own branch, reviewed with that branch checked out.
+    const checkoutPr = {
+      provider: "github" as const,
+      host: "github.com",
+      repository: "acme/repo",
+      number: 462,
+      title: "Pull request #462",
+      url: "https://github.com/acme/repo/pull/462",
+    };
     const reviewedPr = {
       provider: "github" as const,
       host: "github.com",
@@ -4926,27 +4936,40 @@ describe("Thread sidebar", () => {
             createSnapshotThread({ id: THREAD_ID }),
             ...snapshotThreads(linked, "Linked", { pullRequests: [reviewedPr] }),
             ...snapshotThreads(unlinked, "Unlinked", {}),
+            ...snapshotThreads(samePr, "Same PR", { pullRequests: [checkoutPr] }),
           ]),
           codeReviewWorkflows: [
             completedReview("review-linked", "Linked review", linked),
             completedReview("review-unlinked", "Unlinked review", unlinked),
+            completedReview("review-same-pr", "Same PR review", samePr),
           ],
         };
         nextFixture.resolveWsRequest = (body) => {
-          if (body._tag === WS_METHODS.gitResolvePullRequest)
+          if (body._tag === WS_METHODS.gitResolvePullRequest) {
+            const sameAsBranch = (body as { reference?: string }).reference === checkoutPr.url;
             return {
               type: "result",
               result: {
-                pullRequest: {
-                  number: 1031,
-                  title: "Name F5 branches",
-                  url: reviewedPr.url,
-                  baseBranch: "main",
-                  headBranch: "f5/branch-names",
-                  state: "open",
-                },
+                pullRequest: sameAsBranch
+                  ? {
+                      number: 462,
+                      title: "Sidebar follow-ups",
+                      url: checkoutPr.url,
+                      baseBranch: "main",
+                      headBranch: "main",
+                      state: "open",
+                    }
+                  : {
+                      number: 1031,
+                      title: "Name F5 branches",
+                      url: reviewedPr.url,
+                      baseBranch: "main",
+                      headBranch: "f5/branch-names",
+                      state: "open",
+                    },
               },
             };
+          }
           if (body._tag === WS_METHODS.gitStatus)
             return {
               type: "result",
@@ -4983,6 +5006,9 @@ describe("Thread sidebar", () => {
       expect(finishedStatusOf("Linked review")?.getAttribute("aria-label")).toBe(
         "Open last thread, #1031 PR open: Name F5 branches",
       );
+      // Reviewing the PR the folder has checked out still shows it, from the link.
+      await waitForSidebarThreadRow("Same PR review");
+      await vi.waitFor(() => expect(finishedStatusOf("Same PR review")?.textContent).toBe("#462"));
 
       // Without a link, the review has no PR: it folds as old and shows a plain check.
       expect(querySidebarThreadRowByTitle("Unlinked review")).toBeNull();
