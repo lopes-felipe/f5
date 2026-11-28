@@ -247,6 +247,7 @@ import {
   Layer,
   Option,
   Path,
+  Queue,
   Ref,
   Result,
   Schema,
@@ -431,7 +432,8 @@ import { makeMcpCatalog } from "./mcp/McpCatalog.ts";
 import { McpRepositoryServers } from "./mcp/McpRepositoryServers.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { makeHistoryRecoveredSessionSet } from "./orchestration/providerTerminalLifecycle.ts";
-import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { ServerSettingsService } from "./serverSettings.ts";
+import { makeEnvironmentThemeBackgrounds, makeEnvironmentThemeTools } from "./environmentTheme.ts";
 import { DiskSpaceMonitor } from "./storage/DiskSpaceMonitor.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 import {
@@ -1151,6 +1153,9 @@ export const createServer = Effect.fn(function* (
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const themesDirectory = path.join(serverConfig.stateDir, "themes");
+  const themeBackgrounds = makeEnvironmentThemeBackgrounds(themesDirectory);
+  const themeTools = yield* makeEnvironmentThemeTools(themesDirectory, serverSettings);
   const sql = yield* SqlClient.SqlClient;
   // The turn repository lives in the orchestration runtime, built later; build one
   // here so claims on the draft branch-switch route see accepted, undelivered turns.
@@ -2208,6 +2213,8 @@ export const createServer = Effect.fn(function* (
       attachmentsDir: serverConfig.attachmentsDir,
       backendIncarnation: BACKEND_INCARNATION,
       serverAuth,
+      serverSettings,
+      themeBackgrounds,
       htmlPreviewBroker,
       forgeAccounts,
       githubAccount,
@@ -2487,16 +2494,11 @@ export const createServer = Effect.fn(function* (
   );
   yield* Stream.runForEach(keybindingsManager.streamChanges, (event) =>
     providerAdvisoryProjection.getProviders.pipe(
-      Effect.bindTo("providers"),
-      Effect.bind("settings", () =>
-        serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
-      ),
-      Effect.flatMap(({ providers, settings }) =>
+      Effect.flatMap((providers) =>
         pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
           source: "keybindings",
           issues: event.issues,
           providers,
-          settings,
         }),
       ),
     ),
@@ -2520,7 +2522,7 @@ export const createServer = Effect.fn(function* (
   yield* Stream.runForEach(serverSettings.streamChanges, syncProfileGitAuthor).pipe(
     Effect.forkIn(subscriptionsScope),
   );
-  yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
+  yield* Stream.runForEach(serverSettings.streamChanges, () =>
     Effect.all({
       computerPolicy: Option.isSome(computerAutomationBroker)
         ? Effect.promise(() => computerAutomationBroker.value.refreshPolicies())
@@ -2533,22 +2535,45 @@ export const createServer = Effect.fn(function* (
           source: "settings",
           issues: keybindingsConfig.issues,
           providers,
-          settings: redactServerSettingsForClient(settings),
         }),
       ),
     ),
   ).pipe(Effect.forkIn(subscriptionsScope));
+  const publishWallpaperChange = Effect.gen(function* () {
+    const settings = yield* serverSettings.getSettings;
+    if (!settings.environmentThemes.length) return;
+    yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
+      source: "settings",
+      issues: (yield* keybindingsManager.loadConfigState).issues,
+      providers: yield* providerAdvisoryProjection.getProviders,
+      themeBackgrounds: yield* Effect.promise(() => themeBackgrounds.paths(settings)),
+    });
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Could not notify clients of theme wallpaper change", cause),
+    ),
+  );
+  const wallpaperChanges = yield* Queue.sliding<void>(1);
+  yield* Stream.runForEach(Stream.fromQueue(wallpaperChanges), () => publishWallpaperChange).pipe(
+    Effect.forkIn(subscriptionsScope),
+  );
+  yield* Effect.acquireRelease(
+    Effect.promise(() =>
+      themeBackgrounds
+        .watch(() => {
+          Queue.offerUnsafe(wallpaperChanges, undefined);
+        })
+        .catch(() => () => {}),
+    ),
+    (stop) => Effect.sync(stop),
+  );
   yield* Stream.runForEach(providerAdvisoryProjection.streamChanges, (providers) =>
-    Effect.all({
-      keybindingsConfig: keybindingsManager.loadConfigState,
-      settings: serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
-    }).pipe(
-      Effect.flatMap(({ keybindingsConfig, settings }) =>
+    keybindingsManager.loadConfigState.pipe(
+      Effect.flatMap((keybindingsConfig) =>
         pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
           source: "providers",
           issues: keybindingsConfig.issues,
           providers,
-          settings,
         }),
       ),
       Effect.tap(() => providerUpdateAdvisor.noteRegistryChanged),
@@ -2714,6 +2739,7 @@ export const createServer = Effect.fn(function* (
               }),
               html,
               publishImage,
+              themes: themeTools,
             }),
           )
           .pipe(Effect.provideService(Scope.Scope, subscriptionsScope), Effect.orDie);
@@ -4067,6 +4093,7 @@ export const createServer = Effect.fn(function* (
         providerUpdateAdvisor,
         harnessValidation,
         serverSettings,
+        themeBackgrounds,
         projectionProjects,
         computerAutomationBroker,
         getProjectSkillSyncServiceIfReady: Effect.gen(function* () {

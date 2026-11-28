@@ -12,6 +12,7 @@ import {
   runDoctorDiagnostics,
   type SqliteInspectionResult,
 } from "../../diagnostics/doctor.ts";
+import type { makeEnvironmentThemeBackgrounds } from "../../environmentTheme.ts";
 import type { Keybindings } from "../../keybindings.ts";
 import type { makeClientDiagnosticsReporter } from "../../observability/clientDiagnostics.ts";
 import { readServerHealth } from "../../observability/serverHealth.ts";
@@ -68,6 +69,7 @@ export interface ServerMetaRouteDependencies {
   readonly providerUpdateAdvisor: typeof ProviderUpdateAdvisor.Service;
   readonly harnessValidation: typeof HarnessValidation.Service;
   readonly serverSettings: typeof ServerSettingsService.Service;
+  readonly themeBackgrounds: Pick<ReturnType<typeof makeEnvironmentThemeBackgrounds>, "paths">;
   readonly projectionProjects: typeof ProjectionProjectRepository.Service;
   readonly computerAutomationBroker: Option.Option<typeof ComputerAutomationBroker.Service>;
   readonly getProjectSkillSyncServiceIfReady: Effect.Effect<
@@ -101,6 +103,7 @@ export const serverMetaRoutes = ({
   providerUpdateAdvisor,
   harnessValidation,
   serverSettings,
+  themeBackgrounds,
   projectionProjects,
   computerAutomationBroker,
   getProjectSkillSyncServiceIfReady,
@@ -248,6 +251,9 @@ export const serverMetaRoutes = ({
             resolveOtlpConfiguration(settings.observability, process.env),
           ),
           cursorSdkHarness: cursorSdkHarnessHostAvailability(serverConfig),
+          ...(settings.environmentThemes.length
+            ? { themeBackgrounds: yield* Effect.promise(() => themeBackgrounds.paths(settings)) }
+            : {}),
           privacy: { doNotTrack: isDoNotTrackSet(process.env) },
         };
       }),

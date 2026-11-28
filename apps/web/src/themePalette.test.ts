@@ -294,3 +294,21 @@ describe("visual color picker conversion", () => {
     expect(pickerHsvToThemeColor({ h: 0, s: 1, v: 1 }, "#11223300")).toBe("#ff0000");
   });
 });
+
+it("uses a local theme in preference to a published theme with the same id", () => {
+  const published = createCustomThemeDefinition({
+    id: "wallpaper",
+    name: "Published",
+    parameters: { baseHue: 120, chroma: 0.15, contrast: 1 },
+    css: "body { background-image: var(--theme-background-image); }",
+  });
+  const local = { ...published, name: "Local" };
+  expect(resolveThemePalette(published.id, [], [published]).published).toBe(true);
+  expect(resolveThemePalette(published.id, [local], [published])).toMatchObject({ name: "Local" });
+  expect(resolveThemePalette(published.id, [local], [published]).published).toBeUndefined();
+  expect(resolveThemePalette("published:" + published.id, [local], [published])).toMatchObject({
+    name: "Published",
+    published: true,
+    definition: published,
+  });
+});

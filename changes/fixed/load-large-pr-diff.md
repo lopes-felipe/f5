@@ -1,0 +1,1 @@
+- Load a file's diff on demand when GitHub leaves it out of the changed-files list because of its size.

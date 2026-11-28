@@ -30,6 +30,10 @@ import {
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 import { AttachmentUploadError, type makeAttachmentUploads } from "../../attachmentUploads.ts";
 import type { makeBackupService } from "../../backupService.ts";
+import {
+  THEME_BACKGROUND_ROUTE,
+  type makeEnvironmentThemeBackgrounds,
+} from "../../environmentTheme.ts";
 import type { ProfileGithubAccount } from "../../git/ProfileGithubAccount.ts";
 import type { makeHtmlPreviewBroker } from "../../htmlRender/HtmlPreviewBroker.ts";
 import type { OrchestrationEngineShape } from "../../orchestration/Services/OrchestrationEngine.ts";
@@ -44,6 +48,7 @@ import {
   REQUEST_HOST_NOT_ALLOWED_MESSAGE,
   type makeServerAuth,
 } from "../../serverAuth.ts";
+import type { ServerSettingsService } from "../../serverSettings.ts";
 import type { ForgeAccounts } from "../../sourceControl/accountRouting.ts";
 import type { makeWorkspaceAssetAuthorizer } from "../../WorkspaceAssetAuthorizer.ts";
 import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "../protocol.ts";
@@ -67,6 +72,8 @@ export interface HttpRequestHandlerDependencies {
   readonly attachmentsDir: string;
   readonly backendIncarnation: string;
   readonly serverAuth: ReturnType<typeof makeServerAuth>;
+  readonly serverSettings: Pick<typeof ServerSettingsService.Service, "getSettings">;
+  readonly themeBackgrounds: Pick<ReturnType<typeof makeEnvironmentThemeBackgrounds>, "read">;
   readonly htmlPreviewBroker: ReturnType<typeof makeHtmlPreviewBroker>;
   readonly forgeAccounts: Option.Option<typeof ForgeAccounts.Service>;
   readonly githubAccount: ProfileGithubAccount;
@@ -104,6 +111,8 @@ export function createHttpRequestListener(
     attachmentsDir,
     backendIncarnation,
     serverAuth,
+    serverSettings,
+    themeBackgrounds,
     htmlPreviewBroker,
     forgeAccounts,
     githubAccount,
@@ -142,9 +151,11 @@ export function createHttpRequestListener(
           return;
         }
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
-        // Workspace asset handles are capabilities: the URL is the credential, so
+        // Asset handles are capabilities: the URL is the credential, so
         // they skip session auth but still need CORS for the renderer's fetch().
-        const isCapabilityAssetPath = url.pathname.startsWith("/api/workspace-assets/");
+        const isThemeBackgroundPath = url.pathname.startsWith(THEME_BACKGROUND_ROUTE);
+        const isCapabilityAssetPath =
+          isThemeBackgroundPath || url.pathname.startsWith("/api/workspace-assets/");
         const isPrivatePath = isPrivateHttpPath(url.pathname) && !isCapabilityAssetPath;
         const requestOrigin = req.headers.origin;
         // Attachment URLs are also loaded by <img>, whose requests do not
@@ -271,6 +282,32 @@ export function createHttpRequestListener(
             426,
             { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
             JSON.stringify(UPGRADE_REQUIRED),
+          );
+          return;
+        }
+        if (isThemeBackgroundPath) {
+          const id = url.pathname.slice(THEME_BACKGROUND_ROUTE.length);
+          const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => null));
+          const image =
+            req.method === "GET" && settings?.environmentThemes.some((theme) => theme.id === id)
+              ? yield* Effect.promise(() =>
+                  themeBackgrounds
+                    .read(
+                      id,
+                      url.searchParams.get("signature") ?? "",
+                      url.searchParams.get("revision") ?? "",
+                    )
+                    .catch(() => "unavailable" as const),
+                )
+              : null;
+          respond(
+            image === "unavailable" ? 503 : image ? 200 : 404,
+            {
+              "Cache-Control": "no-store",
+              "X-Content-Type-Options": "nosniff",
+              ...(image && image !== "unavailable" ? { "Content-Type": image.mime } : {}),
+            },
+            image === "unavailable" ? undefined : image?.bytes,
           );
           return;
         }

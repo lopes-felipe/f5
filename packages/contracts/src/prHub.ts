@@ -984,6 +984,7 @@ export const PrHubChangedFile = Schema.Struct({
   blobOid: Schema.optional(Schema.NullOr(Schema.String)),
   patch: Schema.optional(Schema.NullOr(Schema.String)),
   patchStatus: Schema.optional(Schema.Literals(["available", "unavailable", "truncated"])),
+  hasShortenedLines: Schema.optionalKey(Schema.Boolean),
 });
 export type PrHubChangedFile = typeof PrHubChangedFile.Type;
 const PrHubDiffTotals = Schema.Struct({ additions: NonNegativeInt, deletions: NonNegativeInt });
@@ -1128,15 +1129,6 @@ export const PrHubUnresolvedThreadsResult = Schema.Struct({
 });
 export type PrHubUnresolvedThreadsResult = typeof PrHubUnresolvedThreadsResult.Type;
 
-export const PrHubFilesInput = Schema.Struct({
-  accountGeneration: Schema.optional(Schema.String),
-  key: PullRequestKey,
-  comparisonMode: Schema.optional(Schema.Literals(["current_pr", "changes_since_review"])),
-  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
-  mode: Schema.optional(PrHubReadMode),
-});
-export type PrHubFilesInput = typeof PrHubFilesInput.Type;
-
 export const PrHubComparisonIdentity = Schema.Struct({
   baseRepository: Schema.String,
   baseRef: Schema.String,
@@ -1149,6 +1141,21 @@ export const PrHubComparisonIdentity = Schema.Struct({
   mode: Schema.Literals(["current_pr", "changes_since_review"]),
 });
 export type PrHubComparisonIdentity = typeof PrHubComparisonIdentity.Type;
+
+export const PrHubFilesInput = Schema.Struct({
+  accountGeneration: Schema.optional(Schema.String),
+  key: PullRequestKey,
+  comparisonMode: Schema.optional(Schema.Literals(["current_pr", "changes_since_review"])),
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
+  mode: Schema.optional(PrHubReadMode),
+  fullDiffFile: Schema.optional(
+    Schema.Struct({
+      path: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+      comparison: PrHubComparisonIdentity,
+    }),
+  ),
+});
+export type PrHubFilesInput = typeof PrHubFilesInput.Type;
 
 export const PrHubDraftComment = Schema.Struct({
   id: Schema.String.check(Schema.isMaxLength(128)),

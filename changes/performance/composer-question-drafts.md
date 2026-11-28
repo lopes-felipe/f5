@@ -1,0 +1,1 @@
+- Typing an answer or moving between agent questions updates the composer without re-rendering the rest of the chat.

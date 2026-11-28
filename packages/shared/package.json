@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./themeCss": {
+      "types": "./src/themeCss.ts",
+      "import": "./src/themeCss.ts"
+    },
     "./terminalReplay": {
       "types": "./src/terminalReplay.ts",
       "import": "./src/terminalReplay.ts"

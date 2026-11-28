@@ -57,12 +57,26 @@ export function registerDesktopFileActions(
     assertCaller: (event: IpcMainInvokeEvent) => void;
     openExternal: (url: string) => Promise<void>;
     revealFile: (filePath: string) => Promise<void>;
+    startDrag?: (event: IpcMainInvokeEvent, path: string) => Promise<boolean>;
+    canStartDrag?: (event: IpcMainInvokeEvent) => boolean;
   },
 ): {
   nativeMenuSelected: (owner: number, target: string, action?: "editor" | "reveal") => void;
   clearNativeMenu: (owner: number) => void;
 } {
   const authorizations = new FileActionAuthorizations();
+  ipc.removeHandler("desktop:start-file-drag");
+  ipc.handle("desktop:start-file-drag", async (event, raw: unknown, trusted: unknown) => {
+    actions.assertCaller(event);
+    if (trusted !== true || !actions.startDrag || actions.canStartDrag?.(event) === false)
+      return false;
+    try {
+      const target = await resolveLocalTarget(raw, false);
+      return await actions.startDrag(event, target.absolutePath);
+    } catch {
+      return false;
+    }
+  });
   ipc.removeHandler("desktop:release-editor-open");
   ipc.handle("desktop:release-editor-open", (event, authorization: unknown) => {
     actions.assertCaller(event);

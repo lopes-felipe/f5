@@ -296,6 +296,9 @@ export function applyServerSettingsPatch(
   // Model aliases are a whole map: merging would keep removed mappings.
   const nextWithReplacements = {
     ...nextWithInstances,
+    ...(patch.environmentThemeSelection !== undefined
+      ? { environmentThemeSelection: patch.environmentThemeSelection }
+      : {}),
     ...(patch.textGenerators !== undefined ? { textGenerators: patch.textGenerators } : {}),
     ...(patch.worktreeCleanup !== undefined ? { worktreeCleanup: patch.worktreeCleanup } : {}),
     ...(patch.usageModelAliases !== undefined

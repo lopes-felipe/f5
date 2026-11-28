@@ -8,6 +8,18 @@ import {
 } from "./themePalette";
 import { randomUUID } from "./lib/utils";
 
+const MAX_CUSTOM_THEME_LIBRARY_BYTES = 2 * 1024 * 1024;
+
+function checkThemeStorage(themes: readonly unknown[], previous: readonly unknown[]) {
+  const bytes = (values: readonly unknown[]) =>
+    new TextEncoder().encode(JSON.stringify(values)).byteLength;
+  const size = bytes(themes);
+  if (size > MAX_CUSTOM_THEME_LIBRARY_BYTES && size >= bytes(previous)) {
+    throw new Error("Custom themes can use up to 2 MiB of storage.");
+  }
+  return themes;
+}
+
 function rawThemeId(value: unknown): string | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const id = (value as Record<string, unknown>).id;
@@ -30,7 +42,7 @@ export function addCustomTheme(
   if (valid.themes.some((theme) => theme.id === parsed.id)) {
     throw new Error(`A theme with id “${parsed.id}” already exists.`);
   }
-  return [...rawThemes, parsed];
+  return checkThemeStorage([...rawThemes, parsed], rawThemes);
 }
 
 export function updateCustomTheme(
@@ -51,7 +63,7 @@ export function updateCustomTheme(
     return value;
   });
   if (!replaced) throw new Error(`Custom theme “${parsed.id}” no longer exists.`);
-  return next;
+  return checkThemeStorage(next, rawThemes);
 }
 
 export function removeCustomTheme(rawThemes: readonly unknown[], id: string): readonly unknown[] {
@@ -62,10 +74,11 @@ export function duplicateThemeDefinition(palette: ThemePalette): ThemeDefinition
   const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
   return parseThemeDefinitionV1({
     version: 1,
-    id: `custom-${palette.id.replace(/^f5-/, "").slice(0, 38)}-${suffix}`,
+    id: `custom-${(palette.definition?.id ?? palette.id).replace(/^f5-/, "").slice(0, 38)}-${suffix}`,
     name: `${palette.name} copy`.slice(0, 80),
     parameters: palette.definition?.parameters ?? { baseHue: 264, chroma: 0.16, contrast: 1 },
     overrides: palette.definition?.overrides,
+    css: palette.definition?.css,
   });
 }
 

@@ -17,7 +17,11 @@ export function useSnapShotRouting() {
   const lastThread = useRef<ThreadId | undefined>(undefined),
     pending = useRef<DesktopSnapShotResult[]>([]);
   const attach = (thread: ThreadId, result: DesktopSnapShotResult) => {
-    const files = [result.image, result.context].map((value) =>
+    const name = "window-" + crypto.randomUUID();
+    const files = [
+      { ...result.image, name: name + ".png" },
+      { ...result.context, name: name + "-context.txt" },
+    ].map((value) =>
       setAttachmentSource(
         new File([new Uint8Array(value.bytes)], value.name, { type: value.mimeType }),
         "snapshot",

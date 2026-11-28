@@ -1,0 +1,1 @@
+- Custom theme CSS supports up to 100,000 characters. An environment's published theme library can hold up to 2 MiB.

@@ -1,6 +1,10 @@
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { fetchGitHubPrFiles, normalizeGitHubFile } from "./githubPrFiles.ts";
+import {
+  extractGitHubFilePatch,
+  fetchGitHubPrFiles,
+  normalizeGitHubFile,
+} from "./githubPrFiles.ts";
 import type { GitHubApiResponse } from "../git/githubApi.ts";
 
 const pull = {
@@ -17,6 +21,39 @@ const file = {
   deletions: 1,
   patch: "@@ -1 +1 @@\n-old\n+new",
 };
+it("loads only the requested file, retaining hunk lines that look like headers", () => {
+  const diff = [
+    "diff --git a/else.ts b/else.ts",
+    "--- a/else.ts",
+    "+++ b/else.ts",
+    "@@ -1 +1 @@",
+    "-else",
+    "+else changed",
+    'diff --git "a/old name.ts" "b/new name.ts"',
+    '--- "a/old name.ts"',
+    '+++ "b/new name.ts"',
+    "@@ -1 +1,2 @@",
+    "--- old source",
+    "+++ new source",
+    "+" + "x".repeat(8_000),
+    "diff --git a/deleted.ts b/deleted.ts",
+    "--- a/deleted.ts",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-deleted",
+    "",
+  ].join("\n");
+  const restored = extractGitHubFilePatch(diff, "new name.ts");
+  assert.equal(restored?.previousPath, "old name.ts");
+  assert.equal(restored?.patchStatus, "available");
+  assert.equal(restored?.hasShortenedLines, true);
+  assert.include(restored?.patch ?? "", "+++ new source");
+  assert.include(restored?.patch ?? "", "line shortened");
+  assert.notInclude(restored?.patch ?? "", "else.ts");
+  assert.equal(extractGitHubFilePatch(diff, "deleted.ts")?.changeType, "deleted");
+  assert.isNull(extractGitHubFilePatch(diff, "old name.ts"));
+});
+
 function response(body: unknown, next = false): GitHubApiResponse {
   return {
     status: 200,
@@ -34,11 +71,13 @@ function load(
   cursor?: string,
   account = "account",
   reviewedHeadOid?: string,
+  fallback?: Pick<Parameters<typeof fetchGitHubPrFiles>[0], "fullDiffFile" | "requestDiff">,
 ) {
   const calls: string[] = [];
   return {
     calls,
     effect: fetchGitHubPrFiles({
+      ...fallback,
       account,
       ...(reviewedHeadOid ? { reviewedHeadOid } : {}),
       key: "pr",
@@ -56,6 +95,32 @@ function load(
   };
 }
 const compare = response({ merge_base_commit: { sha: "merge-base" } });
+
+it.effect("loads a withheld file patch against the displayed comparison", () =>
+  Effect.gen(function* () {
+    const first = yield* load([response(pull), compare, response([file]), response(pull)]).effect;
+    const raw = normalizeGitHubFile(file).patch!;
+    const calls: string[] = [];
+    const fetched = yield* load(
+      [response(pull), compare, response(pull)],
+      undefined,
+      "account",
+      undefined,
+      {
+        fullDiffFile: { comparison: first.comparison!, path: file.filename },
+        requestDiff: (endpoint) => {
+          calls.push(endpoint);
+          return Effect.succeed(response(raw));
+        },
+      },
+    ).effect;
+    assert.deepStrictEqual(calls, ["repos/org/repo/pulls/1"]);
+    assert.deepStrictEqual(
+      fetched.files.map(({ path, patchStatus }) => [path, patchStatus]),
+      [[file.filename, "available"]],
+    );
+  }),
+);
 
 it.effect("pins paginated files to the account and full comparison", () =>
   Effect.gen(function* () {

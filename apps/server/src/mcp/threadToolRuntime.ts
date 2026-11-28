@@ -25,6 +25,7 @@ import {
   THREAD_READ_RESULT_MAX_BYTES,
   ThreadToolError,
   type ThreadReadInput,
+  type ThreadToolRequest,
   type ThreadToolHandler,
 } from "./threadMcpTools.ts";
 
@@ -37,6 +38,9 @@ export function makeThreadToolHandler(input: {
   readonly html: Effect.Success<ReturnType<typeof makeHtmlRenderRuntime>>;
   readonly links: Pick<PrHubExtensions["Service"], "getThreadLinks">;
   readonly pullRequests?: ReturnType<typeof makePullRequestMcpHandler>;
+  readonly themes?: (
+    request: Extract<ThreadToolRequest, { name: "theme_read" | "theme_set" }>,
+  ) => Effect.Effect<unknown, ThreadToolError>;
   readonly messages: ThreadReadDependencies["messages"];
   readonly plans: ThreadReadDependencies["plans"];
   readonly sql: SqlClient.SqlClient;
@@ -60,6 +64,18 @@ export function makeThreadToolHandler(input: {
       }
       if (request.name === "thread_read")
         return yield* readReferencedThread(input, threadId, request.input);
+      if (request.name === "theme_read" || request.name === "theme_set") {
+        if (
+          request.name === "theme_set" &&
+          (thread.archivedAt || thread.runtimeMode !== "full-access")
+        )
+          return yield* new ThreadToolError({
+            message: "Setting the environment theme requires an active full-access thread.",
+          });
+        if (!input.themes)
+          return yield* new ThreadToolError({ message: "Environment themes are unavailable." });
+        return yield* input.themes(request);
+      }
       if (request.name === "image_publish") {
         if (!input.publishImage)
           return yield* new ThreadToolError({ message: "Image publication is unavailable." });

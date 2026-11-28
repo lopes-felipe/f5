@@ -8,13 +8,16 @@ import {
   wcagContrast,
 } from "culori";
 import { THEME_TOKEN_NAMES } from "@t3tools/shared/themeTokens";
+import { MAX_ENVIRONMENT_THEMES, THEME_CSS_MAX_LENGTH } from "@t3tools/contracts/settings";
+import { themeCssLoadsRemoteFiles } from "@t3tools/shared/themeCss";
+import { applyThemeCss } from "./themeCss";
 
 export const THEME_DEFINITION_VERSION = 1 as const;
 export const DEFAULT_THEME_ID = "f5-black";
 /** The palette `f5-black` used before the Graphite redesign. */
 export const CLASSIC_BLACK_THEME_ID = "f5-black-classic";
 export const MAX_CUSTOM_THEMES = 20;
-export const MAX_THEME_DEFINITION_BYTES = 64 * 1024;
+export const MAX_THEME_DEFINITION_BYTES = 6 * THEME_CSS_MAX_LENGTH + 64 * 1024;
 export const MIN_BODY_TEXT_CONTRAST = 4.5;
 export const MIN_DECORATIVE_CONTRAST = 3;
 
@@ -48,6 +51,7 @@ export interface ThemeDefinitionV1 {
   readonly version: typeof THEME_DEFINITION_VERSION;
   readonly id: string;
   readonly name: string;
+  readonly css?: string;
   readonly parameters: ThemeParameters;
   readonly overrides?: {
     readonly light?: Readonly<Partial<Record<ThemeTokenName, string>>>;
@@ -62,6 +66,7 @@ export interface ThemePalette {
   readonly dark: ResolvedThemeTokens;
   readonly builtin: boolean;
   readonly definition?: ThemeDefinitionV1;
+  readonly published?: true;
 }
 
 export interface ThemeDefinitionIssue {
@@ -373,11 +378,11 @@ function parseThemeOverrides(value: unknown): ThemeDefinitionV1["overrides"] | u
 export function parseThemeDefinitionV1(value: unknown): ThemeDefinitionV1 {
   const serialized = JSON.stringify(value);
   if (new TextEncoder().encode(serialized ?? "").byteLength > MAX_THEME_DEFINITION_BYTES) {
-    throw new Error("Theme definition exceeds 64 KiB.");
+    throw new Error("Theme definition exceeds the file size limit.");
   }
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, new Set(["version", "id", "name", "parameters", "overrides"]))
+    !hasOnlyKeys(value, new Set(["version", "id", "name", "parameters", "overrides", "css"]))
   ) {
     throw new Error("Theme definition contains unknown fields.");
   }
@@ -402,16 +407,28 @@ export function parseThemeDefinitionV1(value: unknown): ThemeDefinitionV1 {
     contrast: parseFiniteNumber(value.parameters.contrast, "Contrast"),
   });
   const overrides = parseThemeOverrides(value.overrides);
+  if (
+    value.css !== undefined &&
+    (typeof value.css !== "string" ||
+      value.css.length > THEME_CSS_MAX_LENGTH ||
+      themeCssLoadsRemoteFiles(value.css))
+  ) {
+    throw new Error("Theme CSS exceeds the length limit or contains a file-loading declaration.");
+  }
   return {
     version: THEME_DEFINITION_VERSION,
     id: value.id,
     name: value.name.trim(),
     parameters,
     ...(overrides ? { overrides } : {}),
+    ...(value.css ? { css: value.css } : {}),
   };
 }
 
-export function parseCustomThemeLibrary(value: unknown): ParsedThemeLibrary {
+export function parseCustomThemeLibrary(
+  value: unknown,
+  maximum = MAX_CUSTOM_THEMES,
+): ParsedThemeLibrary {
   if (!Array.isArray(value)) {
     return { themes: [], issues: [{ index: -1, message: "Custom themes must be an array." }] };
   }
@@ -420,10 +437,10 @@ export function parseCustomThemeLibrary(value: unknown): ParsedThemeLibrary {
   const issues: ThemeDefinitionIssue[] = [];
   const seen = new Set<string>();
   for (let index = 0; index < value.length; index += 1) {
-    if (themes.length >= MAX_CUSTOM_THEMES) {
+    if (themes.length >= maximum) {
       issues.push({
         index,
-        message: `Only the first ${MAX_CUSTOM_THEMES} valid themes are active.`,
+        message: `Only the first ${maximum} valid themes are active.`,
       });
       continue;
     }
@@ -579,10 +596,30 @@ export function getAvailableThemePalettes(customThemes: unknown): readonly Theme
   ];
 }
 
-export function resolveThemePalette(themeId: unknown, customThemes: unknown): ThemePalette {
+export function getThemePalettes(
+  customThemes: unknown,
+  publishedThemes: unknown,
+): readonly ThemePalette[] {
   const palettes = getAvailableThemePalettes(customThemes);
+  return [
+    ...palettes,
+    ...parseCustomThemeLibrary(publishedThemes, MAX_ENVIRONMENT_THEMES).themes.map((theme) => ({
+      ...paletteFromDefinition(theme, false),
+      id: "published:" + theme.id,
+      published: true as const,
+    })),
+  ];
+}
+
+export function resolveThemePalette(
+  themeId: unknown,
+  customThemes: unknown,
+  publishedThemes: unknown = [],
+): ThemePalette {
+  const palettes = getThemePalettes(customThemes, publishedThemes);
   return (
     palettes.find((theme) => theme.id === themeId) ??
+    palettes.find((theme) => theme.published && theme.definition?.id === themeId) ??
     BUILTIN_THEME_BY_ID.get(DEFAULT_THEME_ID) ??
     palettes[0]!
   );
@@ -602,6 +639,7 @@ export function applyThemePalette(
   }
   root.dataset.themeId = palette.id;
   root.style.colorScheme = variant;
+  applyThemeCss(palette.definition?.css);
 }
 
 export function themePaletteRevision(palette: ThemePalette, variant: ThemeVariant): string {
@@ -657,6 +695,7 @@ export function createCustomThemeDefinition(input: {
   readonly name: string;
   readonly parameters: ThemeParameters;
   readonly overrides?: ThemeDefinitionV1["overrides"];
+  readonly css?: string;
 }): ThemeDefinitionV1 {
   return parseThemeDefinitionV1({ version: 1, ...input });
 }

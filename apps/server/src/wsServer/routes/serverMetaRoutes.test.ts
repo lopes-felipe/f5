@@ -38,6 +38,7 @@ function makeRoutes(overrides?: {
     serverSettings: {
       getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
     } as never,
+    themeBackgrounds: { paths: async () => ({}) },
     projectionProjects: {
       getById: () =>
         Effect.succeed(

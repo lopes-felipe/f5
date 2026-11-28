@@ -4203,8 +4203,12 @@ describe("ChatView timeline (full app)", () => {
       await page.getByText("Use option", { exact: true }).click();
       await expect.element(page.getByText("Anything else?", { exact: true })).toBeVisible();
       const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).click();
+      const chat = editor.closest("[data-chat-view-thread-id]")!;
+      const beforeAnswer = chat.getAttribute("data-render-count");
       await page.elementLocator(editor).fill("Keep this answer");
       await vi.waitFor(() => expect(editor.textContent).toContain("Keep this answer"));
+      expect(chat.getAttribute("data-render-count")).toBe(beforeAnswer);
 
       await mounted.router.navigate({ to: "/" });
       await vi.waitFor(() => expect(mounted.router.state.location.pathname).toBe("/"));

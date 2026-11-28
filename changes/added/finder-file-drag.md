@@ -1,0 +1,1 @@
+- On macOS, drag file links and file mentions from a chat into Finder or another app.

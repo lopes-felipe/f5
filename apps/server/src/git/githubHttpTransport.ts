@@ -168,6 +168,15 @@ export function makeGitHubHttpTransport(
           let bytes = Buffer.byteLength(headerText);
           if (bytes > limit) {
             await response.body?.cancel();
+            if (input.truncateOutput)
+              return {
+                stdout: "",
+                stderr: "",
+                code: 0,
+                signal: null,
+                timedOut: false,
+                stdoutTruncated: true,
+              };
             throw new Error("GitHub response exceeds limit");
           }
           const chunks: Uint8Array[] = [];
@@ -177,7 +186,18 @@ export function makeGitHubHttpTransport(
               const chunk = await reader.read();
               if (chunk.done) break;
               bytes += chunk.value.byteLength;
-              if (bytes > limit) throw new Error("GitHub response exceeds limit");
+              if (bytes > limit) {
+                if (input.truncateOutput)
+                  return {
+                    stdout: "",
+                    stderr: "",
+                    code: 0,
+                    signal: null,
+                    timedOut: false,
+                    stdoutTruncated: true,
+                  };
+                throw new Error("GitHub response exceeds limit");
+              }
               chunks.push(chunk.value);
             }
           } finally {

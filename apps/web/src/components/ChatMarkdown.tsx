@@ -61,12 +61,16 @@ import {
   type StreamingMarkdownState,
 } from "../lib/streamingMarkdown";
 import { useFileNavigation } from "../fileNavigationContext";
+import { nativeFileDrag } from "../lib/nativeFileDrag";
+import { readNativeApi } from "../nativeApi";
+import { findWorkspaceBasenameFile } from "../lib/workspaceBasename";
 import { useTheme } from "../hooks/useTheme";
 import {
   collectMarkdownLinkHrefs,
   chatMarkdownUrlTransform,
   isMarkdownFileLinkLabel,
   resolveMarkdownFileLinkMeta,
+  resolveMarkdownFileEditorTarget,
   type MarkdownFileLinkMeta,
 } from "../markdown-links";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
@@ -255,6 +259,16 @@ function MarkdownFileChip({
           render={
             <a
               {...anchorProps}
+              {...nativeFileDrag(meta.filePath, async () => {
+                const api = readNativeApi();
+                const { line: _line, column: _column, ...file } = meta;
+                return resolveMarkdownFileEditorTarget(
+                  { ...file, targetPath: file.filePath },
+                  cwd,
+                  (name) =>
+                    api && cwd ? findWorkspaceBasenameFile(api, cwd, name) : Promise.resolve(null),
+                );
+              })}
               // Keep the original href (typically a `file://` URI) so
               // cmd/ctrl-click or middle-click falls back to the
               // browser's default file-URL handling rather than

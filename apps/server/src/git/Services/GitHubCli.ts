@@ -63,6 +63,7 @@ export interface GitHubCliShape {
     readonly env?: NodeJS.ProcessEnv;
     readonly signal?: AbortSignal;
     readonly maxStdoutBytes?: number;
+    readonly truncateOutput?: boolean;
   }) => Effect.Effect<ProcessRunResult, GitHubCliError>;
 
   /**

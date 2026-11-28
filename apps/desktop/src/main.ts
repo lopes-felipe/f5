@@ -4060,6 +4060,26 @@ function registerIpcHandlers(): void {
   };
   const fileActions = registerDesktopFileActions(ipcMain, {
     assertCaller: assertFileCaller,
+    ...(process.platform === "darwin"
+      ? {
+          canStartDrag: (event: Electron.IpcMainInvokeEvent) =>
+            (runtimeForRenderer(event.sender.id).profile.executionEnvironment ?? "host") === "host",
+          startDrag: async (event: Electron.IpcMainInvokeEvent, path: string) => {
+            const window = BrowserWindow.fromWebContents(event.sender);
+            if (
+              !window ||
+              window.isDestroyed() ||
+              window.webContents !== event.sender ||
+              !window.isFocused()
+            )
+              return false;
+            const icon = await app.getFileIcon(path, { size: "normal" });
+            if (window.isDestroyed() || !window.isFocused()) return false;
+            window.webContents.startDrag({ file: path, icon });
+            return true;
+          },
+        }
+      : {}),
     openExternal: (url) => shell.openExternal(url, { activate: true }),
     revealFile: (filePath) =>
       process.platform !== "darwin"
@@ -4285,16 +4305,36 @@ function registerIpcHandlers(): void {
     return (source === "selection" ? clipboard.selection : clipboard).readText();
   });
 
-  handleAppIpc(COPY_IMAGE_CHANNEL, "Image copy", async (_ctx, rawBytes: unknown) => {
-    const bytes = readDesktopImageActionBytes(rawBytes);
-    const image = nativeImage.createFromBuffer(Buffer.from(bytes));
-    if (image.isEmpty()) {
-      throw new Error("F5 could not decode the image for copying.");
-    }
-    await clipboard.write([
-      new ClipboardItem({ "image/png": new Blob([new Uint8Array(image.toPNG())]) }),
-    ]);
-  });
+  handleAppIpc(
+    COPY_IMAGE_CHANNEL,
+    "Image copy",
+    async (_ctx, rawBytes: unknown, snapshot: unknown) => {
+      const bytes = readDesktopImageActionBytes(rawBytes);
+      const image = nativeImage.createFromBuffer(Buffer.from(bytes));
+      if (image.isEmpty()) {
+        throw new Error("F5 could not decode the image for copying.");
+      }
+      const formats: Record<string, Blob> = {
+        "image/png": new Blob([new Uint8Array(image.toPNG())]),
+      };
+      if (snapshot !== undefined) {
+        if (
+          typeof snapshot !== "object" ||
+          snapshot === null ||
+          !("html" in snapshot) ||
+          typeof snapshot.html !== "string" ||
+          snapshot.html.length > 256_000 ||
+          !("text" in snapshot) ||
+          typeof snapshot.text !== "string" ||
+          snapshot.text.length > 255
+        )
+          throw new Error("Invalid Snap Shot clipboard payload.");
+        formats["text/html"] = new Blob([snapshot.html], { type: "text/html" });
+        formats["text/plain"] = new Blob([snapshot.text], { type: "text/plain" });
+      }
+      await clipboard.write([new ClipboardItem(formats)]);
+    },
+  );
 
   handleAppIpc(
     DOWNLOAD_IMAGE_CHANNEL,
@@ -4740,6 +4780,7 @@ function createWindow(
       ...(partition ? { partition } : {}),
       additionalArguments: [
         ...profileWindowArguments(runtime.profile.id),
+        `--f5-profile-environment=${runtime.profile.executionEnvironment ?? "host"}`,
         `--f5-system-locale=${systemLocale(app.getSystemLocale(), process.platform, process.env, (key) => systemPreferences.getUserDefault(key, "boolean"))}`,
         `--${APP_ICON_ARGUMENT}=${appIcon().id()}`,
       ],
