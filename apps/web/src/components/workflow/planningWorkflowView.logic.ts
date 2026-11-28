@@ -132,7 +132,12 @@ export function planningWorkflowStatusLabel(workflow: PlanningWorkflow): string 
     return "Ready to merge";
   }
   if (branches.some((branch) => branch.status === "revising")) {
-    return "Revising";
+    // Every revising branch is condensing its plan to fit the merge.
+    return branches.every(
+      (branch) => branch.status !== "revising" || branch.condenseTargetChars != null,
+    )
+      ? "Condensing for merge"
+      : "Revising";
   }
   if (branches.some((branch) => branch.status === "reviews_saved")) {
     return "Revising";

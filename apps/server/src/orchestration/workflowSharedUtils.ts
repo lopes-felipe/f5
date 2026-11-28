@@ -474,14 +474,15 @@ export function reviewFeedbackForPinnedTurn(
 
 /**
  * Shares a character budget among artifacts: shortest first, each gets
- * `min(length, floor(remaining / itemsLeft))`, capped at the per-artifact maximum. Short
- * artifacts stay whole and leave their unused share to the longer ones. Returns each
- * artifact's allowance in input order and the smallest allowance an oversized artifact got
- * (`null` when every artifact fits whole).
+ * `min(length, floor(remaining / itemsLeft))`, capped at `maxShare` (the fan-in maximum
+ * by default). Short artifacts stay whole and leave their unused share to the longer ones.
+ * Returns each artifact's allowance in input order and the smallest allowance an oversized
+ * artifact got (`null` when every artifact fits whole).
  */
 export function allocateArtifactCharBudget(
   lengths: ReadonlyArray<number>,
   budget: number,
+  maxShare: number = WORKFLOW_FAN_IN_MAX_ARTIFACT_CHARS,
 ): { readonly allowances: number[]; readonly smallestExcerpt: number | null } {
   const allowances = Array.from({ length: lengths.length }, () => 0);
   let remaining = Math.max(0, Math.floor(budget));
@@ -490,10 +491,7 @@ export function allocateArtifactCharBudget(
     .map((length, index) => ({ length, index }))
     .toSorted((left, right) => left.length - right.length || left.index - right.index);
   for (const [position, entry] of order.entries()) {
-    const share = Math.min(
-      WORKFLOW_FAN_IN_MAX_ARTIFACT_CHARS,
-      Math.floor(remaining / (order.length - position)),
-    );
+    const share = Math.min(maxShare, Math.floor(remaining / (order.length - position)));
     const allowance = Math.min(entry.length, share);
     allowances[entry.index] = allowance;
     remaining -= allowance;

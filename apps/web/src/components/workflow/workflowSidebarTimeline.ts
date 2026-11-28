@@ -262,7 +262,10 @@ function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
     parallel: true,
     steps: branches.map((branch) => ({
       key: `revision-${branch.branchId}`,
-      label: `Branch ${workflowParticipantLabel(branch.branchId)}`,
+      label:
+        branch.status === "revising" && branch.condenseTargetChars != null
+          ? `Branch ${workflowParticipantLabel(branch.branchId)} (condensing for merge)`
+          : `Branch ${workflowParticipantLabel(branch.branchId)}`,
       threadId: branch.authorThreadId,
       turnId: branch.revisionTurnId,
       state: branchRevisionStepState(branch),

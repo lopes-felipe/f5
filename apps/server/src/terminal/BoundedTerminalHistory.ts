@@ -1,4 +1,8 @@
 import { toUSVString } from "node:util";
+import {
+  replayTerminalContinuation,
+  terminalSequenceStateAfter,
+} from "@t3tools/shared/terminalReplay";
 import { TerminalHistorySanitizer } from "./TerminalHistorySanitizer";
 
 /** Retained terminal output only; live PTY output is never truncated. */
@@ -20,7 +24,8 @@ export class BoundedTerminalHistory {
   private newlines = 0;
   private trailingNewline = false;
   private pendingSurrogate = "";
-  private cached: string | null = "";
+  private sequenceState = 0;
+  private cached: { history: string; historySequenceState?: number } | null = { history: "" };
   private readonly sanitizer = new TerminalHistorySanitizer();
 
   constructor(
@@ -37,7 +42,7 @@ export class BoundedTerminalHistory {
   }
 
   get byteLength(): number {
-    return this.bytes;
+    return this.sequenceState ? Buffer.byteLength(this.value()) : this.bytes;
   }
 
   append(input: string): void {
@@ -83,6 +88,10 @@ export class BoundedTerminalHistory {
   /** Finish a stopped stream without joining its pending half-pair to a new process. */
   finish(): boolean {
     this.sanitizer.clear();
+    if (this.sequenceState && this.snapshot().historySequenceState) {
+      this.clear();
+      return false;
+    }
     if (!this.pendingSurrogate) return false;
     this.pendingSurrogate = "";
     this.append("\ufffd");
@@ -91,22 +100,26 @@ export class BoundedTerminalHistory {
 
   private discardFragment(): void {
     const first = this.fragments[this.head]!;
-    this.bytes -= first.bytes;
-    this.newlines -= first.newlines;
-    this.fragments[this.head++] = undefined;
+    this.discardPrefix(first.text.length, first.bytes, first.newlines);
   }
 
   private discardPrefix(end: number, bytes: number, newlines: number): void {
     const first = this.fragments[this.head]!;
-    if (end === first.text.length) {
-      this.discardFragment();
-      return;
-    }
-    first.offset = end;
-    first.bytes -= bytes;
-    first.newlines -= newlines;
+    this.sequenceState = terminalSequenceStateAfter(
+      this.sequenceState,
+      first.text,
+      first.offset,
+      end,
+    );
     this.bytes -= bytes;
     this.newlines -= newlines;
+    if (end === first.text.length) {
+      this.fragments[this.head++] = undefined;
+    } else {
+      first.offset = end;
+      first.bytes -= bytes;
+      first.newlines -= newlines;
+    }
   }
 
   private discardLines(count: number): void {
@@ -166,22 +179,48 @@ export class BoundedTerminalHistory {
     this.head = this.bytes = this.newlines = 0;
     this.trailingNewline = false;
     this.pendingSurrogate = "";
-    this.cached = "";
+    this.sequenceState = 0;
+    this.cached = { history: "" };
+  }
+
+  // Persist a replayable transcript because the file has no live parser state.
+  value(): string {
+    return this.materialize().history;
   }
 
   /** Materialize and cache the snapshot, compacting fragments to share its storage. */
-  value(): string {
+  snapshot(): { history: string; historySequenceState?: number } {
+    const snapshot = this.materialize();
+    if (snapshot.historySequenceState && this.sanitizer.hasPendingStringEscape) {
+      // This ESC has already reached live viewers but is held back from history
+      // while the sanitizer determines whether it completes ST.
+      return {
+        ...snapshot,
+        historySequenceState: replayTerminalContinuation(snapshot.historySequenceState, "\x1b")
+          .state,
+      };
+    }
+    return snapshot;
+  }
+
+  private materialize(): { history: string; historySequenceState?: number } {
     if (this.cached !== null) return this.cached;
-    this.cached = this.fragments
+    const retained = this.fragments
       .slice(this.head)
       .map((fragment) => fragment!.text.slice(fragment!.offset))
       .join("");
     // Share the materialized string instead of retaining a second full copy in
     // fragments. Future appends stay separate; eviction advances the head offset.
-    this.fragments = this.cached
-      ? [{ text: this.cached, offset: 0, bytes: this.bytes, newlines: this.newlines }]
+    this.fragments = retained
+      ? [{ text: retained, offset: 0, bytes: this.bytes, newlines: this.newlines }]
       : [];
     this.head = 0;
+    const { data, state } = replayTerminalContinuation(
+      this.sequenceState,
+      retained,
+      this.maxBytes - this.bytes,
+    );
+    this.cached = { history: data, ...(state ? { historySequenceState: state } : {}) };
     return this.cached;
   }
 }

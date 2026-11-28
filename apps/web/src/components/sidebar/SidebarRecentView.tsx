@@ -176,6 +176,7 @@ export function SidebarRecentView(props: {
           key={item.key}
           entry={item.entry}
           workflowThreads={lists?.workflowThreadsByKey.get(key) ?? []}
+          snoozedThreadIds={lists?.workflowSnoozedThreadIdsByKey.get(key)}
           threadLabels={meta?.threadLabels ?? new Map()}
           overallState={meta?.overallState ?? "pending"}
           phases={meta?.phases}

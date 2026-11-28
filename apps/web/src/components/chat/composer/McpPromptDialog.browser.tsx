@@ -1,7 +1,7 @@
 import "../../../index.css";
 import { ThreadId } from "@t3tools/contracts";
 import { useState } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
@@ -55,6 +55,11 @@ function Harness(props: {
 }
 
 describe("McpPromptDialog", () => {
+  // Typing schedules a debounced completion request; a test that doesn't stub it must still
+  // get a promise, or the request throws once the debounce fires mid-test.
+  beforeEach(() => {
+    mocks.completeComposerPrompt.mockResolvedValue({ values: [] });
+  });
   afterEach(() => {
     mocks.completeComposerPrompt.mockReset();
     document.body.innerHTML = "";
