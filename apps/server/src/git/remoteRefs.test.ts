@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   extractBranchNameFromRemoteRef,
+  isPullRequestTrackingAlias,
   parseRemoteNames,
   parseRemoteNamesInGitOrder,
   parseRemoteRefWithRemoteNames,
@@ -42,5 +43,24 @@ describe("extractBranchNameFromRemoteRef", () => {
         remoteName: "fork-seed",
       }),
     ).toBe("feature/demo");
+  });
+});
+
+describe("isPullRequestTrackingAlias", () => {
+  it.each([
+    ["t3code/pr-91/main", "main"],
+    ["f5/pr-91/main", "main"],
+    ["team/me/pr-7/feature/x", "feature/x"],
+  ])("treats %s as an alias of %s", (local, upstream) => {
+    expect(isPullRequestTrackingAlias(local, upstream)).toBe(true);
+  });
+
+  it.each([
+    ["pr-91/main", "main"],
+    ["f5/pr-91/main", "other"],
+    ["f5/pr-0/main", "main"],
+    ["f5/wip/main", "main"],
+  ])("does not treat %s as an alias of %s", (local, upstream) => {
+    expect(isPullRequestTrackingAlias(local, upstream)).toBe(false);
   });
 });

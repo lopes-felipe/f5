@@ -2,6 +2,7 @@ import { APP_SETTINGS_STORAGE_KEY, parsePersistedAppSettings } from "./appSettin
 import { applyAppearanceSettings, normalizeAppearanceSettings } from "./appearanceSettings";
 import { applyThemeMode, readStoredThemeMode, resolveThemeMode } from "./themeMode";
 import { applyThemePalette, resolveThemePalette } from "./themePalette";
+import { readPublishedThemeCache } from "./publishedThemeCache";
 
 try {
   const settings = parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY));
@@ -10,7 +11,7 @@ try {
   applyThemeMode(themeMode);
   applyThemePalette(
     document.documentElement,
-    resolveThemePalette(settings.themeId, settings.customThemes),
+    resolveThemePalette(settings.themeId, settings.customThemes, readPublishedThemeCache()),
     resolveThemeMode(themeMode),
   );
   applyAppearanceSettings(document.documentElement, normalizeAppearanceSettings(settings));

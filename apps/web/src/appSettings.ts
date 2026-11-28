@@ -443,7 +443,7 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(DEFAULT_APP_ICON_ID)),
     Schema.withDecodingDefault(() => DEFAULT_APP_ICON_ID),
   ),
-  themeId: Schema.String.check(Schema.isMaxLength(64)).pipe(
+  themeId: Schema.String.check(Schema.isMaxLength(74)).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_THEME_ID)),
     Schema.withDecodingDefault(() => DEFAULT_THEME_ID),
   ),

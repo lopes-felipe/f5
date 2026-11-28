@@ -4019,6 +4019,32 @@ const PULL_REQUEST = {
   url: "https://github.com/acme/app/pull/42",
   key: "github:github.com/acme/app#42",
 };
+const REVIEWED_PULL_REQUEST_LINK = {
+  provider: "github" as const,
+  host: "github.com",
+  repository: "acme/app",
+  number: 42,
+  title: "Pull request #42",
+  url: PULL_REQUEST.url,
+};
+
+/** The PR links stage threads were created with, in dispatch order. */
+function createdPullRequestLinks(dispatched: ReadonlyArray<OrchestrationCommand>) {
+  return dispatched.flatMap((command) =>
+    command.type === "thread.create"
+      ? [{ threadId: command.threadId, link: command.pullRequest ?? null }]
+      : [],
+  );
+}
+
+/** The PR links added to existing threads, in dispatch order. */
+function backfilledPullRequestLinks(dispatched: ReadonlyArray<OrchestrationCommand>) {
+  return dispatched.flatMap((command) =>
+    command.type === "thread.meta.update" && command.pullRequest
+      ? [{ threadId: command.threadId, link: command.pullRequest }]
+      : [],
+  );
+}
 const MERGE_THREAD_ID = ThreadId.makeUnsafe("review-merge");
 const REVIEW_SLOTS = {
   reviewerA: { provider: "codex", model: "gpt-5-codex" },
@@ -4273,6 +4299,54 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     );
 
     expect(harness.getSnapshot().codeReviewWorkflows[0]?.pullRequest).toEqual(PULL_REQUEST);
+    const links = createdPullRequestLinks(harness.dispatched);
+    expect(links).toHaveLength(2);
+    expect(links.map((entry) => entry.link)).toEqual([
+      REVIEWED_PULL_REQUEST_LINK,
+      REVIEWED_PULL_REQUEST_LINK,
+    ]);
+  });
+
+  it("creates every reviewer thread with the reviewed PR linked, in one event", async () => {
+    const prHub = makeFakePrHub();
+    harness = await createHarness(makeReadModel({}), { prHubFederation: prHub.federation });
+
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review https://github.com/acme/app/pull/42",
+        ...REVIEW_SLOTS,
+      }),
+    );
+
+    const links = createdPullRequestLinks(harness.dispatched);
+    expect(links).toHaveLength(2);
+    expect(links.map((entry) => entry.link)).toEqual([
+      REVIEWED_PULL_REQUEST_LINK,
+      REVIEWED_PULL_REQUEST_LINK,
+    ]);
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([]);
+  });
+
+  it("links no PR when the review names none", async () => {
+    harness = await createHarness(makeReadModel({}));
+
+    await Effect.runPromise(
+      harness.service.createWorkflow({
+        projectId: ProjectId.makeUnsafe("project-1"),
+        title: "Code Review",
+        reviewPrompt: "Review the implementation",
+        ...REVIEW_SLOTS,
+      }),
+    );
+
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.pullRequest).toBeNull();
+    expect(createdPullRequestLinks(harness.dispatched).map((entry) => entry.link)).toEqual([
+      null,
+      null,
+    ]);
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([]);
   });
 
   it("rejects auto-post when no GitHub pull request resolves", async () => {
@@ -4324,6 +4398,96 @@ describe("CodeReviewWorkflowService pull request posting", () => {
     expect(mergeTurn?.message.text).toContain(
       `linking the pull request as [acme/app#42](${PULL_REQUEST.url})`,
     );
+    // The merge thread is created linked; the older reviewer threads are linked on start.
+    expect(createdPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: expect.any(String), link: REVIEWED_PULL_REQUEST_LINK },
+    ]);
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: workflow.reviewerA.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+      { threadId: workflow.reviewerB.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+    ]);
+  });
+
+  it("links the reviewed PR to existing stage threads that lack it, once", async () => {
+    const workflow = makeCompletedWorkflow({ autoPost: false });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({ threadId: workflow.reviewerA.threadId, suffix: "review-a" }),
+          {
+            ...makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "review-b" }),
+            pullRequests: [REVIEWED_PULL_REQUEST_LINK],
+          },
+          mergeThread(),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: workflow.reviewerA.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+      { threadId: MERGE_THREAD_ID, link: REVIEWED_PULL_REQUEST_LINK },
+    ]);
+  });
+
+  it("starts normally when linking existing threads fails", async () => {
+    const workflow = makeCompletedWorkflow({ autoPost: false });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({ threadId: workflow.reviewerA.threadId, suffix: "review-a" }),
+          makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "review-b" }),
+          mergeThread(),
+        ],
+      }),
+      {
+        failDispatch: (command) =>
+          command.type === "thread.meta.update" && command.pullRequest
+            ? new Error("link failed")
+            : undefined,
+      },
+    );
+
+    await harness.start();
+
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([]);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation.status).toBe("completed");
+  });
+
+  it("links nothing when the stored PR key does not parse", async () => {
+    const workflow = makeCompletedWorkflow({
+      autoPost: false,
+      pullRequest: { url: PULL_REQUEST.url, key: "not-a-pull-request-key" },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({ threadId: workflow.reviewerA.threadId, suffix: "review-a" }),
+          makeCompletedThread({ threadId: workflow.reviewerB.threadId, suffix: "review-b" }),
+          mergeThread(),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    expect(backfilledPullRequestLinks(harness.dispatched)).toEqual([]);
+  });
+
+  it("creates missing reviewer threads on start with the reviewed PR linked", async () => {
+    const workflow = makeWorkflow({ pullRequest: PULL_REQUEST });
+    harness = await createHarness(makeReadModel({ workflow }));
+
+    await harness.start();
+
+    expect(createdPullRequestLinks(harness.dispatched)).toEqual([
+      { threadId: workflow.reviewerA.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+      { threadId: workflow.reviewerB.threadId, link: REVIEWED_PULL_REQUEST_LINK },
+    ]);
   });
 
   it("auto-posts once when the merge completes", async () => {

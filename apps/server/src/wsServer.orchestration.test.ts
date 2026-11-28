@@ -1,3 +1,4 @@
+import { stableShortHash } from "@t3tools/shared/branchNaming";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AGENT_BRIDGE_WS_METHODS,
@@ -1658,16 +1659,16 @@ describe("WebSocket Server", () => {
             "generated-name",
             (snapshot) => snapshot?.phase === "done",
           );
-          expect(done?.request.branch).toBe("f5/generated-worktree");
+          expect(done?.request.branch).toBe("f5/feat/generated-worktree");
           expect(path.basename(done!.worktreePath!)).toMatch(
-            late ? /^t3code-11223344-/ : /^f5-generated-worktree-/,
+            late ? /^f5-wip-build-it-/ : /^f5-feat-generated-worktree-/,
           );
           expect(
             execFileSync("git", ["branch", "--show-current"], {
               cwd: done!.worktreePath!,
               encoding: "utf8",
             }).trim(),
-          ).toBe("f5/generated-worktree");
+          ).toBe("f5/feat/generated-worktree");
           await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
           expect(generateBranchName).toHaveBeenCalledTimes(1);
         },
@@ -1717,7 +1718,9 @@ describe("WebSocket Server", () => {
           );
         expect(new Set(snapshots.map((snapshot) => snapshot?.request.branch)).size).toBe(2);
         expect(
-          snapshots.every((snapshot) => snapshot?.request.branch.startsWith("f5/shared-title")),
+          snapshots.every((snapshot) =>
+            snapshot?.request.branch.startsWith("f5/feat/shared-title"),
+          ),
         ).toBe(true);
         await vi.waitFor(() => expect(sentTurns).toHaveLength(2), SLOW_WAIT);
       });
@@ -1755,12 +1758,13 @@ describe("WebSocket Server", () => {
           "naming-timeout",
           (snapshot) => snapshot?.phase === "done",
         );
-        expect(done?.request.branch).toBe("t3code/99887766");
+        // A legacy t3code placeholder from an older client is named from the message.
+        expect(done?.request.branch).toBe("f5/wip/build-it");
         expect(interrupted).toBe(true);
         expect(generateBranchName).toHaveBeenCalledTimes(1);
         await vi.waitFor(() => expect(sentTurns).toHaveLength(1), SLOW_WAIT);
       });
-      it.each(["invalid name", "t3code/ABCDEF12", "main"])(
+      it.each(["invalid name", "t3code/ABCDEF12", "f5/wip/foo", "main"])(
         "rejects explicit branch %s before creating a conversation",
         async (branch) => {
           const repo = makeGitRepo("f5-ws-explicit-name-");
@@ -1782,7 +1786,9 @@ describe("WebSocket Server", () => {
             },
           });
           expect(response.error).toMatchObject({ code: BOOTSTRAP_THREAD_NOT_CREATED_ERROR_CODE });
-          expect(response.error?.message).toMatch(/Invalid branch name|already exists/);
+          expect(response.error?.message).toMatch(
+            /Invalid branch name|already exists|wip\/ is reserved/,
+          );
           const snapshot = (await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot))
             .result as OrchestrationReadModel;
           expect(snapshot.threads.some((thread) => thread.id === "invalid-branch")).toBe(false);
@@ -3479,7 +3485,7 @@ describe("WebSocket Server", () => {
       git("branch", "t3code");
       let nativeForks = 0;
       const nativeOperations: NonNullable<ProviderServiceShape["nativeOperations"]> = {
-        list: () => unsupportedProviderCall(),
+        list: () => Effect.succeed([]),
         inspect: () => unsupportedProviderCall(),
         resolve: () => unsupportedProviderCall(),
         execute: () => unsupportedProviderCall(),
@@ -3562,7 +3568,9 @@ describe("WebSocket Server", () => {
         const fork = (snapshot.result as OrchestrationReadModel).threads.find(
           (thread) => thread.id === `fork-${operationId}`,
         );
-        expect(fork?.branch).toBe(sideChat ? "main" : "t3code-abcdef12");
+        expect(fork?.branch).toBe(
+          sideChat ? "main" : `f5/wip/source-${stableShortHash(operationId)}`,
+        );
         expect(fork?.sideChatOf).toBe(sideChat ? "fork-source" : undefined);
         expect(fork?.worktreePath).toEqual(sideChat ? null : expect.any(String));
         expect(

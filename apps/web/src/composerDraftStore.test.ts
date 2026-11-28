@@ -14,6 +14,8 @@ vi.mock("./lib/attachmentUploadQueue", () => ({
 }));
 vi.mock("./lib/serverHttpOrigin", () => ({ getServerHttpOrigin: () => "http://localhost" }));
 import { resetProtocolStateForTests, setServerBootstrap } from "./protocolState";
+import { attachmentSources } from "./lib/attachmentUploadQueue";
+import { findSnapshotContext } from "./lib/snapshotClipboard";
 import { createComposerMention } from "./composer-editor-mentions";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
 import { ProjectId, ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -26,6 +28,7 @@ import {
   createDeferredStorage,
   flushComposerDraftPersistence,
   mergePersistedRecords,
+  persistComposerAttachment,
   pruneOrphanedDraftThreads,
   clearPromotedDraftThreads,
   settleDraftThreadPromotion,
@@ -255,6 +258,25 @@ describe("composerDraftStore image imports", () => {
     expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]).toBeUndefined();
   });
 
+  it("stores the snapshot source when preparation replaces the original file", async () => {
+    const original = new File(["png"], "window-abcd.png", { type: "image/png" });
+    const prepared = new File(["webp"], "window-abcd.webp", { type: "image/webp" });
+    attachmentSources.set(original, "snapshot");
+    await useComposerDraftStore.getState().importImages(threadA, [original], {
+      processor: async () => ({
+        ok: true,
+        file: prepared,
+        recompressed: true,
+        originalSizeBytes: original.size,
+        finalSizeBytes: prepared.size,
+      }),
+    });
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadA]?.images[0]).toMatchObject({
+      name: prepared.name,
+      source: "snapshot",
+    });
+  });
+
   it("commits to the destination thread captured when the import starts", async () => {
     let resolveImport!: (result: CompressComposerImageResult) => void;
     const processor: ComposerImageProcessor = () =>
@@ -482,6 +504,37 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     });
     expect(baseStorage.setItem).toHaveBeenCalled();
     expect(getComposerReloadStatus()).toBe("ready");
+  });
+
+  it("restores Snap Shot context for copying after composer reload", async () => {
+    const image = {
+      ...makeImage({ id: "snapshot", previewUrl: "blob:snapshot", name: "window-abcd.png" }),
+      source: "snapshot" as const,
+    };
+    const context = {
+      ...image,
+      id: "context",
+      type: "file" as const,
+      name: "window-abcd-context.txt",
+      mimeType: "text/plain",
+      file: new File(["Window title"], "window-abcd-context.txt", { type: "text/plain" }),
+    };
+    const store = useComposerDraftStore.getState();
+    store.addImages(threadId, [image, context]);
+    store.syncPersistedAttachments(
+      threadId,
+      await Promise.all(
+        [image, context].map((attachment) => persistComposerAttachment(threadId, attachment)),
+      ),
+    );
+    await waitForComposerDraftVerification();
+    await useComposerDraftStore.persist.rehydrate();
+    const attachments = useComposerDraftStore.getState().draftsByThreadId[threadId]!.images;
+    const restoredImage = attachments.find(({ id }) => id === image.id)!;
+    expect(findSnapshotContext(restoredImage, attachments)).toMatchObject({
+      name: context.name,
+      source: "snapshot",
+    });
   });
 
   it.each([

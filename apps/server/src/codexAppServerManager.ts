@@ -1242,9 +1242,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       {
         threadId,
         runtimeMode: input.runtimeMode,
-        // Integrations belong to the session, not the provider thread.
+        // Integrations and the project's Branch prefix belong to the session, not the
+        // provider thread.
         ...(context.instructionContext?.integrationInstructions
           ? { integrationInstructions: context.instructionContext.integrationInstructions }
+          : {}),
+        ...(context.instructionContext?.branchNamePrefix
+          ? { branchNamePrefix: context.instructionContext.branchNamePrefix }
           : {}),
       },
       resolvedCwd,

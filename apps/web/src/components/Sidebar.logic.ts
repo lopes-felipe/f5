@@ -1,4 +1,15 @@
-import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import type {
+  CodeReviewWorkflowSummary,
+  InvestigationWorkflowSummary,
+  PlanningWorkflowSummary,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
+import {
+  threadIdsForCodeReviewWorkflow,
+  threadIdsForInvestigationWorkflow,
+  threadIdsForPlanningWorkflow,
+} from "@t3tools/shared/workflowThreads";
 import { linkedRepositoryCwd } from "../hooks/useLinkedPullRequestStates";
 import {
   type ThreadStatusPill,
@@ -413,6 +424,37 @@ export function sidebarPullRequestLinkTargets(
       enabled: thread.lookupCwd !== null && (!thread.archived || thread.id === routeThreadId),
     })),
   );
+}
+
+/**
+ * Workflow threads whose branch PR isn't theirs when they run without a worktree: review,
+ * investigation and document threads, and a feature's plan authors, reviewers and merge.
+ * Those run in the shared project folder, so the branch F5 records for them is whatever that
+ * folder has checked out. A feature's implementation thread, and the reviews of it, keep
+ * their branch PR: a Local implementation works on that folder's branch itself.
+ */
+export function sharedFolderWorkflowThreadIds(input: {
+  readonly planningWorkflows: ReadonlyArray<PlanningWorkflowSummary>;
+  readonly codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflowSummary>;
+  readonly investigationWorkflows: ReadonlyArray<InvestigationWorkflowSummary>;
+}): ReadonlySet<ThreadId> {
+  const ids = new Set<ThreadId>();
+  for (const workflow of input.codeReviewWorkflows) {
+    for (const id of threadIdsForCodeReviewWorkflow(workflow)) ids.add(id);
+  }
+  for (const workflow of input.investigationWorkflows) {
+    for (const id of threadIdsForInvestigationWorkflow(workflow)) ids.add(id);
+  }
+  for (const workflow of input.planningWorkflows) {
+    const implementation = new Set<ThreadId | null>([
+      workflow.implementation?.threadId ?? null,
+      ...(workflow.implementation?.codeReviews.map((review) => review.threadId) ?? []),
+    ]);
+    for (const id of threadIdsForPlanningWorkflow(workflow)) {
+      if (!implementation.has(id)) ids.add(id);
+    }
+  }
+  return ids;
 }
 
 export { hasUnseenCompletion, resolveThreadStatusPill, type ThreadStatusPill };

@@ -36,7 +36,7 @@ import {
   type ProjectionTurnRepositoryShape,
 } from "../../persistence/Services/ProjectionTurns.ts";
 import { summarizePlanningWorkflow } from "@t3tools/shared/workflowSummary";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
+import { buildPlaceholderBranchName } from "@t3tools/shared/branchNaming";
 import {
   OrchestrationCommandReceiptRepository,
   type OrchestrationCommandReceiptRepositoryShape,
@@ -794,6 +794,8 @@ async function createHarness(
         Layer.succeed(GitCore, {
           allocateWorktreePath: ({ cwd, branch }: { cwd: string; branch: string }) =>
             Effect.succeed(`${cwd}/worktrees/${branch.replaceAll("/", "-")}`),
+          branchExists: () => Effect.succeed(false),
+          resolveAvailableBranchName: (_cwd: string, branch: string) => Effect.succeed(branch),
           createWorktree,
         } as unknown as GitCoreShape),
       ),
@@ -3697,7 +3699,7 @@ describe("WorkflowService", () => {
     const createWorktreeArgs = harness.createWorktree.mock.calls[0]?.[0];
     expect(createWorktreeArgs?.cwd).toBe("/tmp/project");
     expect(createWorktreeArgs?.branch).toBe("main");
-    expect(typeof createWorktreeArgs?.newBranch).toBe("string");
+    expect(createWorktreeArgs?.newBranch).toMatch(/^f5\/wip\/[a-z0-9][a-z0-9-]*$/);
     expect(createWorktreeArgs?.path).toBe(
       `/tmp/project/worktrees/${createWorktreeArgs!.newBranch!.replaceAll("/", "-")}`,
     );
@@ -5188,7 +5190,7 @@ describe("WorkflowService", () => {
         codeReviews: reviews.map((review) => review.state),
         branch:
           scenario === "verified rename" || scenario === "unverified checkout"
-            ? buildTemporaryWorktreeBranchName()
+            ? buildPlaceholderBranchName({ sourceText: "implement plan" })
             : "implementation-branch",
         worktreePath: "/tmp/project/worktrees/implementation",
       }),

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, type RuntimeMode } from "@t3tools/contracts";
 import { Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { makeHtmlRenderRuntime } from "../htmlRender/HtmlRenderRuntime.ts";
@@ -23,6 +23,7 @@ const withCatalog = <A, E>(
   use: (
     call: (name: string, input: unknown) => Promise<{ text: string; isError?: boolean }>,
   ) => Effect.Effect<A, E>,
+  runtimeMode: RuntimeMode = "full-access",
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -31,7 +32,9 @@ const withCatalog = <A, E>(
         Effect.promise(() => rm(root, { recursive: true, force: true })),
       );
       const model = {
-        threads: [{ id: threadId, projectId: "project", deletedAt: null, archivedAt: null }],
+        threads: [
+          { id: threadId, projectId: "project", deletedAt: null, archivedAt: null, runtimeMode },
+        ],
         projects: [{ id: "project", deletedAt: null, kind: "standard", workspaceRoot: root }],
       };
       const engine = {
@@ -59,6 +62,7 @@ const withCatalog = <A, E>(
           } as never,
           guides: {} as never,
           links: { getThreadLinks: () => Effect.succeed([]) } as never,
+          themes: () => Effect.succeed({ updated: true }),
           messages: {} as never,
           plans: {} as never,
           sql: {} as never,
@@ -71,6 +75,27 @@ const withCatalog = <A, E>(
       });
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, SqliteClient.layerMemory()))),
   );
+
+it.effect("permits environment theme writes only in full-access mode", () =>
+  Effect.gen(function* () {
+    for (const mode of ["approval-required", "auto-accept-edits", "full-access"] as const) {
+      yield* withCatalog(
+        (call) =>
+          Effect.gen(function* () {
+            const result = yield* Effect.promise(() => call("theme_set", { appearance: "dark" }));
+            if (mode === "full-access") {
+              assert.isUndefined(result.isError);
+              assert.deepStrictEqual(JSON.parse(result.text), { updated: true });
+            } else {
+              assert.isTrue(result.isError);
+              assert.include(result.text, "requires an active full-access thread");
+            }
+          }),
+        mode,
+      );
+    }
+  }),
+);
 
 it.effect("returns a rejected page's message to the agent word for word", () =>
   withCatalog((call) =>

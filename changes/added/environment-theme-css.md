@@ -1,0 +1,2 @@
+- Edit custom theme CSS in Appearance settings. In a full-access thread, ask an agent to apply a theme with custom colors and CSS to connected clients.
+- Find published themes in the Command Palette and ask an agent to remove themes you no longer use.

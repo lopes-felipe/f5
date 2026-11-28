@@ -13,6 +13,7 @@ import {
   type ProviderInteractionMode,
   type RuntimeMode,
   type ThreadId,
+  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
 import { Effect } from "effect";
@@ -43,6 +44,8 @@ export function createWorkflowStageThread(input: {
   readonly worktreePath?: string | null;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: ProviderInteractionMode;
+  /** A PR the thread is about, linked in the same event that creates it. */
+  readonly pullRequest?: ThreadPullRequestLink | null;
   readonly createdAt: string;
 }) {
   return input.orchestrationEngine.dispatch({
@@ -56,6 +59,7 @@ export function createWorkflowStageThread(input: {
     interactionMode: input.interactionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE,
     branch: input.branch,
     worktreePath: input.worktreePath ?? null,
+    ...(input.pullRequest ? { pullRequest: input.pullRequest } : {}),
     createdAt: input.createdAt,
   });
 }

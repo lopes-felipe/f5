@@ -4861,6 +4861,172 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("shows a finished review's reviewed PR, never the shared folder's branch PR", async () => {
+    seedAppSettings({ sidebarOlderThreadDays: 7 });
+    const slot = { provider: "codex", model: "gpt-5-codex" } as const;
+    const ids = (prefix: string) => ({
+      a: `${prefix}-reviewer-a` as ThreadId,
+      b: `${prefix}-reviewer-b` as ThreadId,
+      merge: `${prefix}-merge` as ThreadId,
+    });
+    const linked = ids("linked");
+    const unlinked = ids("unlinked");
+    const samePr = ids("same-pr");
+    // The PR of the folder's own branch, reviewed with that branch checked out.
+    const checkoutPr = {
+      provider: "github" as const,
+      host: "github.com",
+      repository: "acme/repo",
+      number: 462,
+      title: "Pull request #462",
+      url: "https://github.com/acme/repo/pull/462",
+    };
+    const reviewedPr = {
+      provider: "github" as const,
+      host: "github.com",
+      repository: "acme/repo",
+      number: 1031,
+      title: "Pull request #1031",
+      url: "https://github.com/acme/repo/pull/1031",
+    };
+    const stage = (threadId: ThreadId) => ({
+      slot,
+      threadId,
+      status: "completed" as const,
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      error: null,
+      updatedAt: NOW_ISO,
+    });
+    const completedReview = (id: string, title: string, threads: ReturnType<typeof ids>) => ({
+      id: id as OrchestrationReadModel["codeReviewWorkflows"][number]["id"],
+      projectId: PROJECT_ID,
+      title,
+      slug: id,
+      reviewPrompt: "Review the PR",
+      branch: null,
+      reviewerA: { label: "Reviewer A", ...stage(threads.a) },
+      reviewerB: { label: "Reviewer B", ...stage(threads.b) },
+      consolidation: stage(threads.merge),
+      createdAt: NOW_ISO,
+      updatedAt: NOW_ISO,
+      archivedAt: null,
+      deletedAt: null,
+    });
+    // Every review thread runs Local in the project folder, which is on `main` (PR #462).
+    const snapshotThreads = (
+      threads: ReturnType<typeof ids>,
+      label: string,
+      merge: Partial<SnapshotThread>,
+    ) =>
+      Object.entries(threads).map(([role, id]) =>
+        createSnapshotThread({
+          id,
+          title: `${label} ${role} thread`,
+          branch: "main",
+          ...(role === "merge" ? merge : {}),
+        }),
+      );
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...createSnapshot([
+            createSnapshotThread({ id: THREAD_ID }),
+            ...snapshotThreads(linked, "Linked", { pullRequests: [reviewedPr] }),
+            ...snapshotThreads(unlinked, "Unlinked", {}),
+            ...snapshotThreads(samePr, "Same PR", { pullRequests: [checkoutPr] }),
+          ]),
+          codeReviewWorkflows: [
+            completedReview("review-linked", "Linked review", linked),
+            completedReview("review-unlinked", "Unlinked review", unlinked),
+            completedReview("review-same-pr", "Same PR review", samePr),
+          ],
+        };
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === WS_METHODS.gitResolvePullRequest) {
+            const sameAsBranch = (body as { reference?: string }).reference === checkoutPr.url;
+            return {
+              type: "result",
+              result: {
+                pullRequest: sameAsBranch
+                  ? {
+                      number: 462,
+                      title: "Sidebar follow-ups",
+                      url: checkoutPr.url,
+                      baseBranch: "main",
+                      headBranch: "main",
+                      state: "open",
+                    }
+                  : {
+                      number: 1031,
+                      title: "Name F5 branches",
+                      url: reviewedPr.url,
+                      baseBranch: "main",
+                      headBranch: "f5/branch-names",
+                      state: "open",
+                    },
+              },
+            };
+          }
+          if (body._tag === WS_METHODS.gitStatus)
+            return {
+              type: "result",
+              result: {
+                branch: "main",
+                hasWorkingTreeChanges: false,
+                workingTree: { files: [], insertions: 0, deletions: 0 },
+                hasUpstream: true,
+                aheadCount: 0,
+                behindCount: 0,
+                pr: {
+                  number: 462,
+                  title: "Sidebar follow-ups",
+                  url: "https://github.com/acme/repo/pull/462",
+                  baseBranch: "main",
+                  headBranch: "main",
+                  state: "open",
+                },
+              },
+            };
+          return null;
+        };
+      },
+    });
+    const finishedStatusOf = (workflowTitle: string) =>
+      querySidebarThreadRowByTitle(workflowTitle)
+        ?.closest('[data-sidebar="menu-sub-item"]')
+        ?.querySelector<HTMLButtonElement>('[data-testid="workflow-finished-status"]') ?? null;
+
+    try {
+      // The merge thread's linked PR is the review's outcome, not the folder's branch PR.
+      await waitForSidebarThreadRow("Linked review");
+      await vi.waitFor(() => expect(finishedStatusOf("Linked review")?.textContent).toBe("#1031"));
+      expect(finishedStatusOf("Linked review")?.getAttribute("aria-label")).toBe(
+        "Open last thread, #1031 PR open: Name F5 branches",
+      );
+      // Reviewing the PR the folder has checked out still shows it, from the link.
+      await waitForSidebarThreadRow("Same PR review");
+      await vi.waitFor(() => expect(finishedStatusOf("Same PR review")?.textContent).toBe("#462"));
+
+      // Without a link, the review has no PR: it folds as old and shows a plain check.
+      expect(querySidebarThreadRowByTitle("Unlinked review")).toBeNull();
+      const older = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-testid="sidebar-older-toggle"]'),
+        "The older row should render.",
+      );
+      older.click();
+      await waitForSidebarThreadRow("Unlinked review");
+      expect(finishedStatusOf("Unlinked review")?.getAttribute("aria-label")).toBe(
+        "Open last thread",
+      );
+      expect(finishedStatusOf("Unlinked review")?.textContent).not.toContain("#462");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("reads a snoozed last thread's PR, and waits for git status before a check or folding", async () => {
     seedAppSettings({ sidebarOlderThreadDays: 7 });
     const at = "2026-03-11T12:00:00.000Z";

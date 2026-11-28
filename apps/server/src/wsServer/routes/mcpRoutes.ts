@@ -261,6 +261,7 @@ export const mcpRoutes = ({
       return yield* routePromise(() =>
         detectMcpImports({
           environment: execution.environment,
+          includeUserHome: body.includeUserHome === true,
           ...(body.projectId ? { cwd: execution.cwd } : {}),
         }),
       );

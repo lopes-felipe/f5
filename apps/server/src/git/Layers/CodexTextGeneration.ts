@@ -12,7 +12,7 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   type ModelSelection,
 } from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
 import {
   getModelSelectionStringOptionValue,
@@ -36,6 +36,7 @@ import { sanitizeThreadTitle } from "../../threadTitle.ts";
 import { TextGenerationError } from "../Errors.ts";
 import {
   buildBranchNamePrompt,
+  toBranchNameGenerationResult,
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   threadTitleInstructionRules,
@@ -43,7 +44,6 @@ import {
 } from "../Prompts.ts";
 import {
   type BranchNameGenerationInput,
-  type BranchNameGenerationResult,
   type CommitMessageGenerationResult,
   type PrContentGenerationResult,
   type ThreadTitleGenerationResult,
@@ -622,7 +622,7 @@ export const makeCodexTextGeneration = (
           "generateBranchName",
           input.attachments,
         );
-        const { prompt, outputSchema } = buildBranchNamePrompt({
+        const { prompt } = buildBranchNamePrompt({
           message: input.message,
           attachments: input.attachments,
           writingPreferences: input.writingPreferences,
@@ -632,15 +632,14 @@ export const makeCodexTextGeneration = (
           operation: "generateBranchName",
           cwd: input.cwd,
           prompt,
-          outputSchemaJson: outputSchema,
+          // Codex strict output schemas must require every property.
+          outputSchemaJson: Schema.Struct({ type: Schema.String, branch: Schema.String }),
           imagePaths,
           ...(input.model ? { model: input.model } : {}),
           ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
         });
 
-        return {
-          branch: sanitizeBranchFragment(generated.branch),
-        } satisfies BranchNameGenerationResult;
+        return toBranchNameGenerationResult(generated);
       });
     };
 

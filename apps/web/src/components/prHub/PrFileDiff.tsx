@@ -4,7 +4,7 @@ import {
   substantivePrPatch,
   type PrReviewAnchor,
 } from "@t3tools/shared/prReview";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { SearchableDiffView } from "../SearchableDiffView";
 import type { PrHubChangedFile } from "@t3tools/contracts";
 import { useAppSettings } from "../../appSettings";
@@ -13,27 +13,52 @@ import { buildFileDiffRenderKey, DIFF_PANEL_UNSAFE_CSS } from "../../lib/diffPat
 import { getRenderablePrFilePatch, isPurePrFileRename } from "../../lib/prFilePatch";
 import { PREFERRED_HIGHLIGHTER, resolveDiffThemeName } from "../../lib/diffRendering";
 import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
+import { Button } from "../ui/button";
 
 export function PrFileDiff({
-  file,
+  file: listedFile,
   scope,
   url,
   onComment,
+  loadDiff,
+  forgeLabel = "GitHub",
 }: {
   file: PrHubChangedFile;
   scope: string;
   url: string;
   onComment?: ((anchor: PrReviewAnchor) => void) | undefined;
+  loadDiff?: (() => Promise<PrHubChangedFile>) | undefined;
+  forgeLabel?: string;
 }) {
+  const [loadedFile, setLoadedFile] = useState<PrHubChangedFile | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const file = useMemo(
+    () =>
+      loadedFile?.patch
+        ? {
+            ...listedFile,
+            patch: loadedFile.patch,
+            patchStatus: "available" as const,
+            hasShortenedLines: loadedFile.hasShortenedLines === true,
+          }
+        : listedFile,
+    [listedFile, loadedFile],
+  );
   const { settings } = useAppSettings();
   const { resolvedTheme } = useTheme();
   const pureRename = isPurePrFileRename(file);
+  const missingDiff =
+    (file.patchStatus === "truncated" || !file.patch) &&
+    file.patchStatus !== "available" &&
+    !pureRename &&
+    file.additions + file.deletions > 0;
   const displayPatch = useMemo(
     () =>
-      file.patch && settings.diffIgnoreWhitespace && !pureRename
+      file.patch && settings.diffIgnoreWhitespace && !pureRename && !file.hasShortenedLines
         ? substantivePrPatch(file.patch)
         : file.patch,
-    [file.patch, settings.diffIgnoreWhitespace, pureRename],
+    [file.patch, file.hasShortenedLines, settings.diffIgnoreWhitespace, pureRename],
   );
   const patch = useMemo(
     () => getRenderablePrFilePatch(file, displayPatch, scope),
@@ -48,12 +73,36 @@ export function PrFileDiff({
   if ((file.patchStatus !== "available" && !pureRename) || !patch || patch.kind !== "files") {
     return (
       <p className="p-3 text-sm text-muted-foreground">
-        {file.patchStatus === "truncated"
-          ? "GitHub returned an incomplete patch."
+        {missingDiff && (loadDiff || file.patchStatus === "truncated")
+          ? "Diff too large to display."
           : "A renderable text patch is unavailable for this file."}{" "}
+        {loadDiff && missingDiff ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={loading}
+            onClick={() => {
+              setLoading(true);
+              setLoadError(null);
+              void loadDiff()
+                .then(setLoadedFile)
+                .catch((error: unknown) =>
+                  setLoadError(error instanceof Error ? error.message : "Could not load diff."),
+                )
+                .finally(() => setLoading(false));
+            }}
+          >
+            {loading ? "Loading…" : "Load diff"}
+          </Button>
+        ) : null}{" "}
         <OpenLinkAnchor href={url} target="_blank" rel="noreferrer" className="underline">
-          Open on GitHub
+          Open on {forgeLabel}
         </OpenLinkAnchor>
+        {loadError ? (
+          <span className="block text-destructive" role="alert">
+            {loadError}
+          </span>
+        ) : null}
       </p>
     );
   }
@@ -69,7 +118,7 @@ export function PrFileDiff({
         options={{
           diffStyle: settings.diffRenderMode === "split" ? "split" : "unified",
           lineDiffType: "none",
-          ...(onComment
+          ...(onComment && !loadedFile
             ? {
                 onLineNumberClick: (event) => {
                   const anchor: PrReviewAnchor = {

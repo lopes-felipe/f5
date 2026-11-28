@@ -12,7 +12,9 @@ import { recallComposerMentions } from "~/composerMentionHistoryStore";
 import { collapseExpandedComposerCursor } from "~/composer-logic";
 import { type AppSettings, useAppSettingsSelector } from "~/appSettings";
 import { ComposerUsageLimits } from "../../usage/ComposerUsageLimits";
-import { useEffect, useRef, useId, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useId, useState, useSyncExternalStore } from "react";
+import { usePendingQuestion } from "./usePendingQuestion";
+import { buildPendingUserInputAnswers } from "~/pendingUserInput";
 import { threadWorkspaceCwd } from "@t3tools/shared/threadWorkspace";
 import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { hasVisibleFocusPopup } from "~/lib/keyboardFocus";
@@ -34,6 +36,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
 import { ComposerPromptEditor } from "~/components/ComposerPromptEditor";
 import { buildExpandedImagePreview } from "~/components/chat/ExpandedImagePreview";
+import { findSnapshotContext } from "~/lib/snapshotClipboard";
+import { CopySnapshotButton } from "../CopySnapshotButton";
 import {
   ComposerCommandMenu,
   composerCommandMenuEmptyText,
@@ -207,9 +211,43 @@ export function ChatComposer({
     activePendingApproval,
     pendingUserInputs,
     respondingRequestIds,
-    activePendingProgress,
     isComposerApprovalState,
   } = pendingInteraction;
+  const pendingRequest = pendingUserInputs[0] ?? null;
+  const {
+    answers,
+    index,
+    progress: activePendingProgress,
+  } = usePendingQuestion(threadId, pendingRequest);
+  const pendingText = activePendingProgress?.customAnswer;
+  const pendingQuestionKey =
+    pendingRequest && activePendingProgress
+      ? JSON.stringify([pendingRequest.requestId, activePendingProgress.activeQuestion?.id])
+      : null;
+  const [pendingCursor, setPendingCursor] = useState<{
+    key: string;
+    value: string;
+    cursor: number;
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (pendingText !== undefined) pendingInteraction.onSyncPendingAnswer(pendingText);
+  }, [pendingText, pendingQuestionKey, pendingInteraction.onSyncPendingAnswer]);
+  const editorCursor =
+    pendingText === undefined
+      ? composerCursor
+      : pendingCursor?.key === pendingQuestionKey && pendingCursor?.value === pendingText
+        ? pendingCursor.cursor
+        : collapseExpandedComposerCursor(
+            pendingText,
+            pendingText.length,
+            activePendingProgress?.activeDraft?.mentions,
+          );
+  const onEditorChange: ChatComposerProps["onPromptChange"] = (...args) => {
+    if (pendingQuestionKey !== null) {
+      setPendingCursor({ key: pendingQuestionKey, value: args[0], cursor: args[1] });
+    }
+    onPromptChange(...args);
+  };
   const isComposerQuestionState = !activePendingApproval && pendingUserInputs.length > 0;
   const freshArm = useFreshSessionStore((state) => state.arms[threadId]);
   // The editor points at the highlighted option only while the list is on screen.
@@ -395,7 +433,7 @@ export function ChatComposer({
       next.expandedCursor,
       next.mentions,
     );
-    onPromptChange(
+    onEditorChange(
       next.value,
       nextCursor,
       next.expandedCursor,
@@ -550,8 +588,8 @@ export function ChatComposer({
                   pendingUserInputs={pendingUserInputs}
                   cwd={threadWorkspaceCwd(activeThread, activeProject)}
                   respondingRequestIds={respondingRequestIds}
-                  answers={pendingInteraction.activePendingDraftAnswers}
-                  questionIndex={pendingInteraction.activePendingQuestionIndex}
+                  answers={answers}
+                  questionIndex={index}
                   onSelectOption={pendingInteraction.onSelectActivePendingUserInputOption}
                   onToggleOption={pendingInteraction.onToggleActivePendingUserInputOption}
                   onAdvance={pendingInteraction.onAdvanceActivePendingUserInput}
@@ -701,6 +739,8 @@ export function ChatComposer({
                                     src: image.previewUrl,
                                     name: image.name,
                                     mimeType: image.mimeType,
+                                    source: image.source,
+                                    snapshotContext: findSnapshotContext(image, composerImages),
                                     ...(image.uploadId ? {} : { sourceBlob: image.file }),
                                   },
                                   { x: event.clientX, y: event.clientY },
@@ -728,6 +768,20 @@ export function ChatComposer({
                               <span className="line-clamp-3">{name}</span>
                             </div>
                           )}
+                          {image?.source === "snapshot" && previewUrl ? (
+                            <CopySnapshotButton
+                              className="absolute left-1 top-1"
+                              threadId={threadId}
+                              item={{
+                                src: previewUrl,
+                                name: image.name,
+                                mimeType: image.mimeType,
+                                source: image.source,
+                                sourceBlob: image.file.size > 0 ? image.file : undefined,
+                                snapshotContext: findSnapshotContext(image, composerImages),
+                              }}
+                            />
+                          ) : null}
                           {image ? (
                             <AttachmentUploadProgress image={image} threadId={threadId} />
                           ) : (
@@ -835,6 +889,7 @@ export function ChatComposer({
                 </button>
               ) : null}
               <ComposerPromptEditor
+                workspaceCwd={threadWorkspaceCwd(activeThread, activeProject)}
                 richTextEnabled={settings.composerRichTextEnabled}
                 ref={composerEditorRef}
                 mentions={
@@ -851,14 +906,14 @@ export function ChatComposer({
                       ? activePendingProgress.customAnswer
                       : prompt
                 }
-                cursor={composerCursor}
+                cursor={editorCursor}
                 terminalContexts={
                   !isComposerApprovalState && pendingUserInputs.length === 0
                     ? composerTerminalContexts
                     : []
                 }
                 onRemoveTerminalContext={attachments.removeComposerTerminalContextFromDraft}
-                onChange={onPromptChange}
+                onChange={onEditorChange}
                 onCommandKeyDown={handleCommandKey}
                 onPaste={attachments.onComposerPaste}
                 placeholder={
@@ -928,7 +983,13 @@ export function ChatComposer({
                 prompt={prompt}
                 send={sendControls}
                 mode={modeControls}
-                pending={pendingInteraction}
+                pending={{
+                  ...pendingInteraction,
+                  activePendingProgress,
+                  activePendingResolvedAnswers: pendingRequest
+                    ? buildPendingUserInputAnswers(pendingRequest.questions, answers)
+                    : null,
+                }}
                 sendShortcutLabel={sendShortcutLabel}
                 leading={
                   isComposerFooterCompact ? null : (

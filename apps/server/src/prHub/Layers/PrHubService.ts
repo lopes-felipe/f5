@@ -619,6 +619,21 @@ export const makePrHubServiceForHost = (accountHost = DEFAULT_HOST) =>
               number: pr.number,
               host: pr.host,
               ...(input.cursor ? { cursor: input.cursor } : {}),
+              ...(input.fullDiffFile
+                ? {
+                    fullDiffFile: input.fullDiffFile,
+                    requestDiff: (endpoint: string) =>
+                      githubCli
+                        .request({
+                          cwd,
+                          context,
+                          endpoint,
+                          method: "GET",
+                          accept: "application/vnd.github.diff",
+                        })
+                        .pipe(Effect.mapError(mapGitHubCliError)),
+                  }
+                : {}),
               request: (endpoint, query, cache) =>
                 githubCli
                   .request({

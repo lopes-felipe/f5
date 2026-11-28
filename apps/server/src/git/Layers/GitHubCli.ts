@@ -127,7 +127,7 @@ export const makeGitHubCli = (
                   stdin: input.stdin,
                   signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal,
                   maxStdoutBytes: input.maxStdoutBytes ?? 8 * 1024 * 1024,
-                  outputMode: "error",
+                  outputMode: input.truncateOutput ? "truncate" : "error",
                 });
               },
               catch: (error) => normalizeGitHubCliError("execute", error),

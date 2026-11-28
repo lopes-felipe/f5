@@ -23,7 +23,6 @@ import {
 } from "@t3tools/contracts";
 import { normalizeModelSlug, resolveSelectableModel } from "@t3tools/shared/model";
 import { describeFastModeDisabledReason, refusedFastModeReason } from "@t3tools/shared/runtimeInfo";
-import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { type ChatMessage } from "../types";
 import { linkDerivedMessageList } from "../lib/streamingTextRevision";
 import { CLAUDE_SUBAGENT_MODEL_INHERIT, getAppModelOptions } from "../appSettings";
@@ -482,8 +481,10 @@ export function buildFirstSendBootstrap(input: {
         projectCwd: input.projectCwd,
         baseBranch: input.baseBranchForWorktree,
         ...(input.repositoryPaths ? { repositoryPaths: input.repositoryPaths } : {}),
-        branch: input.worktreeBranchName ?? buildTemporaryWorktreeBranchName(),
-        ...(input.worktreeBranchName ? { namingIntent: "explicit" as const } : {}),
+        // Without a chosen name the server names a placeholder from the first message.
+        ...(input.worktreeBranchName
+          ? { branch: input.worktreeBranchName, namingIntent: "explicit" as const }
+          : {}),
         ...(input.runSetupScript !== null && input.runSetupScript !== undefined
           ? { runSetupScript: input.runSetupScript }
           : {}),

@@ -15,9 +15,12 @@ export type ImageAttachmentAction = "copy" | "download";
 
 function imageActionMenuItems(
   canCopyImage: boolean,
+  snapshot: boolean,
 ): ReadonlyArray<ContextMenuItem<ImageAttachmentAction>> {
   return [
-    ...(canCopyImage ? ([{ id: "copy", label: "Copy image" }] as const) : []),
+    ...(canCopyImage
+      ? ([{ id: "copy", label: snapshot ? "Copy Snap Shot" : "Copy image" }] as const)
+      : []),
     { id: "download", label: "Download image" },
   ];
 }
@@ -53,7 +56,7 @@ export function useImageAttachmentActions(threadId: ThreadId): {
           await copyImageAttachment(item);
           toastManager.add({
             type: "success",
-            title: "Image copied",
+            title: item.source === "snapshot" ? "Snap Shot copied" : "Image copied",
             data: { threadId },
           });
         } else {
@@ -88,7 +91,10 @@ export function useImageAttachmentActions(threadId: ThreadId): {
         // Use a renderer-owned menu in Electron so selecting Copy remains in
         // the same user-activation task as navigator.clipboard.write(). The
         // regular browser build keeps its native image context menu.
-        const action = await showContextMenuFallback(imageActionMenuItems(canCopyImage), position);
+        const action = await showContextMenuFallback(
+          imageActionMenuItems(canCopyImage, item.source === "snapshot"),
+          position,
+        );
         if (action) {
           await runImageAction(action, item);
         }

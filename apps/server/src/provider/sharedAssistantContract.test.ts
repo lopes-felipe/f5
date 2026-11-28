@@ -437,11 +437,26 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain('Thread title: "Prompt improvements"');
     expect(text).not.toContain("Recorded turns in this thread");
     expect(text).toContain('Working directory: "/tmp/f3-code"');
+    expect(text).toContain(
+      "- Branch naming: name new branches f5/<type>/<kebab-slug> (types: feat, fix, refactor, chore, docs, perf, test); never use t3code/ or wip/. A f5/wip/ branch is a placeholder F5 renames: rename it to that form before pushing it yourself.",
+    );
     expect(text).toContain("Runtime mode: full-access");
     expect(text).toContain("Active model: claude-sonnet-4-6");
     expect(text).toContain("Active reasoning effort: max");
     expect(text).toContain("Treat the `Active model` value in F5 Runtime Context as authoritative");
     expect(text).toContain("Never infer or substitute a model identity from training knowledge");
+  });
+
+  it("names branches with the configured prefix in the runtime context", () => {
+    const text = buildClaudeAssistantInstructions({
+      interactionMode: "default",
+      cwd: "/tmp/project",
+      branchNamePrefix: "Team/Me",
+    });
+    expect(text).toContain("- Branch naming: name new branches team/me/<type>/<kebab-slug>");
+    expect(buildClaudeAssistantInstructions({ interactionMode: "default" })).not.toContain(
+      "Branch naming:",
+    );
   });
 
   it("renders attended and unattended workflow host contracts", () => {

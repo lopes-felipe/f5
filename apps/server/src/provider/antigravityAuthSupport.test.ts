@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   advanceAntigravityRevision,
+  antigravityAccountKey,
   antigravityKeyFingerprint,
   antigravityLaunchEnvironment,
   antigravityProfileSettings,
@@ -172,6 +173,48 @@ describe("Antigravity readiness", () => {
     });
     expect(readiness.ready).toBe(false);
     expect(readiness.message).toContain("not available");
+  });
+});
+
+describe("Antigravity /usage state", () => {
+  it("keeps the refusal and verification across reads and revision changes", async () => {
+    const directory = await profile();
+    await updateAntigravityAuthState(directory, (state) => ({
+      ...state,
+      usageCommandRefused: { version: "1.6.0", reason: "cli-unrecognized" },
+      usageCommandVerifiedVersion: "1.5.15",
+    }));
+    await advanceAntigravityRevision(directory);
+    const state = await readAntigravityAuthState(directory);
+    expect(state.revision).toBe(1);
+    expect(state.usageCommandRefused).toEqual({ version: "1.6.0", reason: "cli-unrecognized" });
+    expect(state.usageCommandVerifiedVersion).toBe("1.5.15");
+    // A malformed refusal is dropped, never half-read.
+    await fs.writeFile(
+      path.join(directory, "f5-auth-state.json"),
+      JSON.stringify({ version: 1, revision: 2, usageCommandRefused: { version: "1.6.0" } }),
+    );
+    expect((await readAntigravityAuthState(directory)).usageCommandRefused).toBeUndefined();
+  });
+
+  it("keys the account by the sign-in's identity, falling back to the revision", async () => {
+    const directory = await profile();
+    // Unidentified sign-ins at the same revision stay apart per profile.
+    const other = await profile();
+    expect(await antigravityAccountKey(directory)).toBe(
+      `profile:${path.basename(directory)}:revision:0`,
+    );
+    expect(await antigravityAccountKey(other)).not.toBe(await antigravityAccountKey(directory));
+    const idToken = (sub: string) =>
+      `h.${Buffer.from(JSON.stringify({ sub })).toString("base64url")}.s`;
+    await writeToken(directory, { client_id: "c", refresh_token: "r1", id_token: idToken("u1") });
+    const first = await antigravityAccountKey(directory);
+    expect(first).toMatch(/^v2:[0-9a-f]{64}$/);
+    // A refreshed token is the same account; another subject is another account.
+    await writeToken(directory, { client_id: "c", refresh_token: "r2", id_token: idToken("u1") });
+    expect(await antigravityAccountKey(directory)).toBe(first);
+    await writeToken(directory, { client_id: "c", refresh_token: "r3", id_token: idToken("u2") });
+    expect(await antigravityAccountKey(directory)).not.toBe(first);
   });
 });
 

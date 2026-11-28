@@ -495,6 +495,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     withFakeCodexEnv(
       {
         output: JSON.stringify({
+          type: "feat",
           branch: "  Feat/Session  ",
         }),
         stdinMustNotContain: "Image attachments supplied to the model",
@@ -516,6 +517,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     withFakeCodexEnv(
       {
         output: JSON.stringify({
+          type: "feat",
           branch: "fix/session-timeout",
         }),
         stdinMustNotContain: "Attachment metadata:",
@@ -537,6 +539,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     withFakeCodexEnv(
       {
         output: JSON.stringify({
+          type: "feat",
           branch: "fix/ui-regression",
         }),
         requireImage: true,
@@ -576,6 +579,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     withFakeCodexEnv(
       {
         output: JSON.stringify({
+          type: "feat",
           branch: "fix/ui-regression",
         }),
         requireImage: true,
@@ -623,6 +627,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
     withFakeCodexEnv(
       {
         output: JSON.stringify({
+          type: "feat",
           branch: "fix/ui-regression",
         }),
         requireImage: true,
@@ -795,6 +800,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
       withFakeCodexEnv(
         {
           output: JSON.stringify({
+            type: "feat",
             branch: "not-a-title",
           }),
         },

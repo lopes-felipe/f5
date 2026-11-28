@@ -13,7 +13,8 @@ import {
 import { useComposerDraftStore } from "../composerDraftStore";
 import { openProjectCreateNewDialog } from "./ProjectCreateNewController";
 import { useTheme } from "../hooks/useTheme";
-import { getAvailableThemePalettes } from "../themePalette";
+import { getThemePalettes } from "../themePalette";
+import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 
 import {
   type FilesystemBrowseResult,
@@ -330,6 +331,10 @@ function OpenCommandPaletteDialog(props: {
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const resultListRef = useRef<LegendListRef | null>(null);
   const settings = useAppSettingsSelector(selectCommandPaletteSettings);
+  const { data: environmentThemes } = useQuery({
+    ...serverConfigQueryOptions(),
+    select: (config) => config.settings?.environmentThemes,
+  });
   const { theme, setTheme } = useTheme();
   const { activeDraftThread, activeThread, handleNewThread, routeThreadId } = useHandleNewThread();
   const projects = useStore((store) => store.projects);
@@ -1273,7 +1278,7 @@ function OpenCommandPaletteDialog(props: {
       {
         value: "themes",
         label: "Themes",
-        items: getAvailableThemePalettes(settings.customThemes).map((palette) => ({
+        items: getThemePalettes(settings.customThemes, environmentThemes).map((palette) => ({
           kind: "action" as const,
           value: `theme:${palette.id}`,
           title: palette.name,

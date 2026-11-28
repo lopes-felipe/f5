@@ -238,6 +238,11 @@ export const AntigravitySettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /**
+   * Read subscription limits by running the CLI's own `/usage` command. Off by default: F5 never
+   * calls Google's quota APIs itself, and this still asks Google through the CLI.
+   */
+  readLimitsWithCli: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   authMethod: AntigravityAuthMethod.pipe(
     Schema.withDecodingDefault(() => "oauth-personal" as const),
   ),
@@ -610,7 +615,55 @@ const MobileAccessSettings = Schema.Struct({
   ),
 });
 
+export const THEME_CSS_MAX_LENGTH = 100_000;
+export const MAX_ENVIRONMENT_THEMES = 32;
+const PublishedThemeId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
+const EnvironmentAppearanceMode = Schema.Literals(["light", "dark", "system"]);
+const PublishedThemeColor = Schema.String.check(
+  Schema.isPattern(/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i),
+);
+export const EnvironmentThemeDefinition = Schema.Struct({
+  version: Schema.Literal(1),
+  id: PublishedThemeId,
+  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80)),
+  parameters: Schema.Struct({
+    baseHue: Schema.Finite,
+    chroma: Schema.Finite,
+    contrast: Schema.Finite,
+  }),
+  overrides: Schema.optional(
+    Schema.Struct({
+      light: Schema.optional(Schema.Record(Schema.String, PublishedThemeColor)),
+      dark: Schema.optional(Schema.Record(Schema.String, PublishedThemeColor)),
+    }),
+  ),
+  css: Schema.optional(Schema.String.check(Schema.isMaxLength(THEME_CSS_MAX_LENGTH))),
+});
+export type EnvironmentThemeDefinition = typeof EnvironmentThemeDefinition.Type;
+export const EnvironmentThemeSetInput = Schema.Struct({
+  remove: Schema.optionalKey(Schema.Boolean),
+  theme: Schema.optionalKey(EnvironmentThemeDefinition),
+  themeId: Schema.optionalKey(PublishedThemeId),
+  appearance: Schema.optionalKey(EnvironmentAppearanceMode),
+});
+export type EnvironmentThemeSetInput = typeof EnvironmentThemeSetInput.Type;
+const EnvironmentThemeSelection = Schema.Struct({
+  theme: Schema.optionalKey(Schema.Struct({ value: PublishedThemeId, generation: Schema.String })),
+  appearance: Schema.optionalKey(
+    Schema.Struct({ value: EnvironmentAppearanceMode, generation: Schema.String }),
+  ),
+});
+const EnvironmentThemes = Schema.Array(EnvironmentThemeDefinition).check(
+  Schema.isMaxLength(MAX_ENVIRONMENT_THEMES),
+  Schema.makeFilter((themes) => new Set(themes.map(({ id }) => id)).size === themes.length),
+  Schema.makeFilter(
+    (themes) => new TextEncoder().encode(JSON.stringify(themes)).byteLength <= 2 * 1024 * 1024,
+  ),
+);
+
 export const ServerSettings = Schema.Struct({
+  environmentThemes: EnvironmentThemes.pipe(Schema.withDecodingDefault(() => [])),
+  environmentThemeSelection: EnvironmentThemeSelection.pipe(Schema.withDecodingDefault(() => ({}))),
   mobileAccess: MobileAccessSettings.pipe(
     Schema.withDecodingDefault(() => Schema.decodeSync(MobileAccessSettings)({})),
   ),
@@ -868,6 +921,8 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  environmentThemes: Schema.optionalKey(EnvironmentThemes),
+  environmentThemeSelection: Schema.optionalKey(EnvironmentThemeSelection),
   mobileAccess: Schema.optionalKey(
     Schema.Struct({
       enabled: Schema.optionalKey(Schema.Boolean),

@@ -2,11 +2,18 @@ import { isPrHubRepositoryExcluded } from "../../prHub/repositoryPolicy.ts";
 import { GitHubRequestPolicy } from "../githubRequestPolicy.ts";
 import { lookupBranchPullRequest } from "../branchPullRequestLookup.ts";
 import { GitWorkspaceSwitch } from "../workspaceSwitch.ts";
+import { GitPlaceholderRename } from "../placeholderRename.ts";
 import { setupProjectScript } from "@t3tools/shared/projectScripts";
 import { readProjectSettings, readProjectForCwd } from "../../project/projectSettings";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads";
 import { GitCommandError, GitHubCliError } from "../Errors.ts";
+import {
+  buildFinalBranchName,
+  buildLegacyPullRequestBranchName,
+  buildPullRequestBranchName,
+  isPlaceholderBranch,
+} from "@t3tools/shared/branchNaming";
 import {
   isSshRemoteUrl,
   parseSourceControlRemoteUrl,
@@ -36,11 +43,7 @@ import { makeGitHubCli } from "./GitHubCli.ts";
 import { GitHubCredentialScope } from "../githubApi.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import {
-  buildDeterministicCommitMessage,
-  buildDeterministicPrContent,
-  prefixGeneratedBranchName,
-} from "../Prompts.ts";
+import { buildDeterministicCommitMessage, buildDeterministicPrContent } from "../Prompts.ts";
 import { ForgeAccounts } from "../../sourceControl/accountRouting.ts";
 import { makeForgeSourceControlProvider } from "../../sourceControl/ForgeSourceControlProvider.ts";
 import { SourceControlProviderError } from "../../sourceControl/SourceControlProvider.ts";
@@ -121,16 +124,30 @@ function resolveHeadRepositoryNameWithOwner(
   return `${ownerLogin}/${repositoryName}`;
 }
 
-function resolvePullRequestWorktreeLocalBranchName(
+/**
+ * The local branch for a pull request: its own head branch, or `<prefix>/pr-<n>/<head>`
+ * for a fork. `legacy` is the name older builds used for the same fork branch.
+ */
+function resolvePullRequestWorktreeLocalBranchNames(
   pullRequest: ResolvedPullRequest & PullRequestHeadRemoteInfo,
-): string {
+  prefix: string,
+): { readonly current: string; readonly legacy: string | null } {
   if (!pullRequest.isCrossRepository) {
-    return pullRequest.headBranch;
+    return { current: pullRequest.headBranch, legacy: null };
   }
 
   const sanitizedHeadBranch = sanitizeBranchFragment(pullRequest.headBranch).trim();
-  const suffix = sanitizedHeadBranch.length > 0 ? sanitizedHeadBranch : "head";
-  return `t3code/pr-${pullRequest.number}/${suffix}`;
+  const headFragment = sanitizedHeadBranch.length > 0 ? sanitizedHeadBranch : "head";
+  return {
+    current: buildPullRequestBranchName({ prefix, number: pullRequest.number, headFragment }),
+    legacy: buildLegacyPullRequestBranchName({ number: pullRequest.number, headFragment }),
+  };
+}
+
+/** `fix(scope): subject` → its type and the subject without the conventional prefix. */
+function splitConventionalSubject(subject: string): { type?: string; text: string } {
+  const match = /^\s*([a-z]+)(?:\([^)]*\))?!?:\s*(.*)$/i.exec(subject);
+  return match ? { type: match[1]!.toLowerCase(), text: match[2]! } : { text: subject };
 }
 
 function parseGitHubRepositoryNameWithOwnerFromRemoteUrl(url: string | null): string | null {
@@ -1142,7 +1159,11 @@ export const makeGitManager = Effect.gen(function* () {
           subject: customCommit.subject,
           body: customCommit.body,
           ...(input.includeBranch
-            ? { branch: sanitizeFeatureBranchName(customCommit.subject) }
+            ? {
+                branch: sanitizeFeatureBranchName(
+                  splitConventionalSubject(customCommit.subject).text,
+                ),
+              }
             : {}),
           commitMessage: formatCommitMessage(customCommit.subject, customCommit.body),
         };
@@ -1159,7 +1180,11 @@ export const makeGitManager = Effect.gen(function* () {
           subject: deterministic.subject,
           body: deterministic.body,
           ...(input.includeBranch
-            ? { branch: sanitizeFeatureBranchName(deterministic.subject) }
+            ? {
+                branch: sanitizeFeatureBranchName(
+                  splitConventionalSubject(deterministic.subject).text,
+                ),
+              }
             : {}),
           commitMessage: formatCommitMessage(deterministic.subject, deterministic.body),
         };
@@ -1579,8 +1604,16 @@ export const makeGitManager = Effect.gen(function* () {
           );
         });
 
+      const pullRequestBranchNames = resolvePullRequestWorktreeLocalBranchNames(
+        pullRequestWithRemoteInfo,
+        (yield* getProjectSettings(input.cwd)).sourceControlWriting.branchNamePrefix,
+      );
+      // A fork branch checked out by an older build keeps its t3code/ name.
       const localPullRequestBranch =
-        resolvePullRequestWorktreeLocalBranchName(pullRequestWithRemoteInfo);
+        pullRequestBranchNames.legacy !== null &&
+        (yield* gitCore.branchExists(input.cwd, pullRequestBranchNames.legacy))
+          ? pullRequestBranchNames.legacy
+          : pullRequestBranchNames.current;
 
       // For a fork PR this also accepts a worktree on a branch that merely shares the head's bare
       // name (a fork PR from "main" matches the user's own "main"). That checkout is somebody
@@ -1719,11 +1752,14 @@ export const makeGitManager = Effect.gen(function* () {
         );
       }
 
-      const writingPreferences = settings.sourceControlWriting;
-      const generatedBranch = suggestion.branch ?? sanitizeFeatureBranchName(suggestion.subject);
-      const preferredBranch = sanitizeFeatureBranchName(
-        prefixGeneratedBranchName(generatedBranch, writingPreferences),
-      );
+      const conventional = splitConventionalSubject(suggestion.subject);
+      const preferredBranch = buildFinalBranchName({
+        prefix: settings.sourceControlWriting.branchNamePrefix,
+        type: conventional.type,
+        // `sanitizeFeatureBranchName` files unprefixed names under `feature/`; that is
+        // not a type the model chose, so the slug's own words decide it instead.
+        slug: (suggestion.branch ?? conventional.text).replace(/^feature\//, ""),
+      });
       const existingBranchNames = yield* gitCore.listLocalBranchNames(cwd);
       const resolvedBranch = resolveAutoFeatureBranchName(existingBranchNames, preferredBranch);
 
@@ -1761,7 +1797,7 @@ export const makeGitManager = Effect.gen(function* () {
         );
       }
 
-      let branchStep: { status: "created" | "skipped_not_requested"; name?: string };
+      let branchStep: { status: "created" | "renamed" | "skipped_not_requested"; name?: string };
       let workspaceSwitched = false;
       let commitMessageForStep = input.commitMessage;
       let preResolvedCommitSuggestion: CommitAndBranchSuggestion | undefined = undefined;
@@ -1783,7 +1819,7 @@ export const makeGitManager = Effect.gen(function* () {
         branchStep = { status: "skipped_not_requested" as const };
       }
 
-      const currentBranch = branchStep.name ?? initialStatus.branch;
+      let currentBranch = branchStep.name ?? initialStatus.branch;
 
       const commit = yield* runCommitStep(
         settings,
@@ -1803,6 +1839,54 @@ export const makeGitManager = Effect.gen(function* () {
           push: { status: "skipped_not_requested" as const },
           pr: { status: "skipped_not_requested" as const },
         };
+
+      // A placeholder branch gets its final name before it is first pushed, so
+      // `wip/` branches never reach the remote. Only the worktree's own F5
+      // placeholder qualifies: its receipt proves F5 created it.
+      const branchPrefix = settings.sourceControlWriting.branchNamePrefix;
+      if (
+        wantsPush &&
+        branchStep.status === "skipped_not_requested" &&
+        currentBranch &&
+        initialStatus.upstreamRef === null &&
+        isPlaceholderBranch(currentBranch, branchPrefix)
+      ) {
+        const placeholder = currentBranch;
+        const receipt = yield* gitCore
+          .readWorktreePreparation(input.cwd)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (receipt?.namingIntent === "temporary" && receipt.branch === placeholder) {
+          // A new commit's subject is published anyway; with nothing new, the
+          // placeholder's message-derived slug is not, so it falls back to `update`.
+          const conventional = splitConventionalSubject(
+            commit.status === "created" ? commit.subject : "",
+          );
+          const newBranch = buildFinalBranchName({
+            prefix: branchPrefix,
+            type: conventional.type,
+            slug: conventional.text.trim() || "update",
+          });
+          const renamePlaceholder = yield* GitPlaceholderRename;
+          const renamed = renamePlaceholder
+            ? yield* renamePlaceholder({ cwd: input.cwd, oldBranch: placeholder, newBranch }).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new GitManagerError({
+                      operation: "runStackedAction",
+                      detail: error.message,
+                    }),
+                ),
+              )
+            : yield* gitCore.renameBranch({ cwd: input.cwd, oldBranch: placeholder, newBranch });
+          // Null: another rename got there first; push whatever is checked out now.
+          currentBranch = renamed
+            ? renamed.branch
+            : ((yield* gitCore.statusDetails(input.cwd, { refreshUpstream: false })).branch ??
+              placeholder);
+          if (currentBranch !== placeholder)
+            branchStep = { status: "renamed" as const, name: currentBranch };
+        }
+      }
 
       const push = wantsPush
         ? yield* gitCore.pushCurrentBranch(input.cwd, currentBranch)

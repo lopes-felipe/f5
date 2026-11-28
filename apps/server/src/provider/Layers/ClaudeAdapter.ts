@@ -6793,6 +6793,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const appendInstructionText = buildClaudeAssistantInstructions({
           ...(input.projectTitle ? { projectTitle: input.projectTitle } : {}),
           ...(input.threadTitle ? { threadTitle: input.threadTitle } : {}),
+          ...(input.branchNamePrefix ? { branchNamePrefix: input.branchNamePrefix } : {}),
           ...(input.priorWorkSummary ? { priorWorkSummary: input.priorWorkSummary } : {}),
           ...(input.preservedTranscriptBefore
             ? { preservedTranscriptBefore: input.preservedTranscriptBefore }

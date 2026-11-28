@@ -10,15 +10,15 @@ import {
 } from "../storage/storageAutomation.testHarness.ts";
 import { makeFakeGitCore } from "../git/testDoubles.ts";
 import { makeMemoryWorktreePreparations } from "../persistence/worktreePreparations.testUtils.ts";
-import { ThreadId, type GitPrepareWorktreeInput } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
 import { Effect, Exit, Fiber, Scope } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProjectSetupScriptRunnerShape } from "./Services/ProjectSetupScriptRunner.ts";
-import { makeWorktreePreparation } from "./worktreePreparation.ts";
+import { makeWorktreePreparation, type PreparedWorktreeInput } from "./worktreePreparation.ts";
 
 const projectRoot = Path.resolve("/repo");
-const input: GitPrepareWorktreeInput = {
+const input: PreparedWorktreeInput = {
   cwd: Path.join(projectRoot, "old-worktree"),
   projectCwd: projectRoot,
   threadId: ThreadId.makeUnsafe("draft-1"),
@@ -65,7 +65,7 @@ async function harness() {
           })),
         ),
   }).service;
-  const createWorktree = vi.fn((request: GitPrepareWorktreeInput & { operationId: string }) =>
+  const createWorktree = vi.fn((request: PreparedWorktreeInput & { operationId: string }) =>
     Effect.gen(function* () {
       const receipt = yield* receipts.allocate({
         operationId: request.operationId,

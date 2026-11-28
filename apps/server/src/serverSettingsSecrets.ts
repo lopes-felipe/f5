@@ -1,8 +1,18 @@
 import { Effect } from "effect";
-import type { ServerSettings } from "@t3tools/contracts";
+import { isDeepStrictEqual } from "node:util";
+import type {
+  ProviderInstanceConfig,
+  ProviderInstanceId,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "@t3tools/contracts";
 import type { ServerSecretStoreShape } from "./auth/Services/ServerSecretStore.ts";
+import { cliProxyHubBasePath } from "./usage/cliProxyHubUrl.ts";
+import { mergeProviderInstanceEnvironment } from "./provider/ProviderInstanceEnvironment.ts";
 import {
   PROVIDER_INSTANCE_SECRET_FIELDS,
+  applyServerSettingsPatch,
+  textGeneratorRequestUrl,
   providerInstanceSecretField,
   type ProviderInstanceSecretField,
 } from "@t3tools/shared/serverSettings";
@@ -20,6 +30,205 @@ export const providerInstanceSecretName = (secret: ProviderInstanceSecretField, 
   `${secret.secretPrefix}${Buffer.from(id).toString("base64url")}`;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
+
+function secretDestination(value: unknown): string {
+  const url = typeof value === "string" ? value.trim() : "";
+  const parsed = URL.parse(url);
+  if (!parsed) return url;
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  return parsed.href;
+}
+
+const cliProxyKey = "F5_CLIPROXY_API_KEY";
+const cliProxyHub = "F5_CLIPROXY_HUB_URL";
+const unknownHub = "\0";
+
+function cliProxyDestination(
+  instance: ProviderInstanceConfig,
+  previous?: ProviderInstanceConfig,
+): string | undefined {
+  if (instance.driver !== "grok") return undefined;
+  const environment = instance.environment ?? [];
+  const readUrl = (name: string) => {
+    const row = environment.findLast((row) => row.name === name);
+    if (!row) return process.env[name] ?? "";
+    if (!row.sensitive || !row.valueRedacted) return row.value;
+    if (!previous) return row.value || undefined;
+    // A redacted row names the slot for this instance and variable. A replacement
+    // written by another row for that slot takes precedence over the saved value.
+    const supplied = environment.findLast(
+      (row) => row.name === name && row.sensitive && !row.valueRedacted && row.value,
+    );
+    const saved = previous.environment?.findLast((row) => row.name === name && row.sensitive);
+    return supplied?.value || saved?.value || undefined;
+  };
+  const effective = mergeProviderInstanceEnvironment(
+    environment.map((row) =>
+      row.name === cliProxyHub ? { ...row, value: readUrl(row.name) ?? unknownHub } : row,
+    ),
+    process.env,
+  );
+  const hub = effective[cliProxyHub] ?? "";
+  if (hub === unknownHub) return undefined;
+  const url = URL.parse(hub);
+  if (!url) return hub;
+  url.pathname = cliProxyHubBasePath(url.pathname);
+  return new URL("v0/management/auth-files", url).href;
+}
+
+/** Clear retained credentials before resolving references in the patched settings. */
+export function applySettingsPatchWithSecretDestinations(
+  current: ServerSettings,
+  patch: ServerSettingsPatch,
+  currentMaterialized: ServerSettings = current,
+): { settings: ServerSettings; removals: SettingsSecretChange[] } {
+  const next = applyServerSettingsPatch(current, patch);
+  const removals: SettingsSecretChange[] = [];
+  const clearMovedPassword = (
+    config: Record<string, unknown>,
+    previous: Record<string, unknown>,
+    suppliedPassword: unknown,
+    name: string,
+  ) => {
+    if (
+      (typeof suppliedPassword === "string" && suppliedPassword.trim()) ||
+      secretDestination(config.serverUrl) === secretDestination(previous.serverUrl)
+    ) {
+      return config;
+    }
+    if (
+      previous.serverPasswordRedacted !== true &&
+      !previous.serverPassword &&
+      config.serverPasswordRedacted !== true
+    ) {
+      return config;
+    }
+    removals.push({ name, value: null });
+    const { serverPasswordRedacted: _omit, ...rest } = config;
+    return { ...rest, serverPassword: "" };
+  };
+
+  const opencode = patch.providers?.opencode
+    ? clearMovedPassword(
+        next.providers.opencode,
+        current.providers.opencode,
+        patch.providers.opencode.serverPassword,
+        globalName,
+      )
+    : next.providers.opencode;
+  return {
+    settings: {
+      ...next,
+      providers: {
+        ...next.providers,
+        opencode: opencode as ServerSettings["providers"]["opencode"],
+      },
+      providerInstances: patch.providerInstances
+        ? Object.fromEntries(
+            Object.entries(next.providerInstances).map(([id, instance]) => {
+              const previous = current.providerInstances[id as ProviderInstanceId];
+              if (instance.driver === "opencode") {
+                const suppliedConfig = patch.providerInstances?.[id as ProviderInstanceId]?.config;
+                const config = record(instance.config) ? instance.config : {};
+                const saved =
+                  previous?.driver === instance.driver && record(previous.config)
+                    ? previous.config
+                    : {};
+                const suppliedPassword = record(suppliedConfig)
+                  ? suppliedConfig.serverPassword
+                  : undefined;
+                if (typeof suppliedPassword === "string" && suppliedPassword.trim()) {
+                  return [id, instance];
+                }
+                const moved =
+                  secretDestination(config.serverUrl) !== secretDestination(saved.serverUrl);
+                if (
+                  previous?.driver === instance.driver &&
+                  (moved ||
+                    (saved.serverPasswordRedacted === true &&
+                      config.serverPasswordRedacted !== true))
+                ) {
+                  removals.push({
+                    name: providerInstanceSecretName(opencodeSecret, id),
+                    value: null,
+                  });
+                }
+                if (
+                  (!moved &&
+                    (config.serverPasswordRedacted !== true ||
+                      saved.serverPasswordRedacted === true)) ||
+                  !record(instance.config)
+                ) {
+                  return [id, instance];
+                }
+                const { serverPasswordRedacted: _omit, ...rest } = config;
+                return [
+                  id,
+                  {
+                    ...instance,
+                    config: { ...rest, ...(moved ? { serverPassword: "" } : {}) },
+                  },
+                ];
+              }
+              const environment = instance.environment;
+              const isRetainedKey = (row: NonNullable<typeof environment>[number]) =>
+                row.name === cliProxyKey && row.sensitive && row.valueRedacted;
+              if (previous && environment?.some(isRetainedKey) && instance.driver === "grok") {
+                const materialized =
+                  currentMaterialized.providerInstances[id as ProviderInstanceId];
+                const before = materialized && cliProxyDestination(materialized);
+                const after = cliProxyDestination(instance, materialized);
+                if (
+                  (before !== undefined && before === after) ||
+                  (before === undefined &&
+                    after === undefined &&
+                    previous.driver === instance.driver &&
+                    isDeepStrictEqual(
+                      previous.environment?.filter((row) => row.name.toUpperCase() === cliProxyHub),
+                      environment.filter((row) => row.name.toUpperCase() === cliProxyHub),
+                    ))
+                ) {
+                  return [id, instance];
+                }
+                const replacement = environment.findLast(
+                  (row) => row.name === cliProxyKey && !row.valueRedacted && row.value,
+                );
+                return [
+                  id,
+                  {
+                    ...instance,
+                    environment: replacement
+                      ? environment.filter((row) => row.name !== cliProxyKey || row === replacement)
+                      : environment.map((row) =>
+                          // prepareProviderEnvironmentSecrets deletes explicit blank values.
+                          isRetainedKey(row) ? { ...row, value: "", valueRedacted: false } : row,
+                        ),
+                  },
+                ];
+              }
+              return [id, instance];
+            }),
+          )
+        : next.providerInstances,
+      textGenerators: patch.textGenerators
+        ? Object.fromEntries(
+            Object.entries(next.textGenerators).map(([id, generator]) => {
+              const previous = current.textGenerators[id as ProviderInstanceId];
+              const moved =
+                previous &&
+                textGeneratorRequestUrl(previous) !== textGeneratorRequestUrl(generator);
+              return [
+                id,
+                // prepareSettingsSecrets deletes the key after its reference is cleared.
+                moved && !generator.apiKey ? { ...generator, apiKeyRedacted: false } : generator,
+              ];
+            }),
+          )
+        : next.textGenerators,
+    },
+    removals,
+  };
+}
 
 /** Persist references only; inline values take precedence over an old reference. */
 export function prepareSettingsSecrets(

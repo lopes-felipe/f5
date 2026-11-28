@@ -358,6 +358,7 @@ export const ServerConfig = Schema.Struct({
   // failing the whole config decode.
   availableEditors: ForwardCompatibleArray(EditorId),
   settings: Schema.optional(ServerSettings),
+  themeBackgrounds: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   diagnostics: Schema.optionalKey(DiagnosticsConfiguration),
   /**
    * Whether this host can run the Cursor SDK harness, so Add provider can offer
@@ -432,6 +433,7 @@ export const ServerConfigUpdatedPayload = Schema.Struct({
   issues: ServerConfigIssues,
   providers: ServerProviders,
   settings: Schema.optional(ServerSettings),
+  themeBackgrounds: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 });
 export type ServerConfigUpdatedPayload = typeof ServerConfigUpdatedPayload.Type;
 

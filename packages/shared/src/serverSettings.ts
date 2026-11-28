@@ -149,6 +149,15 @@ export const PROVIDER_INSTANCE_SECRET_FIELDS = {
 export type ProviderInstanceSecretField =
   (typeof PROVIDER_INSTANCE_SECRET_FIELDS)[keyof typeof PROVIDER_INSTANCE_SECRET_FIELDS];
 
+export function textGeneratorRequestUrl(
+  config: Pick<ServerSettings["textGenerators"][ProviderInstanceId], "baseUrl" | "kind">,
+): string {
+  const url =
+    config.baseUrl.trim().replace(/\/+$/, "") +
+    (config.kind === "anthropic" ? "/messages" : "/chat/completions");
+  return URL.parse(url)?.href ?? url;
+}
+
 export function providerInstanceSecretField(
   driver: string | undefined,
 ): ProviderInstanceSecretField | undefined {
@@ -287,6 +296,9 @@ export function applyServerSettingsPatch(
   // Model aliases are a whole map: merging would keep removed mappings.
   const nextWithReplacements = {
     ...nextWithInstances,
+    ...(patch.environmentThemeSelection !== undefined
+      ? { environmentThemeSelection: patch.environmentThemeSelection }
+      : {}),
     ...(patch.textGenerators !== undefined ? { textGenerators: patch.textGenerators } : {}),
     ...(patch.worktreeCleanup !== undefined ? { worktreeCleanup: patch.worktreeCleanup } : {}),
     ...(patch.usageModelAliases !== undefined

@@ -1,0 +1,1 @@
+- Copy a Snap Shot from its attachment or image preview and paste it into another composer in the same F5 profile with its capture context. Reloaded drafts retain Snap Shot context for copying.

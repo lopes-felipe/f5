@@ -11,6 +11,7 @@ import { useEffect, type MouseEvent as ReactMouseEvent } from "react";
 import { ZoomableImage } from "./ZoomableImage";
 import { Button } from "../ui/button";
 import type { ImageAttachmentActionItem } from "./imageAttachmentActions";
+import { findSnapshotContext } from "../../lib/snapshotClipboard";
 import type { ImageAttachmentAction } from "./useImageAttachmentActions";
 
 export interface ExpandedImageItem extends ImageAttachmentActionItem {
@@ -58,9 +59,11 @@ export function buildExpandedImagePreview(
     previewUrl?: string;
     sourceUrl?: string;
     sourceBlob?: Blob;
+    source?: ImageAttachmentActionItem["source"];
     file?: Blob;
   }>,
   selectedImageId: string,
+  attachments: Parameters<typeof findSnapshotContext>[1] = images,
 ): ExpandedImagePreview | null {
   const previewableImages = images.flatMap((image) =>
     image.previewUrl
@@ -71,6 +74,8 @@ export function buildExpandedImagePreview(
             previewSrc: image.previewUrl,
             name: image.name,
             mimeType: image.mimeType,
+            source: image.source,
+            snapshotContext: findSnapshotContext(image, attachments),
             sourceBlob: image.sourceBlob ?? image.file,
           },
         ]
@@ -89,6 +94,8 @@ export function buildExpandedImagePreview(
       previewSrc: image.previewSrc,
       name: image.name,
       mimeType: image.mimeType,
+      ...(image.source ? { source: image.source } : {}),
+      ...(image.snapshotContext ? { snapshotContext: image.snapshotContext } : {}),
       ...(image.sourceBlob ? { sourceBlob: image.sourceBlob } : {}),
     })),
     index: selectedIndex,
@@ -210,10 +217,12 @@ export function ExpandedImageDialog({
             className="text-white/90 hover:bg-white/15 hover:text-white"
             disabled={!canCopyImage || actionsDisabled}
             onClick={() => onAction("copy", item)}
-            aria-label="Copy image"
+            aria-label={item.source === "snapshot" ? "Copy Snap Shot" : "Copy image"}
             title={
               canCopyImage
-                ? "Copy image as PNG (Cmd/Ctrl+C)"
+                ? item.source === "snapshot"
+                  ? "Copy Snap Shot and its context (Cmd/Ctrl+C)"
+                  : "Copy image as PNG (Cmd/Ctrl+C)"
                 : "Image copying is unavailable in this environment"
             }
           >

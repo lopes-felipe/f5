@@ -4,12 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./messageMerge": "./src/messageMerge.ts",
-    "./pendingApprovals": "./src/pendingApprovals.ts",
-    "./approvalOptions": "./src/approvalOptions.ts",
-    "./pendingQuestionAnswers": "./src/pendingQuestionAnswers.ts",
-    "./threadAttention": "./src/threadAttention.ts",
-    "./threadOrdering": "./src/threadOrdering.ts",
+    "./themeCss": {
+      "types": "./src/themeCss.ts",
+      "import": "./src/themeCss.ts"
+    },
     "./terminalReplay": {
       "types": "./src/terminalReplay.ts",
       "import": "./src/terminalReplay.ts"
@@ -254,9 +252,9 @@
       "types": "./src/searchRanking.ts",
       "import": "./src/searchRanking.ts"
     },
-    "./worktree": {
-      "types": "./src/worktree.ts",
-      "import": "./src/worktree.ts"
+    "./branchNaming": {
+      "types": "./src/branchNaming.ts",
+      "import": "./src/branchNaming.ts"
     },
     "./orchestrationActivityPayload": {
       "types": "./src/orchestrationActivityPayload.ts",
@@ -614,7 +612,13 @@
     "./upstreamPortsPrompts": {
       "types": "./src/upstreamPortsPrompts.ts",
       "import": "./src/upstreamPortsPrompts.ts"
-    }
+    },
+    "./messageMerge": "./src/messageMerge.ts",
+    "./pendingApprovals": "./src/pendingApprovals.ts",
+    "./approvalOptions": "./src/approvalOptions.ts",
+    "./pendingQuestionAnswers": "./src/pendingQuestionAnswers.ts",
+    "./threadAttention": "./src/threadAttention.ts",
+    "./threadOrdering": "./src/threadOrdering.ts"
   },
   "scripts": {
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
