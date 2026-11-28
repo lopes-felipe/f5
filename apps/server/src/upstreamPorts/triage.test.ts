@@ -244,18 +244,20 @@ describe("triageChunk", () => {
 
   it("applies path rules before the LLM and never sends rule-skipped commits", async () => {
     const seen: string[] = [];
-    const mobile = chunkCommit({ sha: sha(9), paths: ["apps/mobile/app.tsx"] });
+    const marketing = chunkCommit({ sha: sha(9), paths: ["apps/marketing/app.tsx"] });
+    const mobile = chunkCommit({ sha: sha(8), paths: ["apps/mobile/src/core/pairing.ts"] });
     const result = await run(
       triageChunk(
-        baseInput([mobile, ...commits.slice(0, 1)], (prompt) => {
+        baseInput([marketing, mobile, ...commits.slice(0, 1)], (prompt) => {
           seen.push(prompt);
-          return Effect.succeed({ groups: [group({ commits: [sha(1)] })] });
+          return Effect.succeed({ groups: [group({ commits: [sha(1), sha(8)] })] });
         }),
       ),
     );
     expect(seen.join("\n")).not.toContain(sha(9));
+    expect(seen.join("\n")).toContain(sha(8));
     const skip = result.groups.find((entry) => entry.commits.includes(sha(9)))!;
-    expect(skip.decision).toMatchObject({ reasonKey: "mobile", decidedBy: "rule" });
+    expect(skip.decision).toMatchObject({ reasonKey: "marketing", decidedBy: "rule" });
   });
 
   it("runs rules only without a triage call", async () => {

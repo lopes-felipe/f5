@@ -284,6 +284,12 @@ export function resetWsNativeApiForTests(): void {
   instance = null;
 }
 
+export function phoneAccessTransport() {
+  createWsNativeApi();
+  if (!instance) throw new Error("Phone access requires a connection to F5.");
+  return instance.transport;
+}
+
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 

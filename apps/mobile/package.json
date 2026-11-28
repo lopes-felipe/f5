@@ -1,0 +1,48 @@
+{
+  "name": "@t3tools/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./index.ts",
+  "scripts": {
+    "dev": "node ../../scripts/check-dependencies.ts --install --workspace=@t3tools/mobile && F5_MOBILE_VARIANT=development expo start --dev-client",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "test": "node node_modules/vitest/vitest.mjs run",
+    "ios:dev": "F5_MOBILE_VARIANT=development expo prebuild --platform ios --clean && F5_MOBILE_VARIANT=development expo run:ios",
+    "ios:release": "expo prebuild --platform ios --clean && expo run:ios --configuration Release --no-bundler",
+    "check:bundle": "expo export --platform ios --output-dir .expo/bundle-check"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "58.0.17",
+    "@t3tools/contracts": "workspace:*",
+    "@t3tools/shared": "workspace:*",
+    "effect": "catalog:",
+    "expo": "58.0.26",
+    "expo-application": "58.1.2",
+    "expo-build-properties": "58.0.12",
+    "expo-camera": "58.0.14",
+    "expo-constants": "58.0.16",
+    "expo-dev-client": "58.0.21",
+    "expo-linking": "58.0.17",
+    "expo-network": "58.0.5",
+    "expo-notifications": "58.1.9",
+    "expo-router": "58.0.33",
+    "expo-secure-store": "58.0.3",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-native": "0.88.1",
+    "react-native-gesture-handler": "3.5.0",
+    "react-native-reanimated": "4.8.0",
+    "react-native-safe-area-context": "5.11.1",
+    "react-native-screens": "4.30.1",
+    "react-native-url-polyfill": "3.0.0",
+    "react-native-worklets": "0.14.0",
+    "zustand": "5.0.11"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

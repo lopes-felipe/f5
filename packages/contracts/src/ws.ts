@@ -1,4 +1,5 @@
 import { PR_WATCH_CHANGED_CHANNEL, PullRequestWatchChanged } from "./pullRequestWatch";
+import { MobileAccessStatus } from "./mobile/v1";
 import { HTML_RENDER_REQUEST_CHANNEL, HtmlPreviewHostRequest } from "./threadTools";
 import { Schema } from "effect";
 import {
@@ -79,6 +80,7 @@ export const WS_CHANNELS = {
   computerActivity: "computer.activity",
   computerObservationsInvalidated: "computer.observations.invalidated",
   serverWelcome: "server.welcome",
+  mobileAccessStatusUpdated: "mobileAccess.statusUpdated",
   serverRuntimeReadiness: "server.runtimeReadiness",
   serverConfigUpdated: "server.configUpdated",
   serverDatabaseDamaged: "server.databaseDamaged",
@@ -172,6 +174,7 @@ export const WsWelcomePayload = Schema.Struct({
 export type WsWelcomePayload = typeof WsWelcomePayload.Type;
 
 export interface WsPushPayloadByChannel {
+  readonly [WS_CHANNELS.mobileAccessStatusUpdated]: MobileAccessStatus;
   readonly [PR_WATCH_CHANGED_CHANNEL]: typeof PullRequestWatchChanged.Type;
   readonly [WS_CHANNELS.profilesUpdated]: typeof ProfileListResult.Type;
   readonly [WS_CHANNELS.providerAccountEvent]: typeof ProviderAccountEvent.Type;
@@ -428,6 +431,7 @@ export const WsPushUpstreamPortsChanged = makeWsPushSchema(
 );
 
 export const WsPushChannelSchema = Schema.Literals([
+  WS_CHANNELS.mobileAccessStatusUpdated,
   WS_CHANNELS.profilesUpdated,
   WS_CHANNELS.providerAccountEvent,
   AGENTS_WS_CHANNELS.snapshotUpdated,
@@ -471,6 +475,7 @@ export const WsPushChannelSchema = Schema.Literals([
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
 export const WsPush = Schema.Union([
+  makeWsPushSchema(WS_CHANNELS.mobileAccessStatusUpdated, MobileAccessStatus),
   WsPushProfilesUpdated,
   WsPushProviderAccountEvent,
   WsPushAgentsSnapshotUpdated,

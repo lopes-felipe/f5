@@ -28,6 +28,22 @@ import {
 } from "./settingsSearch";
 
 export const SETTINGS_ITEM_DESCRIPTORS: ReadonlyArray<SettingsItemDescriptor> = [
+  {
+    category: "phone",
+    id: "phone.access",
+    label: "Phone access",
+    description: "Pair an iPhone over Tailscale and manage paired devices.",
+    keywords: ["mobile", "pair", "qr", "ios", "tailscale", "revoke"],
+    targetSelector: '[data-settings-search-target="phone.access"]',
+  },
+  {
+    category: "phone",
+    id: "phone.push",
+    label: "Phone push notifications",
+    description: "Configure APNs and send a test notification.",
+    keywords: ["mobile", "apple", "apns", "push", "p8"],
+    targetSelector: '[data-settings-search-target="phone.push"]',
+  },
   ...GENERAL_SETTINGS_DESCRIPTORS,
   ...APPEARANCE_SETTINGS_DESCRIPTORS,
   ...CONVERSATION_SETTINGS_DESCRIPTORS,

@@ -10,120 +10,19 @@ import {
   threadIdsForPlanningWorkflow,
 } from "@t3tools/shared/workflowThreads";
 
-import type { ThreadStatus } from "../threadStatus";
+export {
+  attentionPriority,
+  bucketThreadsByAttention,
+  compareAttentionPriority,
+  isAttentionStatus,
+  isAttentionThread,
+  isWorkingStatus,
+  isWorkflowThreadBlockedOnUser,
+  type AttentionCandidate,
+  type AttentionStatus,
+  type ThreadAttentionBuckets,
+} from "@t3tools/shared/threadAttention";
 import { getVisibleThreads, type ListedThread, sortThreadsByActivity } from "./threadOrdering";
-
-/** Statuses that need the user; lower sorts first. A paused queue sorts last. */
-const ATTENTION_PRIORITY = {
-  "pending-approval": 0,
-  "awaiting-input": 1,
-  "plan-ready": 2,
-} as const satisfies Partial<Record<ThreadStatus, number>>;
-
-const PAUSED_QUEUE_PRIORITY = 3;
-
-export type AttentionStatus = keyof typeof ATTENTION_PRIORITY;
-
-export function isAttentionStatus(status: ThreadStatus): status is AttentionStatus {
-  return status in ATTENTION_PRIORITY;
-}
-
-export function isWorkingStatus(status: ThreadStatus): boolean {
-  return status === "working" || status === "connecting";
-}
-
-/** A thread needs the user when it waits on them or its next-turn queue is paused. */
-export function isAttentionThread(status: ThreadStatus, queuePaused: boolean): boolean {
-  return queuePaused || isAttentionStatus(status);
-}
-
-export function attentionPriority(status: ThreadStatus, queuePaused: boolean): number {
-  if (queuePaused) return PAUSED_QUEUE_PRIORITY;
-  return isAttentionStatus(status) ? ATTENTION_PRIORITY[status] : Number.POSITIVE_INFINITY;
-}
-
-export interface AttentionCandidate {
-  readonly status: ThreadStatus;
-  readonly queuePaused: boolean;
-}
-
-/** Comparator for `toSorted`/`sort`; stable sorts keep recency within a priority. */
-export function compareAttentionPriority(
-  left: AttentionCandidate,
-  right: AttentionCandidate,
-): number {
-  return (
-    attentionPriority(left.status, left.queuePaused) -
-    attentionPriority(right.status, right.queuePaused)
-  );
-}
-
-export interface ThreadAttentionBuckets<T extends ListedThread = ListedThread> {
-  /** Needs the user, most urgent first, recency preserved within a priority. */
-  readonly attention: T[];
-  readonly working: T[];
-  readonly remaining: T[];
-}
-
-/**
- * A workflow step blocks on the user when it asks for an approval or an answer,
- * or its queue is paused. Plans are consumed by the workflow itself, so a
- * plan-ready step is not waiting on the user.
- */
-export function isWorkflowThreadBlockedOnUser(status: ThreadStatus, queuePaused: boolean): boolean {
-  return queuePaused || status === "pending-approval" || status === "awaiting-input";
-}
-
-/**
- * Splits recency-sorted threads into attention, working and the rest.
- * `workflowThreads` (owned by a workflow, any order) only join attention, and
- * only when blocked on the user; otherwise they surface through their workflow.
- */
-export function bucketThreadsByAttention<T extends ListedThread>(
-  sortedThreads: ReadonlyArray<T>,
-  statusByThreadId: ReadonlyMap<ThreadId, ThreadStatus>,
-  pausedQueueThreadIds: ReadonlySet<ThreadId>,
-  workflowThreads: ReadonlyArray<T> = [],
-): ThreadAttentionBuckets<T> {
-  const attention: T[] = [];
-  const working: T[] = [];
-  const remaining: T[] = [];
-
-  const blockedWorkflowThreads = workflowThreads.filter((thread) =>
-    isWorkflowThreadBlockedOnUser(
-      statusByThreadId.get(thread.id) ?? "none",
-      pausedQueueThreadIds.has(thread.id),
-    ),
-  );
-  const ordered =
-    blockedWorkflowThreads.length > 0
-      ? sortThreadsByActivity([...sortedThreads, ...blockedWorkflowThreads])
-      : sortedThreads;
-  const workflowThreadIds = new Set(blockedWorkflowThreads.map((thread) => thread.id));
-
-  for (const thread of ordered) {
-    if (workflowThreadIds.has(thread.id)) {
-      attention.push(thread);
-      continue;
-    }
-    const status = statusByThreadId.get(thread.id) ?? "none";
-    if (isAttentionThread(status, pausedQueueThreadIds.has(thread.id))) {
-      attention.push(thread);
-    } else if (isWorkingStatus(status)) {
-      working.push(thread);
-    } else {
-      remaining.push(thread);
-    }
-  }
-
-  const candidate = (thread: T): AttentionCandidate => ({
-    status: statusByThreadId.get(thread.id) ?? "none",
-    queuePaused: pausedQueueThreadIds.has(thread.id),
-  });
-  attention.sort((left, right) => compareAttentionPriority(candidate(left), candidate(right)));
-
-  return { attention, working, remaining };
-}
 
 /** Every thread owned by a workflow (branches, reviews, merges...). */
 export function collectWorkflowThreadIds(

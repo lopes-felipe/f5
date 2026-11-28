@@ -5,6 +5,7 @@ export const SETTINGS_CATEGORIES = [
   "conversation",
   "keyboard",
   "notifications",
+  "phone",
   "providers",
   "threads",
   "tools",
@@ -51,7 +52,7 @@ export const SETTINGS_CATEGORY_GROUPS: ReadonlyArray<SettingsCategoryGroup> = [
   {
     id: "interface",
     label: "Interface",
-    categories: ["general", "appearance", "conversation", "keyboard", "notifications"],
+    categories: ["general", "appearance", "conversation", "keyboard", "notifications", "phone"],
   },
   { id: "agents", label: "Agents", categories: ["providers", "threads", "tools", "browser"] },
   { id: "workspace", label: "Workspace", categories: ["projects", "git"] },
@@ -87,6 +88,7 @@ export const SETTINGS_CATEGORY_LABELS = {
   conversation: "Conversation",
   keyboard: "Keyboard",
   notifications: "Notifications",
+  phone: "Phone access",
   providers: "Providers",
   threads: "Threads",
   tools: "Tools",
@@ -591,6 +593,8 @@ export const SETTINGS_ITEM_ROUTES = defineItemRoutes({
     scope: "both",
   },
   "threads.keep-awake": { category: "threads" },
+  "phone.access": { category: "phone" },
+  "phone.push": { category: "phone" },
   "threads.auto-continue": {
     category: "threads",
     scope: "both",

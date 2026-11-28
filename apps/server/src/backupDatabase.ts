@@ -1,5 +1,20 @@
-import { openRuntimeSqliteDatabase } from "./persistence/runtimeSqlite.ts";
+import {
+  openRuntimeSqliteDatabase,
+  type RuntimeSqliteDatabase,
+} from "./persistence/runtimeSqlite.ts";
 import { LATEST_MIGRATION_ID } from "./persistence/Migrations.ts";
+
+/** Remove only from a detached export or staged restore database. */
+export function clearBackedUpMobileDevices(database: RuntimeSqliteDatabase): void {
+  if (
+    database
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='mobile_devices'")
+      .get() &&
+    database.prepare("SELECT 1 FROM mobile_devices LIMIT 1").get()
+  ) {
+    database.exec("PRAGMA secure_delete=ON; DELETE FROM mobile_devices");
+  }
+}
 
 export async function validateBackupDatabase(path: string): Promise<void> {
   const database = await openRuntimeSqliteDatabase(path, { readOnly: true });

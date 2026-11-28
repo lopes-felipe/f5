@@ -1,0 +1,28 @@
+appId: io.github.lopesfelipe.f5.mobile
+---
+- launchApp
+- tapOn: "Pair a phone"
+- tapOn:
+    id: "phone-pair-origin"
+- inputText: ${F5_ORIGIN}
+- tapOn:
+    id: "phone-pair-code"
+- inputText: ${F5_CODE}
+- hideKeyboard
+- tapOn: "Review pairing"
+- assertVisible: "Confirm pairing"
+- tapOn: "Confirm and pair"
+- tapOn:
+    text: "Allow"
+    optional: true
+- extendedWaitUntil:
+    visible: "Needs you"
+    timeout: 25000
+- tapOn: ".*Review test change.*"
+- extendedWaitUntil:
+    visible: "Allow fixture command[?]"
+    timeout: 25000
+- tapOn: "Approve once"
+- extendedWaitUntil:
+    notVisible: "Allow fixture command[?]"
+    timeout: 20000

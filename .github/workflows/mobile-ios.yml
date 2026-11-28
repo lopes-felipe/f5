@@ -1,0 +1,105 @@
+name: iOS companion
+
+on:
+  pull_request:
+    paths:
+      - "apps/mobile/**"
+      - "apps/server/src/mobileAccess/**"
+      - "apps/server/src/wsServer/**"
+      - "apps/server/src/wsServer.ts"
+      - "packages/contracts/**"
+      - "packages/shared/**"
+      - ".github/workflows/mobile-ios.yml"
+      - "bun.lock"
+      - "package.json"
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    env:
+      F5_SKIP_ELECTRON_INSTALL: "1"
+      F5_IOS_PERSONAL_TEAM: "1"
+      CI: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: bun run --cwd apps/mobile check:bundle
+      - name: Generate and build the iOS app
+        working-directory: apps/mobile
+        run: |
+          bun run expo prebuild --platform ios --no-install
+          pod install --project-directory=ios
+          xcodebuild -workspace ios/F5.xcworkspace -scheme F5 -configuration Release \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/f5-ios-build" "ARCHS=$(uname -m)" \
+            CODE_SIGNING_ALLOWED=NO F5_IOS_SMOKE_STORAGE=1 build
+      - name: Install the release build on an iPhone simulator
+        run: |
+          app="$RUNNER_TEMP/f5-ios-build/Build/Products/Release-iphonesimulator/F5.app"
+          test -s "$app/main.jsbundle"
+          if grep -aFq 'f5.servers' "$app/main.jsbundle"; then
+            echo '::error::The unsigned simulator build contains the production credential store'
+            exit 1
+          fi
+          udid="$(xcrun simctl list devices available -j | jq -er '[.devices | to_entries[] | select(.key | contains(".iOS-")) | .value[] | select(.name | startswith("iPhone"))][0].udid')"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl install "$udid" "$app"
+          echo "F5_SIM_UDID=$udid" >> "$GITHUB_ENV"
+      - name: Install Maestro
+        run: |
+          maestro_zip="$RUNNER_TEMP/maestro.zip"
+          curl --fail --location --retry 3 -o "$maestro_zip" \
+            https://github.com/mobile-dev-inc/maestro/releases/download/cli-2.12.1/maestro.zip
+          printf '%s  %s\n' '54dbb0716425626604973cbb374c585ca30272375d9ce15177a1152765ddd9d7' "$maestro_zip" | shasum -a 256 -c -
+          unzip -q "$maestro_zip" -d "$RUNNER_TEMP"
+          test -x "$RUNNER_TEMP/maestro/bin/maestro"
+          echo "$RUNNER_TEMP/maestro/bin" >> "$GITHUB_PATH"
+      - name: Pair and respond to an existing approval
+        id: approval-smoke
+        env:
+          F5_MOBILE_FIXTURE_ADDRESS: "100.64.0.2"
+          F5_MOBILE_FIXTURE_INFO: ${{ runner.temp }}/f5-phone-fixture.json
+        run: |
+          sudo ifconfig lo0 alias "$F5_MOBILE_FIXTURE_ADDRESS" netmask 255.255.255.255
+          fixture_log="$RUNNER_TEMP/f5-phone-fixture.log"
+          set -m
+          F5_TEST_LOGS=1 bun run --cwd apps/server test:file src/mobileAccess/mobileAccess.test.ts \
+            -t 'serves a paired approval fixture' > "$fixture_log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill -- "-$fixture_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 120); do
+            [ -s "$F5_MOBILE_FIXTURE_INFO" ] && break
+            kill -0 "$fixture_pid" || break
+            sleep 1
+          done
+          if [ ! -s "$F5_MOBILE_FIXTURE_INFO" ]; then
+            echo '::error::The mobile acceptance fixture did not publish its pairing information'
+            cat "$fixture_log"
+            exit 1
+          fi
+          origin="$(jq -er .origin "$F5_MOBILE_FIXTURE_INFO")"
+          code="$(jq -er .code "$F5_MOBILE_FIXTURE_INFO")"
+          echo "::add-mask::$code"
+          if ! maestro --device "$F5_SIM_UDID" test apps/mobile/.maestro/pair-and-approve.yml \
+            --test-output-dir "$RUNNER_TEMP/f5-ios-smoke" \
+            -e "F5_ORIGIN=$origin" -e "F5_CODE=$code" || ! wait "$fixture_pid"; then
+            cat "$fixture_log"
+            exit 1
+          fi
+      - name: Upload simulator smoke diagnostics
+        if: failure() && steps.approval-smoke.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-approval-smoke
+          path: |-
+            ${{ runner.temp }}/f5-ios-smoke
+            ${{ runner.temp }}/f5-phone-fixture.log
+          if-no-files-found: ignore
+          retention-days: 7

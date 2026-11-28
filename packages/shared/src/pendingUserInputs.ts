@@ -1,4 +1,8 @@
-import { PendingUserInput, type OrchestrationEvent } from "@t3tools/contracts";
+import {
+  PendingUserInput,
+  type OrchestrationEvent,
+  type OrchestrationThreadActivity,
+} from "@t3tools/contracts";
 import { Schema } from "effect";
 
 /** Value-free activity recorded once the provider transport accepted a private answer. */
@@ -65,7 +69,25 @@ export function projectPendingUserInputs(
   if (event.type === "thread.user-input-resolved")
     return current.filter((input) => input.requestId !== event.payload.requestId);
   if (event.type !== "thread.activity-appended") return current;
-  const activity = event.payload.activity;
+  return projectPendingUserInputActivity(current, event.payload.activity, (activity, payload) => {
+    const decoded = Schema.decodeUnknownOption(PendingUserInput)({
+      ...payload,
+      turnId: activity.turnId,
+      createdAt: activity.createdAt,
+    });
+    return decoded._tag === "Some" ? decoded.value : null;
+  });
+}
+
+/** Replay one activity using a caller's parser for historical request details. */
+export function projectPendingUserInputActivity<
+  T extends Pick<PendingUserInput, "requestId" | "elicitation" | "receipt">,
+>(
+  current: readonly T[],
+  activity: OrchestrationThreadActivity,
+  parse: (activity: OrchestrationThreadActivity, payload: Record<string, unknown>) => T | null,
+  replaceExisting = false,
+): readonly T[] {
   const payload = activity.payload as Record<string, unknown> | null;
   if (!payload || typeof payload.requestId !== "string") return current;
   if (activity.kind === ELICITATION_SUBMITTED_ACTIVITY_KIND)
@@ -86,15 +108,10 @@ export function projectPendingUserInputs(
       return [];
     });
   }
-  if (
-    activity.kind !== "user-input.requested" ||
-    current.some((input) => input.requestId === payload.requestId)
-  )
-    return current;
-  const decoded = Schema.decodeUnknownOption(PendingUserInput)({
-    ...payload,
-    turnId: activity.turnId,
-    createdAt: activity.createdAt,
-  });
-  return decoded._tag === "Some" ? [...current, decoded.value] : current;
+  if (activity.kind !== "user-input.requested") return current;
+  const index = current.findIndex((input) => input.requestId === payload.requestId);
+  if (index !== -1 && !replaceExisting) return current;
+  const input = parse(activity, payload);
+  if (!input) return current;
+  return index === -1 ? [...current, input] : current.with(index, input);
 }

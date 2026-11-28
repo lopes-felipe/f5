@@ -337,6 +337,13 @@ import {
 } from "./server";
 import { MigrateClientSettingInput, ServerSettingsPatch } from "./settings";
 import {
+  MobileAccessEnabled,
+  MobileApnsUpdate,
+  MobileDeviceId,
+  MobileDeviceName,
+  MobileInterfaceConfirmation,
+} from "./mobile/v1";
+import {
   StorageAutomationAuditInput,
   StorageAutomationDryRunInput,
   StorageCancelCleanupRequest,
@@ -663,6 +670,15 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverReportClientDiagnostics, ReportClientDiagnosticsInput),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.mobileAccessGetStatus, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.mobileAccessSetEnabled, MobileAccessEnabled),
+  tagRequestBody(WS_METHODS.mobileAccessConfirmInterface, MobileInterfaceConfirmation),
+  tagRequestBody(WS_METHODS.mobileAccessCreatePairingCode, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.mobileAccessListDevices, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.mobileAccessRenameDevice, MobileDeviceName),
+  tagRequestBody(WS_METHODS.mobileAccessRevokeDevice, MobileDeviceId),
+  tagRequestBody(WS_METHODS.mobileAccessSetApnsConfig, MobileApnsUpdate),
+  tagRequestBody(WS_METHODS.mobileAccessSendTestNotification, MobileDeviceId),
   tagRequestBody(WS_METHODS.serverGetHealth, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverGetDoctorReport, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),

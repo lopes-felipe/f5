@@ -2480,7 +2480,7 @@ layer("upstream ports service", (it) => {
     Effect.gen(function* () {
       const fixture = yield* setup({
         count: 3,
-        paths: (index) => (index === 1 ? ["apps/mobile/app.tsx"] : [`apps/server/f${index}.ts`]),
+        paths: (index) => (index === 1 ? ["apps/marketing/app.tsx"] : [`apps/server/f${index}.ts`]),
       });
       const service = yield* fixture.make();
       yield* service.run({ projectId: PROJECT_ID, kind: "upstream", triage: "rules-only" });
@@ -2493,7 +2493,7 @@ layer("upstream ports service", (it) => {
       assert.strictEqual(overview.counts.inbox, 3);
       assert.strictEqual(overview.counts.skipped, 1);
       const skipped = yield* service.listTopics({ projectId: PROJECT_ID, list: "skipped" });
-      assert.strictEqual(skipped.topics[0]!.topic.reasonKey, "mobile");
+      assert.strictEqual(skipped.topics[0]!.topic.reasonKey, "marketing");
       assert.strictEqual(skipped.topics[0]!.topic.decidedBy, "rule");
       assert.ok(
         fixture.host.published.some(

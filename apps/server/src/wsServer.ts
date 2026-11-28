@@ -1,5 +1,9 @@
 import type { GitPlaceholderRenameHandler } from "./git/placeholderRename.ts";
 import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { makeMobileAccessService } from "./mobileAccess/mobileAccessService.ts";
+import { makeMobileApi } from "./mobileAccess/mobileApi.ts";
+import { MobileRouteError } from "./mobileAccess/listener.ts";
+import { makeAttachmentHttpRoutes } from "./wsServer/http/attachmentRoutes.ts";
 import { AgentSessionScanner } from "./project/AgentSessionScanner";
 import {
   importAgentSessionProject,
@@ -1072,7 +1076,11 @@ interface OrchestrationRuntimeServices {
 }
 
 export const createServer = Effect.fn(function* (
-  options: { readonly orchestrationStartupGate?: Effect.Effect<void> } = {},
+  options: {
+    readonly orchestrationStartupGate?: Effect.Effect<void>;
+    readonly detectMobileInterface?: typeof import("./mobileAccess/tailscale.ts").detectTailscale;
+    readonly onOrchestrationReady?: (engine: OrchestrationEngineShape) => void;
+  } = {},
 ): Effect.fn.Return<
   http.Server,
   ServerLifecycleError,
@@ -2603,6 +2611,88 @@ export const createServer = Effect.fn(function* (
   const runPromise = Effect.runPromiseWith(runtimeServices) as <A, E, R>(
     effect: Effect.Effect<A, E, R>,
   ) => Promise<A>;
+  const mobileApi = makeMobileApi({
+    incarnation: BACKEND_INCARNATION,
+    engine: async () =>
+      (await runPromise(Deferred.await(orchestrationRuntime))).orchestrationEngine,
+    history: projectionReadModelQuery.getThreadHistoryPage,
+    commandExecution: threadCommandExecutionQuery.getThreadCommandExecution,
+    pendingApprovals: (ids) =>
+      sql<{ thread_id: string; request_id: string }>`
+        SELECT thread_id, request_id FROM projection_pending_approvals
+        WHERE status = 'pending' ${ids ? (ids.length ? sql`AND ${sql.in("thread_id", ids)}` : sql`AND 0`) : sql``}
+        ORDER BY created_at, request_id
+      `.pipe(
+        Effect.map((rows) => {
+          const grouped = new Map<string, string[]>();
+          for (const row of rows) {
+            const requests = grouped.get(row.thread_id) ?? [];
+            requests.push(row.request_id);
+            grouped.set(row.thread_id, requests);
+          }
+          return grouped;
+        }),
+      ),
+    dispatch: (engine, command, guard) =>
+      runPromise(
+        Effect.gen(function* () {
+          if (command.type !== "thread.user-input.respond")
+            return yield* engine.dispatch(command, guard);
+          const { attachments: _attachments, ...answer } = command;
+          const normalized = yield* normalizeDispatchCommand({
+            command: answer,
+            submissionSource: "human",
+          });
+          return yield* engine.dispatch(normalized, guard);
+        }).pipe(
+          Effect.map(({ sequence }) => ({ sequence })),
+          Effect.mapError((error) =>
+            Schema.is(OrchestrationOverloadError)(error)
+              ? new MobileRouteError("busy", 1000)
+              : new MobileRouteError(
+                  Schema.is(OrchestrationCommandInvariantError)(error)
+                    ? "stale-action"
+                    : "rejected",
+                ),
+          ),
+        ),
+      ),
+  });
+  const mobileAccess = yield* makeMobileAccessService({
+    secrets: profileSecrets,
+    incarnation: BACKEND_INCARNATION,
+    profileName: serverConfig.profile?.name ?? "F5",
+    serverVersion: serverPackageVersion,
+    isReady: () => runtimeReadiness.state === "ready" && !shuttingDown,
+    healthy: () => runtimeReadiness.state !== "failed" && !getDatabaseDamage(),
+    ...(options.detectMobileInterface ? { detectInterface: options.detectMobileInterface } : {}),
+    api: mobileApi,
+    attachments: (() => {
+      const routes = makeAttachmentHttpRoutes({
+        attachmentsDir: serverConfig.attachmentsDir,
+        attachmentUploads,
+        fileSystem,
+        path,
+      });
+      return (request, response, url, deviceId, authorizationStatus) =>
+        runPromise(routes(request, response, url, deviceId, authorizationStatus));
+    })(),
+    update: (mobileAccess) => runPromise(serverSettings.updateSettings({ mobileAccess })),
+    onStatus: (status) => {
+      Effect.runFork(pushBus.publishAll(WS_CHANNELS.mobileAccessStatusUpdated, status));
+    },
+  }).pipe(
+    Effect.mapError((cause) => new ServerLifecycleError({ operation: "mobileAccess", cause })),
+  );
+  yield* Effect.addFinalizer(() => Effect.promise(mobileAccess.close));
+  yield* registerShutdown("mobile-access", "admission", () => Effect.promise(mobileAccess.close));
+  yield* serverSettings.getSettings.pipe(
+    Effect.tap((settings) => Effect.sync(() => void mobileAccess.apply(settings.mobileAccess))),
+    Effect.ignore,
+  );
+  yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
+    Effect.sync(() => void mobileAccess.apply(settings.mobileAccess)),
+  ).pipe(Effect.forkIn(subscriptionsScope, { startImmediately: true }));
   const orchestrationRuntimeLayer = makeServerOrchestrationRuntimeLayer().pipe(
     Layer.provide(Layer.succeedServices(runtimeServices)),
   );
@@ -2765,6 +2855,7 @@ export const createServer = Effect.fn(function* (
       });
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
+          mobileAccess.event(event);
           if (event.type.startsWith("project.")) profileReadCache = undefined;
           if (
             event.type === "project.deleted" &&
@@ -2994,7 +3085,11 @@ export const createServer = Effect.fn(function* (
   // instead of parking them in route slots for the whole startup.
   yield* Deferred.await(orchestrationRuntime).pipe(
     Effect.matchEffect({
-      onSuccess: () => Effect.succeed<ServerRuntimeReadiness>({ state: "ready", revision: 1 }),
+      onSuccess: ({ orchestrationEngine }) =>
+        Effect.sync<ServerRuntimeReadiness>(() => {
+          options.onOrchestrationReady?.(orchestrationEngine);
+          return { state: "ready", revision: 1 };
+        }),
       onFailure: (error) =>
         Effect.succeed<ServerRuntimeReadiness>({
           state: "failed",
@@ -4120,6 +4215,55 @@ export const createServer = Effect.fn(function* (
       return yield* answerFromTable(routeTable, request.body, ws);
     }
     switch (request.body._tag) {
+      case WS_METHODS.mobileAccessGetStatus:
+        return yield* Effect.promise(mobileAccess.getStatus);
+      case WS_METHODS.mobileAccessListDevices:
+        return mobileAccess.listDevices();
+      case WS_METHODS.mobileAccessCreatePairingCode:
+        return yield* Effect.try({
+          try: mobileAccess.createPairingCode,
+          catch: () => new RouteRequestError({ message: "Phone access is unavailable." }),
+        });
+      case WS_METHODS.mobileAccessSetEnabled: {
+        const { enabled } = request.body;
+        return yield* Effect.tryPromise({
+          try: () => mobileAccess.setEnabled(enabled),
+          catch: () => new RouteRequestError({ message: "Unable to change Phone access." }),
+        });
+      }
+      case WS_METHODS.mobileAccessConfirmInterface: {
+        const { address } = request.body;
+        return yield* Effect.tryPromise({
+          try: () => mobileAccess.confirmInterface(address),
+          catch: () =>
+            new RouteRequestError({ message: "The detected interface changed. Try again." }),
+        });
+      }
+      case WS_METHODS.mobileAccessRenameDevice:
+        return yield* mobileAccess.renameDevice(request.body.deviceId, request.body.name);
+      case WS_METHODS.mobileAccessRevokeDevice:
+        return yield* mobileAccess.revokeDevice(request.body.deviceId);
+      case WS_METHODS.mobileAccessSetApnsConfig: {
+        const input = stripRequestTag(request.body);
+        return yield* Effect.tryPromise({
+          try: () => mobileAccess.setApnsConfig(input),
+          catch: () =>
+            new RouteRequestError({
+              message: "Check the APNs team ID, key ID, bundle ID and .p8 key.",
+            }),
+        });
+      }
+      case WS_METHODS.mobileAccessSendTestNotification: {
+        const { deviceId } = request.body;
+        return yield* Effect.tryPromise({
+          try: () => mobileAccess.sendTestNotification(deviceId),
+          catch: () =>
+            new RouteRequestError({
+              message:
+                "APNs did not accept the test notification. Check the key and phone registration.",
+            }),
+        });
+      }
       case AGENTS_WS_METHODS.getSnapshot: {
         const { threadBackgroundWork } = yield* awaitOrchestrationRuntimeForRoute;
         const { threadId } = stripRequestTag(request.body);

@@ -93,6 +93,7 @@ import { withStartupPhaseTiming } from "../../startupTiming.ts";
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
+  guard?: import("../Services/OrchestrationEngine.ts").OrchestrationCommandGuard;
   workspaceWrite?: WorkspaceWrite | null;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
@@ -725,6 +726,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             envelope.command,
             projectionSnapshotQuery.getRetainedThreadDetails,
           );
+        if (envelope.guard && !envelope.guard(commandReadModel))
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "The action is no longer current.",
+          });
         const eventBase = yield* decideOrchestrationCommand({
           nativeRemovedMessageIds,
           command: envelope.command,
@@ -1318,7 +1324,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       ? Effect.void
       : Effect.promise(() => NodeFS.rmdir(created.folder!).catch(() => undefined));
 
-  const dispatch: OrchestrationEngineShape["dispatch"] = (incoming) =>
+  const dispatch: OrchestrationEngineShape["dispatch"] = (incoming, guard) =>
     Effect.gen(function* () {
       const created: { folder: string | undefined } = { folder: undefined };
       const command = yield* withScratchFolder(incoming, created);
@@ -1422,6 +1428,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       const envelope: CommandEnvelope = {
         command,
         result,
+        ...(guard ? { guard } : {}),
         startedAtMs: Date.now(),
         admissionOrder: 0,
         workspaceWrite: yield* WorkspaceWriteContext,

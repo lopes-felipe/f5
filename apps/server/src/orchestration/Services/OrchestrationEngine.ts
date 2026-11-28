@@ -29,6 +29,9 @@ import type { ReadFromSequenceOptions } from "../../persistence/Services/Orchest
 export type { ProviderControlOrigin as ControlOrigin } from "../../provider/controlTarget.ts";
 import type { ProviderControlOrigin as ControlOrigin } from "../../provider/controlTarget.ts";
 
+/** Evaluated under the command worker's read-model lock immediately before dispatch. */
+export type OrchestrationCommandGuard = (current: OrchestrationReadModel) => boolean;
+
 export interface OrchestrationEngineShape {
   /** Releases a reserved control slot after its provider-side outcome is recorded. */
   /** Claim immediately before processing; expired/unowned events must never run late. */
@@ -88,6 +91,7 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
+    guard?: OrchestrationCommandGuard,
   ) => Effect.Effect<
     { sequence: number; deletedThreadIds?: ReadonlyArray<ThreadId> },
     OrchestrationDispatchError,

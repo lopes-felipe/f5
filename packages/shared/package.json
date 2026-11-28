@@ -612,7 +612,13 @@
     "./upstreamPortsPrompts": {
       "types": "./src/upstreamPortsPrompts.ts",
       "import": "./src/upstreamPortsPrompts.ts"
-    }
+    },
+    "./messageMerge": "./src/messageMerge.ts",
+    "./pendingApprovals": "./src/pendingApprovals.ts",
+    "./approvalOptions": "./src/approvalOptions.ts",
+    "./pendingQuestionAnswers": "./src/pendingQuestionAnswers.ts",
+    "./threadAttention": "./src/threadAttention.ts",
+    "./threadOrdering": "./src/threadOrdering.ts"
   },
   "scripts": {
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",

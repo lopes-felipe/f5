@@ -60,12 +60,6 @@
   "autoSkip": [
     {
       "pathPrefixes": [
-        "apps/mobile/"
-      ],
-      "reasonKey": "mobile"
-    },
-    {
-      "pathPrefixes": [
         "apps/marketing/"
       ],
       "reasonKey": "marketing"

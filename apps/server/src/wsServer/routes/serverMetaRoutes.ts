@@ -284,6 +284,11 @@ export const serverMetaRoutes = ({
     [WS_METHODS.serverUpdateSettings]: (request) =>
       Effect.gen(function* () {
         const body = withoutTag(request);
+        if (body.mobileAccess !== undefined) {
+          return yield* new RouteRequestError({
+            message: "Update Phone access through its dedicated settings controls.",
+          });
+        }
         if (body.projectSettingsOverrides) {
           const { orchestrationEngine } = yield* runtime;
           const model = yield* orchestrationEngine.getReadModel();

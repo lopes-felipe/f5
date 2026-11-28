@@ -599,6 +599,22 @@ export const DEFAULT_USAGE_HISTORY_RETENTION_DAYS = 182;
 export const UsageHistoryRetention = Schema.Union([PositiveInt, Schema.Literal("unlimited")]);
 export type UsageHistoryRetention = typeof UsageHistoryRetention.Type;
 
+const MobileAccessPort = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }));
+const MobileApnsConfig = Schema.Struct({
+  teamId: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+  keyId: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+  baseBundleId: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+});
+const MobileAccessSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  port: Schema.NullOr(MobileAccessPort).pipe(Schema.withDecodingDefault(() => null)),
+  advertisedHost: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+  confirmedInterface: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
+  apns: MobileApnsConfig.pipe(
+    Schema.withDecodingDefault(() => ({ teamId: "", keyId: "", baseBundleId: "" })),
+  ),
+});
+
 export const THEME_CSS_MAX_LENGTH = 100_000;
 export const MAX_ENVIRONMENT_THEMES = 32;
 const PublishedThemeId = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,63}$/));
@@ -648,6 +664,9 @@ const EnvironmentThemes = Schema.Array(EnvironmentThemeDefinition).check(
 export const ServerSettings = Schema.Struct({
   environmentThemes: EnvironmentThemes.pipe(Schema.withDecodingDefault(() => [])),
   environmentThemeSelection: EnvironmentThemeSelection.pipe(Schema.withDecodingDefault(() => ({}))),
+  mobileAccess: MobileAccessSettings.pipe(
+    Schema.withDecodingDefault(() => Schema.decodeSync(MobileAccessSettings)({})),
+  ),
   keepAwakeWhileAgentsWork: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   textGenerators: Schema.Record(TextGeneratorId, TextGeneratorConfig).pipe(
     Schema.withDecodingDefault(() => ({})),
@@ -904,6 +923,15 @@ const PrHubSettingsPatch = Schema.Struct({
 export const ServerSettingsPatch = Schema.Struct({
   environmentThemes: Schema.optionalKey(EnvironmentThemes),
   environmentThemeSelection: Schema.optionalKey(EnvironmentThemeSelection),
+  mobileAccess: Schema.optionalKey(
+    Schema.Struct({
+      enabled: Schema.optionalKey(Schema.Boolean),
+      port: Schema.optionalKey(Schema.NullOr(MobileAccessPort)),
+      advertisedHost: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      confirmedInterface: Schema.optionalKey(Schema.NullOr(Schema.String)),
+      apns: Schema.optionalKey(MobileApnsConfig),
+    }),
+  ),
   keepAwakeWhileAgentsWork: Schema.optionalKey(Schema.Boolean),
   textGenerators: Schema.optionalKey(Schema.Record(TextGeneratorId, TextGeneratorConfig)),
   removeAgentCreditsOnMerge: Schema.optionalKey(Schema.Boolean),

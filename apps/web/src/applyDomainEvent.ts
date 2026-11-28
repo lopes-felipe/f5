@@ -239,22 +239,7 @@ function upsertMessage(
     payload.attachments,
     existing?.attachments,
   );
-  const nextText = payload.replace
-    ? payload.text
-    : existing && payload.streaming
-      ? `${existing.text}${payload.text}`
-      : existing && payload.text.length === 0
-        ? existing.text
-        : payload.text;
-  const nextReasoningText = payload.replace
-    ? payload.reasoningText
-    : payload.reasoningText !== undefined
-      ? existing && payload.streaming
-        ? `${existing.reasoningText ?? ""}${payload.reasoningText}`
-        : existing && payload.reasoningText.length === 0
-          ? existing.reasoningText
-          : payload.reasoningText
-      : existing?.reasoningText;
+  const { text: nextText, reasoningText: nextReasoningText } = mergeMessageText(existing, payload);
   const completedAt = payload.streaming ? undefined : payload.updatedAt;
 
   if (
@@ -1286,26 +1271,11 @@ function reduceDomainEvent(
         const nextMessageForEstimate: ChatMessage = {
           id: event.payload.messageId,
           role: event.payload.role,
-          text: event.payload.replace
-            ? event.payload.text
-            : existingMessage && event.payload.streaming
-              ? `${existingMessage.text}${event.payload.text}`
-              : existingMessage && event.payload.text.length === 0
-                ? existingMessage.text
-                : event.payload.text,
-          ...(event.payload.reasoningText !== undefined
-            ? {
-                reasoningText: event.payload.replace
-                  ? event.payload.reasoningText
-                  : existingMessage && event.payload.streaming
-                    ? `${existingMessage.reasoningText ?? ""}${event.payload.reasoningText}`
-                    : existingMessage && event.payload.reasoningText.length === 0
-                      ? existingMessage.reasoningText
-                      : event.payload.reasoningText,
-              }
-            : existingMessage?.reasoningText !== undefined
-              ? { reasoningText: existingMessage.reasoningText }
-              : {}),
+          ...mergeMessageText(existingMessage, event.payload),
+          ...(event.payload.reasoningText === undefined &&
+          existingMessage?.reasoningText !== undefined
+            ? { reasoningText: existingMessage.reasoningText }
+            : {}),
           ...(event.payload.turnId !== null ? { turnId: event.payload.turnId } : {}),
           createdAt: existingMessage?.createdAt ?? event.payload.createdAt,
           streaming: event.payload.streaming,
@@ -1892,3 +1862,4 @@ function reduceDomainEvent(
   void exhaustiveEvent;
   return state;
 }
+import { mergeMessageText } from "@t3tools/shared/messageMerge";

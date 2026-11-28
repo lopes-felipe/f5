@@ -1,0 +1,403 @@
+{
+  "bootstrap": {
+    "serverId": "12345678901234567890123456789012",
+    "serverVersion": "0.1.14",
+    "mobileApi": {
+      "min": 1,
+      "current": 1
+    },
+    "profileName": "Default",
+    "backendIncarnation": "fixture-incarnation",
+    "ready": true,
+    "health": "ok",
+    "attachmentLimits": {
+      "maxCount": 12,
+      "maxImageBytes": 20000000,
+      "maxImagesBytes": 80000000
+    }
+  },
+  "status": {
+    "serverId": "12345678901234567890123456789012",
+    "serverVersion": "0.1.14",
+    "mobileApi": {
+      "min": 1,
+      "current": 1
+    }
+  },
+  "pair": {
+    "request": {
+      "code": "ABCDEFG234",
+      "deviceName": "iPhone",
+      "platform": "ios",
+      "appVersion": "0.1.0",
+      "bundleId": "io.github.lopesfelipe.f5.mobile"
+    },
+    "response": {
+      "serverId": "12345678901234567890123456789012",
+      "serverVersion": "0.1.14",
+      "mobileApi": {
+        "min": 1,
+        "current": 1
+      },
+      "profileName": "Default",
+      "deviceId": "fixture-device",
+      "deviceToken": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+    }
+  },
+  "pushes": [
+    {
+      "channel": "mobile.welcome",
+      "body": {
+        "serverId": "12345678901234567890123456789012",
+        "serverVersion": "0.1.14",
+        "mobileApi": {
+          "min": 1,
+          "current": 1
+        },
+        "profileName": "Default",
+        "backendIncarnation": "fixture-incarnation",
+        "ready": true,
+        "health": "ok",
+        "attachmentLimits": {
+          "maxCount": 12,
+          "maxImageBytes": 20000000,
+          "maxImagesBytes": 80000000
+        }
+      }
+    },
+    {
+      "channel": "mobile.batch",
+      "body": {
+        "afterSequence": 44,
+        "throughSequence": 45,
+        "threadIds": ["thread-fixture"],
+        "projectsChanged": false,
+        "selectedThreadId": "thread-fixture",
+        "messages": [
+          {
+            "messageId": "message-fixture",
+            "role": "assistant",
+            "text": "Ready",
+            "streaming": false,
+            "createdAt": "2026-11-28T00:00:00.000Z",
+            "sequence": 45,
+            "completed": true,
+            "mode": "replace"
+          }
+        ],
+        "tailInvalidated": false,
+        "transcriptReset": false
+      }
+    },
+    {
+      "channel": "mobile.batch",
+      "body": {
+        "afterSequence": 45,
+        "throughSequence": 45,
+        "threadIds": [],
+        "projectsChanged": false,
+        "selectedThreadId": "thread-fixture",
+        "messages": [],
+        "tailInvalidated": false,
+        "transcriptReset": false
+      }
+    },
+    {
+      "channel": "mobile.batch",
+      "body": {
+        "afterSequence": 45,
+        "throughSequence": 46,
+        "threadIds": ["thread-fixture"],
+        "projectsChanged": false,
+        "selectedThreadId": "thread-fixture",
+        "messages": [],
+        "tailInvalidated": true,
+        "transcriptReset": true
+      }
+    },
+    {
+      "channel": "mobile.resync",
+      "body": {}
+    }
+  ],
+  "methods": {
+    "subscribe": {
+      "request": {
+        "selectedThreadId": "thread-fixture",
+        "resume": {
+          "afterSequence": 44,
+          "backendIncarnation": "fixture-incarnation"
+        }
+      },
+      "response": {
+        "head": 45,
+        "snapshotRequired": false,
+        "batches": [
+          {
+            "afterSequence": 44,
+            "throughSequence": 45,
+            "threadIds": ["thread-fixture"],
+            "projectsChanged": false,
+            "selectedThreadId": "thread-fixture",
+            "messages": [
+              {
+                "messageId": "message-fixture",
+                "role": "assistant",
+                "text": "Ready",
+                "streaming": false,
+                "createdAt": "2026-11-28T00:00:00.000Z",
+                "sequence": 45,
+                "completed": true,
+                "mode": "replace"
+              }
+            ],
+            "tailInvalidated": false,
+            "transcriptReset": false
+          }
+        ]
+      }
+    },
+    "probe": {
+      "request": {},
+      "response": {
+        "serverId": "12345678901234567890123456789012",
+        "serverVersion": "0.1.14",
+        "mobileApi": {
+          "min": 1,
+          "current": 1
+        },
+        "profileName": "Default",
+        "backendIncarnation": "fixture-incarnation",
+        "ready": true,
+        "health": "ok",
+        "attachmentLimits": {
+          "maxCount": 12,
+          "maxImageBytes": 20000000,
+          "maxImagesBytes": 80000000
+        }
+      }
+    },
+    "getThreadShells": {
+      "request": {
+        "threadIds": ["thread-fixture"]
+      },
+      "response": {
+        "snapshotSequence": 45,
+        "backendIncarnation": "fixture-incarnation",
+        "projects": [],
+        "threads": [
+          {
+            "id": "thread-fixture",
+            "projectId": "project-fixture",
+            "title": "Test conversation",
+            "branch": "main",
+            "createdAt": "2026-11-28T00:00:00.000Z",
+            "updatedAt": "2026-11-28T00:00:00.000Z",
+            "latestActivityAt": "2026-11-28T00:00:00.000Z",
+            "archivedAt": null,
+            "snoozedUntil": null,
+            "settledAt": null,
+            "interactionMode": "default",
+            "runtimeMode": "approval-required",
+            "sessionStatus": "running",
+            "activeTurnId": "turn-fixture",
+            "latestTurn": null,
+            "workflowRole": null,
+            "isSideChat": false,
+            "attention": {
+              "pendingApprovalRequestIds": ["request-fixture"],
+              "pendingInputRequestIds": [],
+              "planReady": false,
+              "latestFailedTurnId": null,
+              "latestCompletedTurnId": null
+            }
+          }
+        ]
+      }
+    },
+    "getThreadTail": {
+      "request": {
+        "threadId": "thread-fixture",
+        "messageLimit": 50
+      },
+      "response": {
+        "snapshotSequence": 45,
+        "messages": [
+          {
+            "messageId": "message-fixture",
+            "role": "assistant",
+            "text": "Ready",
+            "streaming": false,
+            "createdAt": "2026-11-28T00:00:00.000Z"
+          }
+        ],
+        "approvals": [
+          {
+            "requestId": "request-fixture",
+            "kind": "command",
+            "title": "Test approval",
+            "decisions": ["accept", "decline"]
+          }
+        ],
+        "pendingInputs": [],
+        "plan": null,
+        "activity": []
+      }
+    },
+    "getThreadHistory": {
+      "request": {
+        "threadId": "thread-fixture",
+        "limit": 50,
+        "cursor": {
+          "createdAt": "2026-11-28T00:00:00.000Z",
+          "messageId": "message-fixture"
+        }
+      },
+      "response": {
+        "snapshotSequence": 45,
+        "messages": [
+          {
+            "messageId": "message-fixture",
+            "role": "assistant",
+            "text": "Ready",
+            "streaming": false,
+            "createdAt": "2026-11-28T00:00:00.000Z"
+          }
+        ],
+        "cursor": null
+      }
+    },
+    "getCommandExecution": {
+      "request": {
+        "threadId": "thread-fixture",
+        "id": "command-fixture"
+      },
+      "response": {
+        "id": "command-fixture",
+        "title": "List files",
+        "status": "completed",
+        "output": "Test output",
+        "truncated": false
+      }
+    },
+    "respondToApproval": {
+      "request": {
+        "threadId": "thread-fixture",
+        "requestId": "request-fixture",
+        "decision": "accept"
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "respondToQuestion": {
+      "request": {
+        "threadId": "thread-fixture",
+        "requestId": "request-fixture",
+        "answers": {
+          "target": "Example"
+        }
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "dismissQuestion": {
+      "request": {
+        "threadId": "thread-fixture",
+        "requestId": "request-fixture"
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "interrupt": {
+      "request": {
+        "threadId": "thread-fixture",
+        "turnId": "turn-fixture"
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "settle": {
+      "request": {
+        "threadId": "thread-fixture"
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "unsettle": {
+      "request": {
+        "threadId": "thread-fixture"
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "snooze": {
+      "request": {
+        "threadId": "thread-fixture",
+        "until": "2026-11-28T01:00:00.000Z"
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "unsnooze": {
+      "request": {
+        "threadId": "thread-fixture"
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "archive": {
+      "request": {
+        "threadId": "thread-fixture"
+      },
+      "response": {
+        "sequence": 46
+      }
+    },
+    "registerPush": {
+      "request": {
+        "pushToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "environment": "production",
+        "bundleId": "io.github.lopesfelipe.f5.mobile"
+      },
+      "response": {
+        "registered": true
+      }
+    },
+    "setPresence": {
+      "request": {
+        "foreground": true,
+        "viewingThreadId": "thread-fixture"
+      },
+      "response": {
+        "updated": true
+      }
+    },
+    "unregisterPush": {
+      "request": {},
+      "response": {
+        "updated": true
+      }
+    },
+    "setNotificationPrefs": {
+      "request": {
+        "approval": true,
+        "input": true,
+        "failed": true,
+        "plan-ready": true,
+        "completed": false,
+        "previews": false
+      },
+      "response": {
+        "updated": true
+      }
+    }
+  }
+}
