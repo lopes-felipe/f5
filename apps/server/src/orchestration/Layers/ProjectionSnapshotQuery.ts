@@ -363,8 +363,9 @@ function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: st
 /**
  * Retained activities: the newest `MAX_THREAD_ACTIVITIES` per thread (one
  * thread, or every live thread), capped by `MAX_READ_MODEL_ACTIVITIES` plus a
- * sentinel row. Ranking reads keys only, from the covering rank index; payloads
- * are fetched by rowid for the rows that survive. `unarchivedOnly` narrows the
+ * sentinel row. A single thread takes its tail directly from the rank index.
+ * Startup ranks keys across threads before fetching the surviving payloads.
+ * `unarchivedOnly` narrows the
  * all-thread form to threads that are not archived.
  */
 export function retainedThreadActivitiesSql(
@@ -375,8 +376,14 @@ export function retainedThreadActivitiesSql(
   const liveThreadIds = options?.unarchivedOnly
     ? sql`SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL AND archived_at IS NULL`
     : sql`SELECT thread_id FROM projection_threads WHERE deleted_at IS NULL`;
-  return sql`
-    WITH ranked_activities AS (
+  const boundedActivities =
+    threadId !== null
+      ? sql`SELECT rowid AS rid
+          FROM projection_thread_activities
+          WHERE thread_id = ${threadId}
+          ORDER BY sequence DESC, created_at DESC, activity_id DESC
+          LIMIT ${MAX_THREAD_ACTIVITIES}`
+      : sql`WITH ranked_activities AS (
       SELECT
         rowid AS rid,
         thread_id,
@@ -391,10 +398,9 @@ export function retainedThreadActivitiesSql(
             activity_id DESC
         ) AS row_number
       FROM projection_thread_activities
-      WHERE ${threadId === null ? sql`thread_id IN (${liveThreadIds})` : sql`thread_id = ${threadId}`}
-    ),
-    bounded_activities AS (
-      SELECT *
+      WHERE thread_id IN (${liveThreadIds})
+    )
+      SELECT rid
       FROM ranked_activities
       WHERE row_number <= ${MAX_THREAD_ACTIVITIES}
       ORDER BY
@@ -406,7 +412,9 @@ export function retainedThreadActivitiesSql(
       -- Fetch one sentinel row so the caller can report when the global
       -- materialization budget truncated retained history.
       LIMIT ${MAX_READ_MODEL_ACTIVITIES + 1}
-    )
+    `;
+  return sql`
+    WITH bounded_activities AS (${boundedActivities})
     SELECT
       activities.activity_id AS "activityId",
       activities.thread_id AS "threadId",
@@ -423,8 +431,10 @@ export function retainedThreadActivitiesSql(
     SELECT activity_id AS "activityId", activities.thread_id AS "threadId", activities.turn_id AS "turnId",
       tone, kind, summary, payload_json AS "payload", sequence, activities.created_at AS "createdAt"
     FROM projection_pending_approvals pending
-    JOIN projection_thread_activities activities ON activities.thread_id = pending.thread_id
+    CROSS JOIN projection_thread_activities activities
+      ON activities.thread_id = pending.thread_id
       AND activities.kind = 'approval.requested'
+      AND json_valid(activities.payload_json)
       AND json_extract(activities.payload_json, '$.requestId') = pending.request_id
     WHERE pending.status = 'pending'
       AND ${threadId === null ? sql`pending.thread_id IN (${liveThreadIds})` : sql`pending.thread_id = ${threadId}`}
@@ -1426,6 +1436,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
       FROM projection_thread_activities
       WHERE thread_id = ${threadId} AND kind = 'approval.requested'
+        AND json_valid(payload_json)
         AND json_extract(payload_json, '$.requestId') IN (
           SELECT request_id FROM projection_pending_approvals
           WHERE thread_id = ${threadId} AND status = 'pending'

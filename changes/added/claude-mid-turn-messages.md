@@ -1,0 +1,1 @@
+- Claude can show full Markdown drafts and other messages before a turn ends. Quote that text directly from the conversation.

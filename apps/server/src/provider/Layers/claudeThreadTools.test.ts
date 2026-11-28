@@ -70,12 +70,57 @@ it("keeps html_render loaded in Claude's tool search and leaves html_preview def
       tools.find((tool) => tool.name === name)?._meta?.["anthropic/alwaysLoad"] === true;
     expect(alwaysLoad("html_render")).toBe(true);
     expect(alwaysLoad("thread_status")).toBe(true);
+    expect(alwaysLoad("send_to_user")).toBe(true);
     expect(alwaysLoad("html_preview")).toBe(false);
     expect(tools.find((tool) => tool.name === "html_preview")?.annotations?.readOnlyHint).toBe(
       true,
     );
   } finally {
     await Promise.allSettled([client.close(), server.config.instance.close()]);
+  }
+});
+
+it("delivers mid-turn Markdown unchanged to the caller's thread", async () => {
+  const scope = await Effect.runPromise(Scope.make());
+  const broker = await Effect.runPromise(makeThreadMcpBroker);
+  const threadId = ThreadId.makeUnsafe("mid-turn-message");
+  const seen: unknown[] = [];
+  await Effect.runPromise(
+    broker
+      .register((id, request) =>
+        Effect.sync(() => {
+          seen.push({ id, request });
+          return { message: "Shown to the user." };
+        }),
+      )
+      .pipe(Effect.provideService(Scope.Scope, scope)),
+  );
+  const server = makeClaudeThreadMcpServer({
+    broker,
+    threadId,
+    existingServerNames: new Set(),
+  });
+  const client = new Client({ name: "mid-turn-message", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([
+      server.config.instance.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+    const message = "  Here is the draft.\n\n**Full text**\n";
+    expect(
+      (await client.callTool({ name: "send_to_user", arguments: { message } })).isError,
+    ).not.toBe(true);
+    expect(
+      (await client.callTool({ name: "send_to_user", arguments: { message: "  " } })).isError,
+    ).toBe(true);
+    expect(seen).toEqual([{ id: threadId, request: { name: "send_to_user", message } }]);
+  } finally {
+    await Promise.allSettled([
+      client.close(),
+      server.config.instance.close(),
+      Effect.runPromise(Scope.close(scope, Exit.void)),
+    ]);
   }
 });
 

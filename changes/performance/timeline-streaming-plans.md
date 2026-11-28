@@ -1,0 +1,1 @@
+- Streaming plans and thinking updates reuse the surrounding timeline rows, reducing work in long chats.

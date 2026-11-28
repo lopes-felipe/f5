@@ -1,4 +1,5 @@
 import { toUSVString } from "node:util";
+import { TERMINAL_HISTORY_MAX_BYTES } from "@t3tools/contracts";
 import {
   replayTerminalContinuation,
   terminalSequenceStateAfter,
@@ -6,7 +7,7 @@ import {
 import { TerminalHistorySanitizer } from "./TerminalHistorySanitizer";
 
 /** Retained terminal output only; live PTY output is never truncated. */
-export const TERMINAL_HISTORY_MAX_BYTES = 4 * 1024 * 1024;
+export { TERMINAL_HISTORY_MAX_BYTES };
 const FRAGMENT_SIZE = 4096;
 
 interface Fragment {
@@ -189,8 +190,32 @@ export class BoundedTerminalHistory {
   }
 
   /** Materialize and cache the snapshot, compacting fragments to share its storage. */
-  snapshot(): { history: string; historySequenceState?: number } {
-    const snapshot = this.materialize();
+  snapshot(maxBytes?: number): { history: string; historySequenceState?: number } {
+    let snapshot = this.materialize();
+    if (maxBytes !== undefined && maxBytes < this.maxBytes && snapshot.history.length > 0) {
+      const bytes = Buffer.from(snapshot.history);
+      if (bytes.length > maxBytes) {
+        let offset = bytes.length - maxBytes;
+        while (offset < bytes.length && (bytes[offset]! & 0xc0) === 0x80) offset++;
+        if (offset > 0 && bytes[offset - 1] !== 10) {
+          const newline = bytes.indexOf(10, offset);
+          if (newline >= 0 && newline < bytes.length - 1) offset = newline + 1;
+        }
+        const prefix = bytes.toString("utf8", 0, offset);
+        const startState = terminalSequenceStateAfter(0, prefix, 0, prefix.length);
+        const suffix = bytes.toString("utf8", offset);
+        const replay = replayTerminalContinuation(
+          startState,
+          suffix,
+          maxBytes - (bytes.length - offset),
+        );
+        const state = snapshot.historySequenceState ?? replay.state;
+        snapshot = {
+          history: replay.data,
+          ...(state ? { historySequenceState: state } : {}),
+        };
+      }
+    }
     if (snapshot.historySequenceState && this.sanitizer.hasPendingStringEscape) {
       // This ESC has already reached live viewers but is held back from history
       // while the sanitizer determines whether it completes ST.

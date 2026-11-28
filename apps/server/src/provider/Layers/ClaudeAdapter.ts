@@ -6822,10 +6822,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // instructions. Omit turnCount to preserve the prompt cache on resumes.
         // Claude Code replaces its CLI append text with this value, so the
         // append launch arguments travel here, after F5's instructions.
+        const midTurnMessageInstructions =
+          options?.threadMcpBroker && !input.workflowExecutionProfile
+            ? "\n\nText before a tool call may reach the user as a summary. Use send_to_user for Markdown they need to read in full mid-turn, such as a draft before a question."
+            : "";
         const systemPrompt = {
           type: "preset",
           preset: "claude_code",
-          append: joinClaudeSystemPromptAppend(appendInstructionText, launchAppendSystemPrompt),
+          append: joinClaudeSystemPromptAppend(
+            appendInstructionText + midTurnMessageInstructions,
+            launchAppendSystemPrompt,
+          ),
           snapshot: false,
         } satisfies NonNullable<ClaudeQueryOptions["systemPrompt"]>;
         // Sent on every launch: Claude Code applies it only while the permission

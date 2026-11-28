@@ -459,7 +459,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         this.sessions.set(sessionKey, session);
         this.evictInactiveSessionsIfNeeded();
         await this.startSession(session, { ...input, cols, rows }, "started");
-        return this.snapshot(session);
+        return this.snapshot(session, input.maxHistoryBytes);
       }
 
       if (input.stopOnSettle !== undefined) existing.stopOnSettle = input.stopOnSettle;
@@ -502,7 +502,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           { ...input, cols: targetCols, rows: targetRows },
           "started",
         );
-        return this.snapshot(existing);
+        return this.snapshot(existing, input.maxHistoryBytes);
       }
 
       if (existing.cols !== targetCols || existing.rows !== targetRows) {
@@ -520,7 +520,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         });
       }
 
-      return this.snapshot(existing);
+      return this.snapshot(existing, input.maxHistoryBytes);
     });
   }
 
@@ -775,7 +775,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   private async startSession(
     session: TerminalSessionState,
-    input: TerminalStartInput,
+    input: TerminalStartInput & Pick<TerminalOpenInput, "maxHistoryBytes">,
     eventType: "started" | "restarted",
   ): Promise<void> {
     await this.stopProcess(session);
@@ -932,7 +932,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         threadId: session.threadId,
         terminalId: session.terminalId,
         createdAt: new Date().toISOString(),
-        snapshot: this.snapshot(session),
+        snapshot: this.snapshot(session, input.maxHistoryBytes),
       });
     } catch (error) {
       if (ptyProcess) {
@@ -1541,12 +1541,16 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     return session;
   }
 
-  readSnapshot(input: { threadId: string; terminalId?: string }): TerminalSessionSnapshot | null {
+  readSnapshot(input: {
+    threadId: string;
+    terminalId?: string;
+    maxHistoryBytes?: number | undefined;
+  }): TerminalSessionSnapshot | null {
     recordTerminalMetric(increment(terminalSnapshotsTotal, {}));
     const session = this.sessions.get(
       toSessionKey(input.threadId, input.terminalId ?? DEFAULT_TERMINAL_ID),
     );
-    return session ? this.snapshot(session) : null;
+    return session ? this.snapshot(session, input.maxHistoryBytes) : null;
   }
 
   private revision(session: { threadId: string; terminalId: string }) {
@@ -1559,8 +1563,11 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     return state;
   }
 
-  private snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
-    const { history, historySequenceState } = session.history.snapshot();
+  private snapshot(
+    session: TerminalSessionState,
+    maxHistoryBytes?: number,
+  ): TerminalSessionSnapshot {
+    const { history, historySequenceState } = session.history.snapshot(maxHistoryBytes);
     return {
       epoch: this.epoch,
       ...this.revision(session),

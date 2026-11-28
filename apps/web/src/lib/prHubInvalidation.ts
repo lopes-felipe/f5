@@ -1,4 +1,53 @@
-import type { PrHubChanged } from "@t3tools/contracts";
+import type { OrchestrationEvent, PrHubChanged, ThreadId } from "@t3tools/contracts";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+  formatSourceControlPullRequestKey,
+  sourceControlPullRequestKeysEqual,
+} from "@t3tools/shared/sourceControl";
+import type { Thread } from "../types";
+
+export function invalidatePrHubThreadLinks(
+  queryClient: QueryClient,
+  events: ReadonlyArray<OrchestrationEvent>,
+  threads: ReadonlyArray<Pick<Thread, "id" | "projectId" | "pullRequests">> = [],
+): void {
+  const keys = new Set<string>();
+  const add = (link: Parameters<typeof formatSourceControlPullRequestKey>[0]) =>
+    keys.add(formatSourceControlPullRequestKey(link));
+  const addThread = (id: ThreadId) =>
+    threads.find((thread) => thread.id === id)?.pullRequests?.forEach(add);
+  for (const event of events) {
+    switch (event.type) {
+      case "thread.created":
+        if (event.payload.pullRequest) add(event.payload.pullRequest);
+        break;
+      case "thread.meta-updated":
+        if (event.payload.pullRequest) add(event.payload.pullRequest);
+        if (event.payload.pullRequestUnlinked) add(event.payload.pullRequestUnlinked);
+        // A rename changes the title shown on the linked-thread chip.
+        if (event.payload.title !== undefined) addThread(event.payload.threadId);
+        break;
+      case "thread.deleted":
+        addThread(event.payload.threadId);
+        break;
+      case "project.deleted":
+        for (const thread of threads) {
+          if (thread.projectId === event.payload.projectId) thread.pullRequests?.forEach(add);
+        }
+        break;
+    }
+  }
+  if (keys.size === 0) return;
+  // Archive state is absent from the PR Hub's linked-thread result.
+  void queryClient.invalidateQueries({
+    predicate: ({ queryKey: [surface, kind, , key] }) =>
+      surface === "prHub" &&
+      (kind === "list" ||
+        (kind === "threadsForPr" &&
+          typeof key === "string" &&
+          [...keys].some((changed) => sourceControlPullRequestKeysEqual(changed, key)))),
+  });
+}
 
 /** What a burst of `prHub.changed` events asks the client to re-read. */
 export interface PrHubChangeBatch {

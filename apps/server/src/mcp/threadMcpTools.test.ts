@@ -197,6 +197,7 @@ it.effect(
             "ci_logs",
             "repository_file_read",
             "ci_rerun",
+            "send_to_user",
             "theme_read",
             "theme_set",
             "image_publish",

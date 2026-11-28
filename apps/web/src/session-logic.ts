@@ -2290,7 +2290,10 @@ export function deriveWorkLogEntries(
       if (toolPayload?.mcpToolName) {
         entry.mcpToolName = toolPayload.mcpToolName;
       }
-      if (toolPayload?.mcpInput) {
+      const inlineMessage =
+        toolPayload?.mcpToolName === "send_to_user" &&
+        /^f5_thread(?:_\d+)?$/.test(toolPayload.mcpServerName ?? "");
+      if (toolPayload?.mcpInput && !inlineMessage) {
         entry.mcpInput = toolPayload.mcpInput;
       }
       if (toolPayload?.mcpResult) {
@@ -2539,7 +2542,9 @@ const EMPTY_COMMAND_EXECUTIONS: ReadonlyArray<OrchestrationCommandExecutionSumma
 
 export interface TimelineEntryCache {
   structure?: object;
-  otherSources?: ReadonlyArray<unknown>;
+  plans?: ReadonlyArray<ProposedPlan>;
+  work?: ReadonlyArray<WorkLogEntry>;
+  commands?: ReadonlyArray<OrchestrationCommandExecutionSummary>;
   structuralDerivations: number;
   contentUpdates: number;
   entries: Map<string, { readonly sources: ReadonlyArray<unknown>; readonly entry: TimelineEntry }>;
@@ -2556,6 +2561,27 @@ function sameSources(left: ReadonlyArray<unknown>, right: ReadonlyArray<unknown>
   );
 }
 
+function samePlanStructure(
+  previous: ReadonlyArray<ProposedPlan>,
+  next: ReadonlyArray<ProposedPlan>,
+) {
+  return (
+    previous === next ||
+    (previous.length === next.length &&
+      previous.every((plan, index) => {
+        const updated = next[index]!;
+        return (
+          plan === updated ||
+          (plan.id === updated.id &&
+            plan.createdAt === updated.createdAt &&
+            plan.turnId === updated.turnId &&
+            plan.implementedAt === updated.implementedAt &&
+            plan.implementationThreadId === updated.implementationThreadId)
+        );
+      }))
+  );
+}
+
 export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
@@ -2564,16 +2590,32 @@ export function deriveTimelineEntries(
   cache?: TimelineEntryCache,
 ): TimelineEntry[] {
   const structure = messageListStructure(messages);
-  const otherSources = [proposedPlans, workEntries, commandExecutions];
   if (
     cache?.result &&
     cache.structure === structure &&
-    cache.otherSources &&
-    sameSources(cache.otherSources, otherSources)
+    cache.work &&
+    (cache.work === workEntries || sameSources(cache.work, workEntries)) &&
+    cache.commands === commandExecutions &&
+    cache.plans &&
+    samePlanStructure(cache.plans, proposedPlans)
   ) {
     const byId = new Map<string, ChatMessage>(messages.map((message) => [message.id, message]));
+    const updatedPlans =
+      cache.plans === proposedPlans
+        ? undefined
+        : new Map(proposedPlans.map((plan) => [plan.id, plan]));
+    cache.plans = proposedPlans;
+    cache.work = workEntries;
     let changed = false;
     const result = cache.result.map((entry) => {
+      if (entry.kind === "proposed-plan") {
+        const proposedPlan = updatedPlans?.get(entry.proposedPlan.id);
+        if (!proposedPlan || proposedPlan === entry.proposedPlan) return entry;
+        changed = true;
+        const next = { ...entry, proposedPlan };
+        cache.entries.set(entry.id, { sources: [proposedPlan], entry: next });
+        return next;
+      }
       if (entry.kind !== "message") return entry;
       const message = byId.get(entry.id);
       if (!message || message === entry.message) return entry;
@@ -2595,7 +2637,9 @@ export function deriveTimelineEntries(
   }
   if (cache) {
     cache.structure = structure;
-    cache.otherSources = otherSources;
+    cache.plans = proposedPlans;
+    cache.work = workEntries;
+    cache.commands = commandExecutions;
     cache.structuralDerivations++;
     recordBrowserWork("timelineDerivations");
   }

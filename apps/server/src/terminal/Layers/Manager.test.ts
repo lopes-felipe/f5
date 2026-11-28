@@ -890,6 +890,11 @@ describe("TerminalManager", () => {
       ).toBe(data);
       const attached = await manager.open(openInput());
       expect(Buffer.byteLength(attached.history)).toBe(TERMINAL_HISTORY_MAX_BYTES);
+      const bounded = await manager.open({ ...openInput(), maxHistoryBytes: 9 });
+      expect(bounded.history).toBe("🙂🙂");
+      expect(manager.readSnapshot({ threadId: "thread-1", maxHistoryBytes: 4 })?.history).toBe(
+        "🙂",
+      );
       await manager.close({ threadId: "thread-1" });
       expect(fs.statSync(historyLogPath(logsDir)).size).toBe(TERMINAL_HISTORY_MAX_BYTES);
       expect((await manager.open(openInput())).history).toBe(attached.history);

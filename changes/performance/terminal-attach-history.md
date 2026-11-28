@@ -1,0 +1,1 @@
+- Terminal clients can request a smaller history snapshot. The web terminal restores its full retained scrollback.

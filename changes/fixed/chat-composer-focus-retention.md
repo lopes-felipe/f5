@@ -1,0 +1,1 @@
+- Keep the composer’s focus callbacks from retaining the chat’s initial render state.

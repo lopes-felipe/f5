@@ -1,6 +1,11 @@
 import "../index.css";
 
-import { ThreadId, type TerminalEvent, type TerminalSessionSnapshot } from "@t3tools/contracts";
+import {
+  TERMINAL_HISTORY_MAX_BYTES,
+  ThreadId,
+  type TerminalEvent,
+  type TerminalSessionSnapshot,
+} from "@t3tools/contracts";
 import { terminalSequenceStateAfter } from "@t3tools/shared/terminalReplay";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -226,7 +231,13 @@ describe("ThreadTerminalDrawer output and selection", () => {
       };
     });
     const mounted = await mountDrawer(300);
-    await vi.waitFor(() => expect(api.terminal.snapshot).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(api.terminal.snapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxHistoryBytes: TERMINAL_HISTORY_MAX_BYTES,
+        }),
+      ),
+    );
     const active = terminal()!;
     const parsed = () => new Promise<void>((resolve) => active.write("", resolve));
     await parsed();

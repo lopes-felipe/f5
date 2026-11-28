@@ -19,6 +19,30 @@ function reference(text: string, maxLines: number, maxBytes: number): string {
 }
 
 describe("BoundedTerminalHistory", () => {
+  it("starts trimmed history at a complete line when one fits", () => {
+    const history = new BoundedTerminalHistory();
+    history.append("long first line\nsecond\nlast\n");
+    expect(history.snapshot(15)).toEqual({ history: "second\nlast\n" });
+  });
+  it("returns a byte-bounded snapshot without trimming retained history", () => {
+    const history = new BoundedTerminalHistory();
+    history.append("prefix🙂éx");
+    expect(history.snapshot(6)).toEqual({ history: "éx" });
+    expect(history.snapshot(7)).toEqual({ history: "🙂éx" });
+    expect(history.snapshot(0)).toEqual({ history: "" });
+    expect(history.snapshot()).toEqual({ history: "prefix🙂éx" });
+  });
+
+  it("carries parser state when a limited snapshot omits an unfinished escape sequence", () => {
+    const history = new BoundedTerminalHistory();
+    history.append("\x1bPz" + "z".repeat(50));
+    const snapshot = history.snapshot(5);
+    expect(snapshot.history).toBe("");
+    expect(replayTerminalContinuation(snapshot.historySequenceState!, "\x1b\\ready")).toEqual({
+      state: 0,
+      data: "ready",
+    });
+  });
   it.each([
     [8, "\u0084ready", "\x1bDready"],
     [8, "\u0085ready", "\x1bEready"],

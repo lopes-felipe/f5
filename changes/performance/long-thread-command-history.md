@@ -1,0 +1,1 @@
+- The first message sent to a cold thread loads its recent activity directly, saving a scan through older activity.
