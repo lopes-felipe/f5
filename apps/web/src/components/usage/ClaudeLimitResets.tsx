@@ -102,23 +102,35 @@ export function claudeCalloutGrant(
   return isTightestWindowExhausted(windows, nowMs) ? grant : null;
 }
 
-function isTightestWindowExhausted(windows: ReadonlyArray<QuotaWindow>, nowMs: number): boolean {
+export function isTightestWindowExhausted(
+  windows: ReadonlyArray<QuotaWindow>,
+  nowMs: number,
+): boolean {
   const tightest = tightestQuotaWindow(windows, nowMs);
   return tightest !== null && tightest.usedPercent! >= 100;
 }
 
 /**
- * Where the claude.ai link goes, or null when it doesn't show. Claude withholds
- * limit resets from F5 (its status read says "surface"), so a subscription
- * without native resets gets the link: in the callout once the tightest live
- * window is exhausted, otherwise in its own row.
+ * Where the claude.ai link goes, or null when it doesn't show. It shows only
+ * after Claude answered that it withholds limit resets from F5 (a "surface"
+ * refusal), never for a failed or unsupported read: in the callout once the
+ * tightest live window is exhausted, otherwise in its own row.
  */
 export function claudeResetsLinkPlacement(
-  data: Pick<ClaudeAccountUsage, "subscriptionLabel" | "limitsAvailable" | "limitResets">,
+  data: Pick<
+    ClaudeAccountUsage,
+    "subscriptionLabel" | "limitsAvailable" | "limitResets" | "limitResetsWithheld"
+  >,
   windows: ReadonlyArray<QuotaWindow>,
   nowMs: number,
 ): "callout" | "row" | null {
-  if (data.limitResets || data.subscriptionLabel === null || !data.limitsAvailable) return null;
+  if (
+    data.limitResetsWithheld !== true ||
+    data.limitResets ||
+    data.subscriptionLabel === null ||
+    !data.limitsAvailable
+  )
+    return null;
   return isTightestWindowExhausted(windows, nowMs) ? "callout" : "row";
 }
 
@@ -156,7 +168,7 @@ export function ClaudeResetsLink() {
       <div className="min-w-0">
         <p className="text-xs font-medium">Limit resets</p>
         <p className="text-2xs text-muted-foreground">
-          Claude shows your limit resets in claude.ai's Usage settings.
+          Claude shows limit resets only in its own apps. Check claude.ai for any you have.
         </p>
       </div>
       <ClaudeResetsLinkButton />

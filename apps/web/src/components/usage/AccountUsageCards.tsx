@@ -15,7 +15,7 @@ import {
   type QuotaWindow,
   quotaWindowsFromSection,
 } from "@t3tools/shared/usageLimit";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -295,18 +295,30 @@ function claudeCalloutWindows(windows: ReadonlyArray<QuotaWindow>): Array<QuotaW
 
 type ClaudeUsageSection = Extract<AccountUsageSection, { kind: "claude-usage" }>;
 
+/** Epoch milliseconds, refreshed every 30s like the callout's own clock. */
+function useCalloutClock(): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
+}
+
 /** Claude plan windows, with limit-reset buttons in the callout or their own block. */
 function ClaudeUsageLimits(props: {
   readonly account: UsageAccount;
   readonly section: ClaudeUsageSection;
   readonly history: QuotaHistoryIndex | undefined;
 }) {
+  // One clock for placement and the callout, so a window that resets while the
+  // page is open moves the button back to its row on the same tick.
+  const now = useCalloutClock();
   const snapshot = props.section.snapshot;
   if (!snapshot) return null;
   const windows = quotaWindowsFromSection(props.section);
   const instanceId = props.account.providerInstanceId;
   const resets = snapshot.data.limitResets ?? null;
-  const now = Date.now();
   const calloutWindows = claudeCalloutWindows(windows);
   const calloutGrant =
     instanceId && resets ? claudeCalloutGrant(resets, calloutWindows, now) : null;
@@ -332,6 +344,7 @@ function ClaudeUsageLimits(props: {
           windows={windows}
           observedAt={snapshot.fetchedAt}
           history={props.history}
+          now={now}
           {...(calloutAction ? { calloutAction } : {})}
         />
       ) : null}
@@ -356,12 +369,15 @@ function QuotaWindowRows(props: {
   readonly history: QuotaHistoryIndex | undefined;
   /** Rendered inside the callout, e.g. a limit-reset button. */
   readonly calloutAction?: () => ReactNode;
+  /** The caller's clock, when the callout must agree with the caller's placement. */
+  readonly now?: number;
 }) {
   return (
     <div className="space-y-3">
       <TightestLimitCallout
         windows={claudeCalloutWindows(props.windows)}
         {...(props.calloutAction ? { action: props.calloutAction } : {})}
+        {...(props.now !== undefined ? { now: props.now } : {})}
       />
       {hasPaceWindow(props.windows) ? <QuotaMeterLegend /> : null}
       {props.windows.map((window) => (

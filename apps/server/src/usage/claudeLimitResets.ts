@@ -257,18 +257,25 @@ export function normalizeClaudeLimitResets(response: unknown): ClaudeLimitResets
   };
 }
 
-const INELIGIBLE_REASON = /^[a-z0-9_]{1,40}$/;
+/** The ineligible reasons F5 names; any other value reads as `unknown`. */
+const KNOWN_INELIGIBLE_REASONS = new Set(["surface", "unavailable"]);
+
+export type ClaudeLimitResetIneligibleReason = "surface" | "unavailable" | "unknown";
 
 /**
- * Why Claude withheld limit resets, when the response has a status block that
- * says ineligible. Claude answers `surface` to clients other than its own apps.
- * Unrecognized text reads as `unknown`, so a log line never echoes the body.
+ * Why Claude withheld limit resets, for the same blocks `normalizeClaudeLimitResets`
+ * reads as null. Claude answers `surface` to clients other than its own apps.
+ * Any reason outside a fixed list reads as `unknown`, so logs never echo the body.
  */
-export function claudeLimitResetIneligibleReason(response: unknown): string | null {
+export function claudeLimitResetIneligibleReason(
+  response: unknown,
+): ClaudeLimitResetIneligibleReason | null {
   const block = asRecord(asRecord(response)?.cedar_ember);
-  if (!block || block.eligible === true) return null;
+  if (!block || (block.eligible === true && block.ineligible_reason !== "unavailable")) return null;
   const reason = asTrimmedString(block.ineligible_reason);
-  return reason && INELIGIBLE_REASON.test(reason) ? reason : "unknown";
+  return reason && KNOWN_INELIGIBLE_REASONS.has(reason)
+    ? (reason as ClaudeLimitResetIneligibleReason)
+    : "unknown";
 }
 
 // ── Claim mapping ───────────────────────────────────────────────────────
@@ -366,6 +373,8 @@ export interface ClaudeLimitResetClient {
   readonly fetchStatus: () => Promise<ClaudeLimitResets | null>;
   /** The last successful status read, while it is recent. */
   readonly lastKnownStatus: () => ClaudeLimitResets | null;
+  /** True while the last successful status read said Claude withholds resets from F5. */
+  readonly withheld: () => boolean;
   /** Rejects with ClaudeLimitResetRequestError whenever the claim is not settled. */
   readonly claim: (
     grantId: string,
@@ -389,11 +398,12 @@ export function makeClaudeLimitResetClient(
   let storeMissUntil = 0;
   // After the Keychain refuses (a denied prompt), only a claim or sign-in asks again.
   let keychainBlocked = false;
-  let lastStatus: { value: ClaudeLimitResets | null; at: number } | null = null;
-  // Every refresh repeats the same answer, so each reason is logged once.
-  const warnedReasons = new Set<string>();
-  const warnIneligible = (body: unknown) => {
-    const reason = claudeLimitResetIneligibleReason(body);
+  let lastStatus: { value: ClaudeLimitResets | null; withheld: boolean; at: number } | null = null;
+  const recentStatus = () =>
+    lastStatus && deps.now() - lastStatus.at < LAST_STATUS_TTL_MS ? lastStatus : null;
+  // Every refresh repeats the same answer, so each reason is logged once per account.
+  const warnedReasons = new Set<ClaudeLimitResetIneligibleReason>();
+  const warnIneligible = (reason: ClaudeLimitResetIneligibleReason | null) => {
     if (reason === null || warnedReasons.has(reason)) return;
     warnedReasons.add(reason);
     deps.warn?.(`[claude-limit-resets] status ineligible: ${reason}`);
@@ -430,9 +440,10 @@ export function makeClaudeLimitResetClient(
       if (isAuthFailure(response.status)) cached = null;
       if (!response.ok) return null;
       const body: unknown = await response.json();
-      warnIneligible(body);
+      const reason = claudeLimitResetIneligibleReason(body);
+      warnIneligible(reason);
       const value = normalizeClaudeLimitResets(body);
-      lastStatus = { value, at: deps.now() };
+      lastStatus = { value, withheld: reason === "surface", at: deps.now() };
       return value;
     } catch {
       return null;
@@ -541,14 +552,16 @@ export function makeClaudeLimitResetClient(
 
   return {
     fetchStatus,
-    lastKnownStatus: () =>
-      lastStatus && deps.now() - lastStatus.at < LAST_STATUS_TTL_MS ? lastStatus.value : null,
+    lastKnownStatus: () => recentStatus()?.value ?? null,
+    withheld: () => recentStatus()?.withheld === true,
     claim,
     invalidate: () => {
       cached = null;
       storeMissUntil = 0;
       keychainBlocked = false;
       lastStatus = null;
+      // The next account may be refused for the same reason; say so again.
+      warnedReasons.clear();
     },
   };
 }

@@ -409,6 +409,8 @@ export const ClaudeAccountUsage = Schema.Struct({
   ),
   /** Absent in snapshots stored before limit resets were read. */
   limitResets: Schema.optional(Schema.NullOr(ClaudeLimitResets)),
+  /** True when Claude answered that it withholds limit resets from F5's client surface. */
+  limitResetsWithheld: Schema.optional(Schema.Boolean),
 });
 export type ClaudeAccountUsage = typeof ClaudeAccountUsage.Type;
 const sectionState = {

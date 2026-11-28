@@ -56,6 +56,8 @@ export const makeClaudeLimitResetAccess = Effect.fn("makeClaudeLimitResetAccess"
   processEnvironment: NodeJS.ProcessEnv,
   options: {
     readonly cwd: string;
+    /** Annotates this client's log lines. */
+    readonly instanceId?: string;
     /** Makes the CLI refresh its stored token. */
     readonly refreshToken: () => Promise<void>;
     /** Test seams. */
@@ -99,7 +101,11 @@ export const makeClaudeLimitResetAccess = Effect.fn("makeClaudeLimitResetAccess"
     fetch: options.fetch ?? ((url, init) => globalThis.fetch(url, init)),
     now: () => Date.now(),
     warn: (message) => {
-      runLog(Effect.logWarning(message));
+      runLog(
+        Effect.logWarning(message).pipe(
+          Effect.annotateLogs({ instanceId: options.instanceId ?? "unknown" }),
+        ),
+      );
     },
   });
 });
