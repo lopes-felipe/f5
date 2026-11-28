@@ -50,7 +50,9 @@ const targetKey = (cwd: string | null, url: string) => `${cwd ?? ""}\0${url}`;
  */
 export function useLinkedPullRequestStates(
   targets: ReadonlyArray<LinkedPullRequestTarget>,
-): LinkedPullRequestStateLookup & { readonly isPending: (cwd: string | null, url: string) => boolean } {
+): LinkedPullRequestStateLookup & {
+  readonly isPending: (cwd: string | null, url: string) => boolean;
+} {
   const unique = useMemo(() => {
     const byKey = new Map<string, LinkedPullRequestTarget>();
     for (const target of targets) {
@@ -89,9 +91,8 @@ export function useLinkedPullRequestStates(
     >;
     const states = new Map(entries.map(([key, state, title]) => [key, { state, title }] as const));
     const pending = new Set(JSON.parse(pendingSignature) as string[]);
-    return Object.assign(
-      (cwd: string | null, url: string) => states.get(targetKey(cwd, url)),
-      { isPending: (cwd: string | null, url: string) => pending.has(targetKey(cwd, url)) },
-    );
+    return Object.assign((cwd: string | null, url: string) => states.get(targetKey(cwd, url)), {
+      isPending: (cwd: string | null, url: string) => pending.has(targetKey(cwd, url)),
+    });
   }, [pendingSignature, signature]);
 }

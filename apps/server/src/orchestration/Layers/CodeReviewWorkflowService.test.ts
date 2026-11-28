@@ -4020,7 +4020,7 @@ const PULL_REQUEST = {
   key: "github:github.com/acme/app#42",
 };
 const REVIEWED_PULL_REQUEST_LINK = {
-  provider: "github",
+  provider: "github" as const,
   host: "github.com",
   repository: "acme/app",
   number: 42,
