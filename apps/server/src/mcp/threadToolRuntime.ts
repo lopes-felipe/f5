@@ -1,7 +1,8 @@
 import type { ThreadSettlementService } from "../orchestration/Layers/ThreadSettlementService.ts";
 import type { PullRequestWatchService } from "../orchestration/Layers/PullRequestWatchService.ts";
 import type { makeHtmlRenderRuntime } from "../htmlRender/HtmlRenderRuntime.ts";
-import { MessageId, PullRequestKey, type ThreadId } from "@t3tools/contracts";
+import { randomUUID } from "node:crypto";
+import { CommandId, MessageId, PullRequestKey, type ThreadId } from "@t3tools/contracts";
 import { Effect, Option } from "effect";
 import type * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
@@ -31,6 +32,7 @@ import {
 
 export function makeThreadToolHandler(input: {
   readonly engine: Pick<OrchestrationEngineShape, "getReadModel">;
+  readonly sendMessage?: OrchestrationEngineShape["dispatch"];
   readonly federation: Pick<PrHubFederationShape, "resolve" | "parseUrl">;
   readonly settlement: Pick<ThreadSettlementService["Service"], "settleFromAgent">;
   readonly watches: Pick<PullRequestWatchService["Service"], "startWatch" | "stopWatch">;
@@ -41,7 +43,8 @@ export function makeThreadToolHandler(input: {
   readonly themes?: (
     request: Extract<ThreadToolRequest, { name: "theme_read" | "theme_set" }>,
   ) => Effect.Effect<unknown, ThreadToolError>;
-  readonly messages: ThreadReadDependencies["messages"];
+  readonly messages: ThreadReadDependencies["messages"] &
+    Pick<ProjectionThreadMessageRepositoryShape, "getByMessageId">;
   readonly plans: ThreadReadDependencies["plans"];
   readonly sql: SqlClient.SqlClient;
   readonly publishImage?: (
@@ -55,6 +58,28 @@ export function makeThreadToolHandler(input: {
       const thread = model.threads.find((value) => value.id === threadId && !value.deletedAt);
       if (!thread)
         return yield* new ThreadToolError({ message: "This thread is no longer available." });
+      if (request.name === "send_to_user") {
+        const turn = thread.latestTurn;
+        if (!input.sendMessage || thread.archivedAt || turn?.state !== "running")
+          return yield* new ThreadToolError({ message: "There is no active turn to send from." });
+        const id = randomUUID();
+        const messageId = MessageId.makeUnsafe(`assistant:send-to-user:${id}`);
+        yield* input.sendMessage({
+          type: "thread.message.assistant.reconcile",
+          commandId: CommandId.makeUnsafe(`send-to-user:${id}`),
+          threadId,
+          turnId: turn.turnId,
+          messageId,
+          expectedText: null,
+          expectedReasoningText: "",
+          text: request.message,
+          reasoningText: "",
+          createdAt: new Date().toISOString(),
+        });
+        if (Option.isNone(yield* input.messages.getByMessageId({ threadId, messageId })))
+          return yield* new ThreadToolError({ message: "The active turn changed before sending." });
+        return { message: "Shown to the user. Keep your final reply free of duplicate text." };
+      }
       if (request.name === "forge_pull_request") {
         if (!input.pullRequests)
           return yield* new ThreadToolError({ message: "Pull request tools are unavailable." });

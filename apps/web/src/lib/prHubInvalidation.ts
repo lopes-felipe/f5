@@ -1,4 +1,33 @@
-import type { PrHubChanged } from "@t3tools/contracts";
+import type { OrchestrationEvent, PrHubChanged } from "@t3tools/contracts";
+import type { QueryClient } from "@tanstack/react-query";
+
+export function invalidatePrHubThreadLinks(
+  queryClient: QueryClient,
+  events: ReadonlyArray<OrchestrationEvent>,
+): void {
+  const changed = events.some((event) => {
+    switch (event.type) {
+      case "thread.created":
+        return event.payload.pullRequest !== undefined;
+      case "thread.meta-updated":
+        return (
+          event.payload.pullRequest !== undefined ||
+          event.payload.pullRequestUnlinked !== undefined ||
+          event.payload.title !== undefined
+        );
+      case "thread.deleted":
+      case "project.deleted":
+        return true;
+      default:
+        return false;
+    }
+  });
+  if (!changed) return;
+  void queryClient.invalidateQueries({
+    predicate: ({ queryKey: [surface, kind] }) =>
+      surface === "prHub" && (kind === "list" || kind === "threadsForPr"),
+  });
+}
 
 /** What a burst of `prHub.changed` events asks the client to re-read. */
 export interface PrHubChangeBatch {

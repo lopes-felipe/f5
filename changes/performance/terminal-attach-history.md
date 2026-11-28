@@ -1,0 +1,1 @@
+- Joining or reconnecting to a terminal transfers at most 512 KiB of recent scrollback.

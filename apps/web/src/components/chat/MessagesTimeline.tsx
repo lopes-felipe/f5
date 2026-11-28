@@ -5203,7 +5203,6 @@ export function buildTimelineRows(input: {
     input.isWorking,
     input.activeTurnStartedAt,
     input.activeTurnId,
-    input.liveActivity,
     input.expandMcpToolCalls,
   ];
   if (
@@ -5219,6 +5218,7 @@ export function buildTimelineRows(input: {
       const previous = cache.rows.get(entry.id)?.row;
       return (
         previous?.kind === "message" &&
+        previous.userInput === entry.userInput &&
         previous.message.streaming === entry.message.streaming &&
         previous.message.completedAt === entry.message.completedAt &&
         previous.message.turnId === entry.message.turnId &&
@@ -5226,24 +5226,46 @@ export function buildTimelineRows(input: {
       );
     })
   ) {
-    const messages = new Map(
-      timelineEntries.flatMap((entry) =>
-        entry.kind === "message" ? [[entry.id, entry.message] as const] : [],
-      ),
-    );
+    const entries = new Map(timelineEntries.map((entry) => [entry.id, entry]));
     let changed = false;
     const result = cache.result.map((row) => {
-      if (row.kind !== "message") return row;
-      const message = messages.get(row.id);
-      if (!message || message === row.message) return row;
+      const entry = entries.get(row.id);
+      let next: TimelineRow;
+      let content: TimelineMessage | TimelineProposedPlan;
+      if (row.kind === "message" && entry?.kind === "message" && row.message !== entry.message) {
+        content = entry.message;
+        next = { ...row, message: content };
+      } else if (
+        row.kind === "proposed-plan" &&
+        entry?.kind === "proposed-plan" &&
+        row.proposedPlan !== entry.proposedPlan
+      ) {
+        content = entry.proposedPlan;
+        next = { ...row, proposedPlan: content };
+      } else {
+        return row;
+      }
       changed = true;
-      const next = { ...row, message };
-      const entry = cache.rows.get(row.id)!;
-      const inputs = [...entry.inputs];
-      inputs[1] = message;
+      const inputs = [...cache.rows.get(row.id)!.inputs];
+      inputs[1] = content;
       cache.rows.set(row.id, { inputs, row: next });
       return next;
     });
+    const working = result.at(-1);
+    if (working?.kind === "working") {
+      const activity = workingActivityLabel(result.slice(0, -1), input.liveActivity);
+      const thought =
+        input.liveActivity?.kind === "tool" ? (input.liveActivity.thought ?? null) : null;
+      if (activity !== working.activity || thought !== working.thought) {
+        changed = true;
+        const next = { ...working, activity, thought };
+        result[result.length - 1] = next;
+        cache.rows.set(working.id, {
+          inputs: ["working", input.activeTurnStartedAt, activity, thought],
+          row: next,
+        });
+      }
+    }
     if (changed) {
       cache.contentUpdates++;
       cache.result = result;
@@ -5737,9 +5759,8 @@ function sameTimelineRowExternalsInputs(
   );
 }
 
-// Message externals read a row's id and role, never its text, so a row whose
-// message object a streaming delta replaced keeps every entry it had.
-function timelineRowsDifferOnlyInMessageContent(
+// Streaming content, including the working label, leaves row externals valid.
+function timelineRowsDifferOnlyInContent(
   previous: ReadonlyArray<TimelineRow>,
   rows: ReadonlyArray<TimelineRow>,
 ): boolean {
@@ -5748,6 +5769,12 @@ function timelineRowsDifferOnlyInMessageContent(
   for (const [index, row] of rows.entries()) {
     const before = previous[index]!;
     if (before === row) continue;
+    if (
+      before.id === row.id &&
+      before.kind === row.kind &&
+      (row.kind === "proposed-plan" || row.kind === "working")
+    )
+      continue;
     if (
       before.kind !== "message" ||
       row.kind !== "message" ||
@@ -5775,7 +5802,7 @@ export function buildTimelineRowExternals(
   if (
     basis &&
     sameTimelineRowExternalsInputs(basis.inputs, inputs) &&
-    timelineRowsDifferOnlyInMessageContent(basis.rows, rows)
+    timelineRowsDifferOnlyInContent(basis.rows, rows)
   ) {
     return previous;
   }

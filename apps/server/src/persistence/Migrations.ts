@@ -9,6 +9,7 @@ import Migration0174 from "./Migrations/174_WorktreeGroups.ts";
 import Migration0175 from "./Migrations/175_UsageSpeedAndExternalIdentity.ts";
 import Migration0176 from "./Migrations/176_McpHubGovernance.ts";
 import Migration0177 from "./Migrations/177_McpRepositoryTrust.ts";
+import Migration0178 from "./Migrations/178_PendingApprovalActivityLookup.ts";
 import Migration0161 from "./Migrations/161_UsageNativeIdentity.ts";
 import Migration0154 from "./Migrations/154_DesktopActivityPendingIndex.ts";
 import Migration0155 from "./Migrations/155_BackgroundWorkNativeParentSession.ts";
@@ -227,6 +228,7 @@ export const MIGRATIONS = {
   "175_UsageSpeedAndExternalIdentity": Migration0175,
   "176_McpHubGovernance": Migration0176,
   "177_McpRepositoryTrust": Migration0177,
+  "178_PendingApprovalActivityLookup": Migration0178,
   "168_ProviderExtensionStatuses": Migration0168,
   "161_UsageNativeIdentity": Migration0161,
   "154_DesktopActivityPendingIndex": Migration0154,

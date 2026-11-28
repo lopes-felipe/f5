@@ -226,7 +226,13 @@ describe("ThreadTerminalDrawer output and selection", () => {
       };
     });
     const mounted = await mountDrawer(300);
-    await vi.waitFor(() => expect(api.terminal.snapshot).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(api.terminal.snapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          maxHistoryBytes: 512 * 1024,
+        }),
+      ),
+    );
     const active = terminal()!;
     const parsed = () => new Promise<void>((resolve) => active.write("", resolve));
     await parsed();

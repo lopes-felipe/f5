@@ -95,6 +95,7 @@ import { shouldSubmitComposer } from "./chat/composer/sendShortcut";
 import { useComposerState } from "./chat/composer/useComposerState";
 import { useComposerDraft } from "./chat/composer/useComposerDraft";
 import { useInitialComposerFocus } from "../hooks/useInitialComposerFocus";
+import { useComposerFocus } from "./chat/useComposerFocus";
 import {
   selectModelCatalogSettings,
   useComposerDispatchSettings,
@@ -3026,14 +3027,7 @@ export default memo(function ChatView({
     [setLocalDraftError, setStoreThreadError],
   );
 
-  const focusComposer = useCallback(() => {
-    composerEditorRef.current?.focusAtEnd();
-  }, []);
-  const scheduleComposerFocus = useCallback(() => {
-    window.requestAnimationFrame(() => {
-      focusComposer();
-    });
-  }, [focusComposer]);
+  const { focusComposer, scheduleComposerFocus } = useComposerFocus(composerEditorRef);
   const previousCompletionRef = useRef({
     threadId,
     turnId: activeLatestTurn?.turnId,

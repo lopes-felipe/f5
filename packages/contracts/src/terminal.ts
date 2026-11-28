@@ -38,6 +38,7 @@ export type TerminalSessionInput = Schema.Codec.Encoded<typeof TerminalSessionIn
 export const TerminalOpenInput = Schema.Struct({
   ...TerminalSessionInput.fields,
   stopOnSettle: Schema.optional(Schema.Boolean),
+  maxHistoryBytes: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
   cwd: FilesystemPath,
   cols: Schema.optional(TerminalColsSchema),
   rows: Schema.optional(TerminalRowsSchema),
@@ -85,7 +86,10 @@ const TerminalRevisionFields = {
   generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 };
-export const TerminalSnapshotInput = TerminalSessionInput;
+export const TerminalSnapshotInput = Schema.Struct({
+  ...TerminalSessionInput.fields,
+  maxHistoryBytes: TerminalOpenInput.fields.maxHistoryBytes,
+});
 export type TerminalSnapshotInput = typeof TerminalSnapshotInput.Type;
 
 export const TerminalSessionSnapshot = Schema.Struct({

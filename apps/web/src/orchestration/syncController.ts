@@ -1,4 +1,5 @@
 import { startDeferredClientDiagnostics } from "./deferredClientDiagnostics";
+import { invalidatePrHubThreadLinks } from "../lib/prHubInvalidation";
 import {
   cleanupDeletedThread,
   cleanupDeletedThreadsFromSnapshot,
@@ -440,6 +441,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     }
     void invalidateWorkflowQueries(queryClient, [event]);
     invalidateWorkspaceQueriesForEvents([event]);
+    invalidatePrHubThreadLinks(queryClient, [event]);
   };
 
   const applyBatchToStore = (batch: ReadonlyArray<OrchestrationEvent>) => {
@@ -488,6 +490,7 @@ export function createOrchestrationSyncController(deps: OrchestrationSyncControl
     if (batch.some(affectsWorktreeInventory))
       void queryClient.invalidateQueries({ queryKey: ["worktrees"] });
     invalidateWorkspaceQueriesForEvents(batch);
+    invalidatePrHubThreadLinks(queryClient, batch);
     if (import.meta.env.DEV && batch.length >= 64) {
       console.info("EventRouter coalesced a large batch", {
         size: batch.length,

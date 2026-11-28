@@ -1,9 +1,18 @@
-import { PullRequestKey, type PrHubChanged } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  PullRequestKey,
+  ThreadId,
+  type OrchestrationEvent,
+  type PrHubChanged,
+} from "@t3tools/contracts";
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 
 import {
   createPrHubChangeSequence,
   EMPTY_PR_HUB_CHANGE_BATCH,
+  invalidatePrHubThreadLinks,
   isPrHubQueryStale,
   mergePrHubChange,
 } from "./prHubInvalidation";
@@ -22,6 +31,48 @@ const event = (overrides: Partial<PrHubChanged> = {}): PrHubChanged => ({
 
 const batchOf = (...events: PrHubChanged[]) =>
   events.reduce(mergePrHubChange, EMPTY_PR_HUB_CHANGE_BATCH);
+
+it("refreshes cached link-bearing queries when a thread unlinks a PR", () => {
+  const queryClient = new QueryClient();
+  const list = ["prHub", "list", "account"];
+  const linkedThreads = ["prHub", "threadsForPr", "account", key(1)];
+  const checks = ["prHub", "checks", "account", key(1)];
+  for (const queryKey of [list, linkedThreads, checks]) queryClient.setQueryData(queryKey, {});
+  const threadId = ThreadId.makeUnsafe("linked");
+  const now = "2026-04-01T09:00:00.000Z";
+  const metadata: OrchestrationEvent = {
+    type: "thread.meta-updated",
+    sequence: 1,
+    eventId: EventId.makeUnsafe("event"),
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    occurredAt: now,
+    commandId: CommandId.makeUnsafe("command"),
+    causationEventId: null,
+    correlationId: null,
+    metadata: {},
+    payload: { threadId, updatedAt: now },
+  };
+  invalidatePrHubThreadLinks(queryClient, [metadata]);
+  expect(queryClient.getQueryState(list)?.isInvalidated).toBe(false);
+  invalidatePrHubThreadLinks(queryClient, [
+    {
+      ...metadata,
+      payload: {
+        ...metadata.payload,
+        pullRequestUnlinked: {
+          provider: "github",
+          host: "github.com",
+          repository: "octo/repo",
+          number: 1,
+        },
+      },
+    },
+  ]);
+  expect(queryClient.getQueryState(list)?.isInvalidated).toBe(true);
+  expect(queryClient.getQueryState(linkedThreads)?.isInvalidated).toBe(true);
+  expect(queryClient.getQueryState(checks)?.isInvalidated).toBe(false);
+});
 
 describe("PR Hub change batches", () => {
   it("collects changed and removed keys across a burst", () => {

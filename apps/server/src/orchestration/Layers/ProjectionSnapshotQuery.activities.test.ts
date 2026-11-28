@@ -190,6 +190,18 @@ it.layer(SqlitePersistenceMemory)("retained thread activities query", (it) => {
         const [query, params] = statement.compile();
         const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, params);
         const details = plan.map((row) => row.detail);
+        if (threadId !== null) {
+          assert.isFalse(
+            details.some((detail) => detail.includes("ranked_activities")),
+            details.join("\n"),
+          );
+          assert.isTrue(
+            details.some((detail) =>
+              detail.includes("idx_projection_thread_activities_approval_request"),
+            ),
+            details.join("\n"),
+          );
+        }
         assert.isTrue(
           details.some((detail) =>
             detail.includes("COVERING INDEX idx_projection_thread_activities_thread_rank"),

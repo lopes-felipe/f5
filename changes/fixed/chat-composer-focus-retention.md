@@ -1,0 +1,1 @@
+- Keep the chat composer’s focus callbacks from retaining old copies of a thread during long sessions.

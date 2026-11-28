@@ -1,0 +1,1 @@
+- Open PR Hub views refresh their linked threads when a link is added or removed.

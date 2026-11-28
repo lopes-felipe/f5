@@ -77,6 +77,14 @@ const ThreadReadInput = Schema.Struct({
 export type ThreadReadInput = typeof ThreadReadInput.Type;
 /** The largest `thread_read` result, in bytes of serialized JSON. */
 export const THREAD_READ_RESULT_MAX_BYTES = 24_000;
+const SEND_TO_USER_MAX_LENGTH = 4_000;
+const SendToUserInput = z.object({
+  message: z
+    .string()
+    .min(1)
+    .max(SEND_TO_USER_MAX_LENGTH)
+    .refine((value) => value.trim().length > 0),
+});
 
 export type ThreadToolRequest =
   | { readonly name: "theme_read" }
@@ -84,6 +92,7 @@ export type ThreadToolRequest =
   | { readonly name: "forge_pull_request"; readonly request: PullRequestMcpRequest }
   | { readonly name: "image_publish"; readonly path: string }
   | { readonly name: "thread_status" }
+  | { readonly name: "send_to_user"; readonly message: string }
   | { readonly name: "thread_read"; readonly input: ThreadReadInput }
   | { readonly name: "thread_settle" }
   | { readonly name: "html_render"; readonly input: HtmlRenderInput }
@@ -170,6 +179,15 @@ const annotations = (readOnlyHint: boolean) => ({
 const themeOverrides = z.record(z.string(), z.string().max(128));
 export const THREAD_TOOL_DEFINITIONS = [
   ...PULL_REQUEST_MCP_TOOLS,
+  {
+    name: "send_to_user",
+    title: "Send a message to the user",
+    description:
+      "Show Markdown verbatim in this thread before the turn ends. Use this for material the user must read in full mid-turn, such as a draft or code block they need before answering a question. Put ordinary progress updates and final replies in your normal response.",
+    shape: SendToUserInput.shape,
+    annotations: { ...annotations(true), idempotentHint: false },
+    alwaysLoad: true,
+  },
   {
     name: "theme_read",
     title: "List environment themes",
@@ -382,6 +400,7 @@ export const THREAD_TOOL_TIMEOUT_MS = 35_000;
  */
 export type ThreadToolAccess = "full" | "read-only";
 export const READ_ONLY_THREAD_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "send_to_user",
   "thread_read",
   "pull_request_read",
   "pull_request_list",
@@ -423,6 +442,7 @@ export async function callThreadTool(
           throw new Error("item excludes before and limit");
         return { name, input };
       }
+      if (name === "send_to_user") return { name, ...SendToUserInput.parse(arguments_) };
       if (name === "image_publish")
         return {
           name,

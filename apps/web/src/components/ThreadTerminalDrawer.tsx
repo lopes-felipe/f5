@@ -668,9 +668,10 @@ function TerminalViewport({
       historySequenceState = snapshot.historySequenceState ?? 0;
       outputWriter.write(snapshot.history, true);
     };
+    const maxHistoryBytes = 512 * 1024;
     const recovery = new TerminalRecovery(
       terminalSnapshotReader(
-        () => api.terminal.snapshot({ threadId, terminalId }),
+        () => api.terminal.snapshot({ threadId, terminalId, maxHistoryBytes }),
         async () => {
           const activeTerminal = terminalRef.current;
           const activeFitAddon = fitAddonRef.current;
@@ -687,6 +688,7 @@ function TerminalViewport({
             threadId,
             terminalId,
             cwd,
+            maxHistoryBytes,
             cols: activeTerminal.cols,
             rows: activeTerminal.rows,
             ...(runtimeEnv ? { env: runtimeEnv } : {}),

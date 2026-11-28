@@ -9,6 +9,7 @@ import {
   EventId,
   InvestigationWorkflowId,
   MessageId,
+  OrchestrationProposedPlanId,
   ProjectId,
   ThreadId,
   TurnId,
@@ -1926,6 +1927,58 @@ it("removes only identified native rewind turns while preserving the active turn
 });
 
 describe("streaming batch and timeline work", () => {
+  it("replaces the streaming plan and thought label while reusing other rows", () => {
+    const createdAt = "2026-04-01T09:00:00.000Z";
+    const messages = [
+      {
+        id: MessageId.makeUnsafe("user"),
+        role: "user" as const,
+        text: "Make a plan",
+        streaming: false,
+        createdAt,
+      },
+    ];
+    const plan = {
+      id: OrchestrationProposedPlanId.makeUnsafe("plan"),
+      turnId: TurnId.makeUnsafe("turn"),
+      planMarkdown: "First",
+      createdAt,
+      updatedAt: createdAt,
+      implementedAt: null,
+      implementationThreadId: null,
+    };
+    const entryCache = createTimelineEntryCache();
+    const rowCache = createTimelineRowCache();
+    const build = (markdown: string, thought: string) =>
+      buildTimelineRows({
+        timelineEntries: deriveTimelineEntries(
+          messages,
+          [{ ...plan, planMarkdown: markdown }],
+          [],
+          undefined,
+          entryCache,
+        ),
+        completionDividerBeforeEntryId: null,
+        completionSummary: null,
+        isWorking: true,
+        activeTurnStartedAt: createdAt,
+        liveActivity: { kind: "thinking", detail: thought },
+        expandMcpToolCalls: false,
+        cache: rowCache,
+      });
+    const before = build("First", "Reading");
+    const after = build("First, then second", "Writing");
+    expect(after.find((row) => row.kind === "message")).toBe(
+      before.find((row) => row.kind === "message"),
+    );
+    expect(after.find((row) => row.kind === "proposed-plan")?.proposedPlan.planMarkdown).toBe(
+      "First, then second",
+    );
+    expect(after.at(-1)).toMatchObject({ kind: "working", activity: "Thinking: Writing" });
+    expect(entryCache.structuralDerivations).toBe(1);
+    expect(rowCache.structuralDerivations).toBe(1);
+  });
+
   it("copies the thread collection once and reuses timeline structure for text-only updates", () => {
     const fixed = {
       id: MessageId.makeUnsafe("fixed"),

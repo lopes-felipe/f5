@@ -2726,6 +2726,7 @@ export const createServer = Effect.fn(function* (
               ...threadContextRepositories,
               sql,
               engine: orchestrationEngine,
+              sendMessage: orchestrationEngine.dispatch,
               federation: threadMcpFederation.value,
               guides: prHubReviewGuide,
               watches: pullRequestWatches,
