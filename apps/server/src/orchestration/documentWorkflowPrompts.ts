@@ -13,7 +13,10 @@ import {
   type WorkflowRetryContext,
 } from "./workflowPromptFragments.ts";
 import {
+  CONDENSE_REFERENCE_NOTE,
+  condenseInstructions,
   planLengthLimitSection,
+  type CondensePromptInput,
   type buildAuthorPrompt,
   type buildReviewPrompt,
   type buildRevisionPrompt,
@@ -62,7 +65,7 @@ export function buildDocumentAuthorPrompt(input: Parameters<typeof buildAuthorPr
     typeSection(type),
     writing(type),
     output(type),
-    planLengthLimitSection(input.maxPlanChars, "document"),
+    planLengthLimitSection(input.targetPlanChars, "document"),
     repair(input.retry),
     workflowInterruptedRetrySection(input.retry),
   ]);
@@ -111,8 +114,31 @@ export function buildDocumentRevisionPrompt(
     `Read all reviews and verify disputed facts before changing them. Apply feedback you agree with, and keep unresolved material risks. Do not argue with rejected feedback inside the document. Produce the complete revised document as a full replacement.`,
     typeSection(input.documentType),
     output(input.documentType),
-    planLengthLimitSection(input.maxPlanChars, "document"),
+    planLengthLimitSection(input.targetPlanChars, "document"),
     repair(input.retry),
+  ]);
+}
+export function buildDocumentCondensePrompt(
+  input: CondensePromptInput & { documentType: WorkflowDocumentType },
+): string {
+  const label = WORKFLOW_DOCUMENT_PROFILES[input.documentType].label;
+  return joinPromptSections([
+    input.planMarkdown === null
+      ? `Condense the most recent complete ${label} you submitted in this thread. ${CONDENSE_REFERENCE_NOTE}`
+      : `Condense your revised ${label} below.`,
+    input.planMarkdown === null
+      ? null
+      : envelope(
+          "Your revised draft",
+          normalizeDocumentMarkdown(input.planMarkdown),
+          input.planSource,
+        ),
+    condenseInstructions(input, "document"),
+    providerGuidanceSection(input.authorSlot.provider),
+    typeSection(input.documentType),
+    output(input.documentType),
+    repair(input.retry),
+    workflowInterruptedRetrySection(input.retry),
   ]);
 }
 export function buildDocumentMergePrompt(input: Parameters<typeof buildMergePrompt>[0]): string {

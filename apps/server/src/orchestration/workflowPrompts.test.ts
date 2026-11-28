@@ -130,6 +130,22 @@ describe("workflowPrompts", () => {
     expect(codex).toContain("Return the full plan in your assistant response");
   });
 
+  it("asks authors for a soft length target instead of a hard limit", () => {
+    const workflow = makeWorkflow();
+    const author = buildAuthorPrompt({
+      workflow,
+      branch: workflow.branchA,
+      authorSlot: CODEX_SLOT,
+      targetPlanChars: 48_000,
+    });
+    expect(author).toContain("## Length Target");
+    expect(author).toContain("under 48000 characters (about 8000 words)");
+    expect(author).toContain(
+      "A revised plan is condensed before the merge only if it exceeds its share of the merge.",
+    );
+    expect(author).not.toContain("rejected");
+  });
+
   it("tells an interrupted author retry to build on its existing research", () => {
     const workflow = makeWorkflow();
     const base = { workflow, branch: workflow.branchB, authorSlot: CLAUDE_SLOT };
