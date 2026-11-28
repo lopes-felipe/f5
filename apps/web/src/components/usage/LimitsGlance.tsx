@@ -18,6 +18,7 @@ import {
   accountStaleLimitsNotice,
   accountStatusText,
   accountUpdatedAt,
+  quotaExhaustedText,
 } from "./AccountUsageCards";
 import { glanceQuotaWindow } from "./charts/TightestLimitCallout";
 import { formatQuotaResetTime } from "./charts/QuotaMeter";
@@ -54,6 +55,10 @@ function AccountTile(props: {
   const lead = glanceQuotaWindow(windows, nowMs);
   // Retained bars stay usable-looking, so say when they are last-known.
   const staleNotice = lead ? accountStaleLimitsNotice(account) : null;
+  // A turn that stopped on the quota outranks an older reading that still shows room.
+  const exhaustedNotice = lead
+    ? (account.sections.map(quotaExhaustedText).find((text) => text !== null) ?? null)
+    : null;
   const others = lead
     ? windows.filter((window) => window.windowKey !== lead.windowKey && isLive(window, nowMs))
     : [];
@@ -130,6 +135,11 @@ function AccountTile(props: {
           >
             <UsageBar percent={used} tickPercent={pace?.elapsedPercent ?? null} tone={tone} />
           </div>
+          {exhaustedNotice ? (
+            <p role="status" className="text-2xs text-warning-foreground">
+              {exhaustedNotice}
+            </p>
+          ) : null}
           {staleNotice ? (
             <p role="status" className="text-2xs text-warning-foreground">
               {staleNotice}

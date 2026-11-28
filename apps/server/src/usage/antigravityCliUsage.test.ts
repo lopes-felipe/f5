@@ -25,12 +25,15 @@ import {
   ANTIGRAVITY_USAGE_ARGS,
   type AntigravityLimitsInput,
   type AntigravityQuotaSignal,
+  type AntigravityUsageRun,
+  antigravityAccountLimitsIdentity,
   antigravityLimitsIdentity,
   makeAntigravityLimits,
   parseAntigravityUsageReport,
   runAntigravityUsageCommand,
   withQuotaSignal,
 } from "./antigravityCliUsage.ts";
+import { AccountUsageReadError } from "./accountUsageErrors.ts";
 
 /**
  * The shape of `antigravity -p /usage --output-format json` from the bundled CLI 1.5.15, recorded
@@ -247,7 +250,42 @@ describe.skipIf(process.platform === "win32")("runAntigravityUsageCommand", () =
   });
 });
 
-const base = (overrides: Partial<AntigravityLimitsInput> = {}): AntigravityLimitsInput => ({
+/**
+ * A fake driver run. The framework's clock is the TestClock, which starts at 0, so the reader's
+ * `now` follows `clock` and tests advance both together.
+ */
+const harness = (
+  options: {
+    readonly version?: string | null;
+    readonly result?: () => ProcessRunResult;
+    /** Thrown before the body runs, as the driver's gates do. */
+    readonly gate?: () => AccountUsageReadError | undefined;
+  } = {},
+) => {
+  const state = { clock: 0, spawns: 0, account: "account-a" };
+  const usageRun: AntigravityUsageRun = async (_signal, body) => {
+    const blocked = options.gate?.();
+    if (blocked) throw blocked;
+    return body({
+      version: options.version === undefined ? "1.5.15" : options.version,
+      account: state.account,
+      spawn: async () => {
+        state.spawns += 1;
+        return options.result?.() ?? ran(report());
+      },
+    });
+  };
+  const advance = (ms: number) =>
+    Effect.sync(() => {
+      state.clock += ms;
+    }).pipe(Effect.andThen(TestClock.adjust(ms)));
+  return { state, usageRun, advance };
+};
+
+const base = (
+  run: ReturnType<typeof harness>,
+  overrides: Partial<AntigravityLimitsInput> = {},
+): AntigravityLimitsInput => ({
   instanceId: ProviderInstanceId.make("antigravity-test"),
   displayName: "Antigravity",
   enabled: true,
@@ -255,137 +293,237 @@ const base = (overrides: Partial<AntigravityLimitsInput> = {}): AntigravityLimit
   billedPerToken: false,
   readLimitsWithCli: true,
   quotaSignal: () => undefined,
-  runtimeVersion: async () => "1.5.15",
-  refusedVersion: async () => undefined,
+  currentAccount: async () => run.state.account,
+  usageRun: run.usageRun,
+  now: () => run.state.clock,
   ...overrides,
 });
 
 describe("makeAntigravityLimits", () => {
   effectIt.effect("never runs the CLI when reads are off or the instance uses an API key", () =>
     Effect.gen(function* () {
-      let runs = 0;
-      const runUsage = async () => {
-        runs += 1;
-        return ran(report());
+      const run = harness();
+      const signal: AntigravityQuotaSignal = {
+        observedAt: new Date(0).toISOString(),
+        resetsAt: null,
+        account: "account-a",
       };
       const permits = yield* Semaphore.make(1);
-      const off = yield* makeAntigravityLimits(base({ readLimitsWithCli: false, runUsage }));
-      const billed = yield* makeAntigravityLimits(base({ billedPerToken: true, runUsage }));
+      const off = yield* makeAntigravityLimits(
+        base(run, { readLimitsWithCli: false, quotaSignal: () => signal }),
+      );
+      const billed = yield* makeAntigravityLimits(
+        base(run, { billedPerToken: true, quotaSignal: () => signal }),
+      );
       yield* off.refresh("force", permits);
       yield* billed.refresh("force", permits);
-      expect(runs).toBe(0);
+      expect(run.state.spawns).toBe(0);
       expect((yield* off.getSnapshot).sections).toMatchObject([
-        { outcome: "unsupported", errorCode: "unsupported", readsDisabled: true, snapshot: null },
+        {
+          outcome: "unsupported",
+          errorCode: "unsupported",
+          readsDisabled: true,
+          snapshot: null,
+          quotaExhausted: { observedAt: signal.observedAt, resetsAt: null },
+        },
       ]);
-      expect((yield* billed.getSnapshot).sections).toMatchObject([
-        { outcome: "available", snapshot: { data: { windows: [], plan: "Billed per token" } } },
-      ]);
+      // A key's rate limit is not a subscription quota stop.
+      const [billedSection] = (yield* billed.getSnapshot).sections;
+      expect(billedSection).toMatchObject({
+        outcome: "available",
+        snapshot: { data: { windows: [], plan: "Billed per token" } },
+      });
+      expect(billedSection).not.toHaveProperty("quotaExhausted");
     }).pipe(Effect.scoped),
   );
 
-  effectIt.effect("refuses old, unknown and refused runtime versions before spawning", () =>
+  effectIt.effect("gates old, unreadable and refused versions before spawning", () =>
     Effect.gen(function* () {
-      let runs = 0;
-      const runUsage = async () => {
-        runs += 1;
-        return ran(report());
-      };
       const permits = yield* Semaphore.make(1);
-      for (const [version, refused, reason] of [
-        ["1.5.14", undefined, "cli-too-old"],
-        [null, undefined, "cli-too-old"],
-        ["1.5.15", "1.5.15", "cli-spends-turn"],
+      for (const [version, refusal, expected] of [
+        ["1.5.14", undefined, { outcome: "unsupported", unsupportedReason: "cli-too-old" }],
+        [null, undefined, { outcome: "unavailable", errorCode: "process-unavailable" }],
+        [
+          "1.5.15",
+          { version: "1.5.15", reason: "cli-unrecognized" as const },
+          { outcome: "unsupported", unsupportedReason: "cli-unrecognized" },
+        ],
       ] as const) {
+        const run = harness({ version });
         const capability = yield* makeAntigravityLimits(
-          base({
-            runUsage,
-            runtimeVersion: async () => version,
-            refusedVersion: async () => refused,
-          }),
+          base(run, { refusal: async () => refusal }),
         );
         const { snapshot } = yield* capability.refreshAccount!(permits, "force");
-        expect(snapshot.sections).toMatchObject([
-          { outcome: "unsupported", unsupportedReason: reason },
-        ]);
+        expect(snapshot.sections).toMatchObject([{ ...expected, accountFingerprint: "account-a" }]);
+        expect(run.state.spawns).toBe(0);
       }
-      expect(runs).toBe(0);
     }).pipe(Effect.scoped),
   );
 
-  effectIt.effect("publishes the windows and replays them within the 60-second floor", () =>
+  effectIt.effect("spaces real runs a minute apart without calling throttled refreshes fresh", () =>
     Effect.gen(function* () {
-      let now = Date.parse("2026-11-28T12:00:00Z");
-      let runs = 0;
+      const run = harness();
+      const verified: Array<string> = [];
       const capability = yield* makeAntigravityLimits(
-        base({
-          now: () => now,
-          runUsage: async () => {
-            runs += 1;
-            return ran(report());
+        base(run, {
+          verify: async (version) => {
+            verified.push(version);
           },
         }),
       );
       const permits = yield* Semaphore.make(1);
       const first = yield* capability.refreshAccount!(permits, "force");
       expect(first.fresh).toBe(true);
+      expect(verified).toEqual(["1.5.15"]);
       expect(first.snapshot.sections[0]).toMatchObject({
         outcome: "available",
+        accountFingerprint: "account-a",
         snapshot: {
           data: {
+            accountFingerprint: "account-a",
             windows: expect.arrayContaining([expect.objectContaining({ id: "gemini-weekly" })]),
           },
         },
       });
-      // Past the framework's force throttle, inside the reader's floor.
-      yield* TestClock.adjust("10 seconds");
-      now += 10_000;
-      yield* capability.refreshAccount!(permits, "force");
-      expect(runs).toBe(1);
-      yield* TestClock.adjust("60 seconds");
-      now += 60_000;
-      yield* capability.refreshAccount!(permits, "force");
-      expect(runs).toBe(2);
+      // Past the framework's 5-second force throttle, inside the 60-second floor.
+      yield* run.advance(10_000);
+      const throttled = yield* capability.refreshAccount!(permits, "force");
+      expect(run.state.spawns).toBe(1);
+      expect(throttled.fresh).toBe(false);
+      expect(throttled.nextAllowedAt).toBe(new Date(60_000).toISOString());
+      yield* run.advance(50_000);
+      const second = yield* capability.refreshAccount!(permits, "force");
+      expect(run.state.spawns).toBe(2);
+      expect(second.fresh).toBe(true);
     }).pipe(Effect.scoped),
   );
 
-  effectIt.effect("stops asking a runtime version whose /usage spent a turn", () =>
+  effectIt.effect("lets a refresh run at once after a gate failure or an interrupted run", () =>
     Effect.gen(function* () {
-      const refused: Array<string> = [];
+      let gate: AccountUsageReadError | undefined = new AccountUsageReadError(
+        "authentication-required",
+      );
+      let aborted = false;
+      const run = harness({
+        gate: () => gate,
+        result: () => (aborted ? ran("", { aborted: true, code: null }) : ran(report())),
+      });
+      const capability = yield* makeAntigravityLimits(base(run));
+      const permits = yield* Semaphore.make(1);
+      const signedOut = yield* capability.refreshAccount!(permits, "force");
+      expect(signedOut.snapshot.sections).toMatchObject([
+        { outcome: "unavailable", errorCode: "authentication-required" },
+      ]);
+      gate = undefined;
+      aborted = true;
+      yield* run.advance(6_000);
+      yield* capability.refreshAccount!(permits, "force");
+      expect(run.state.spawns).toBe(1);
+      aborted = false;
+      yield* run.advance(6_000);
+      const recovered = yield* capability.refreshAccount!(permits, "force");
+      expect(run.state.spawns).toBe(2);
+      expect(recovered.fresh).toBe(true);
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect("stops asking a version that spent a turn, even when saving that fails", () =>
+    Effect.gen(function* () {
+      const run = harness({ result: () => ran(report({ usage: { thinking_tokens: 3 } })) });
+      const refused: Array<[string, string]> = [];
       const capability = yield* makeAntigravityLimits(
-        base({
-          runUsage: async () => ran(report({ num_turns: 1 })),
-          refuseVersion: async (version) => {
-            refused.push(version);
+        base(run, {
+          refuse: async (version, reason) => {
+            refused.push([version, reason]);
+            throw new Error("read-only state file");
           },
         }),
       );
-      const { snapshot } = yield* capability.refreshAccount!(yield* Semaphore.make(1), "force");
-      expect(refused).toEqual(["1.5.15"]);
+      const permits = yield* Semaphore.make(1);
+      const { snapshot } = yield* capability.refreshAccount!(permits, "force");
+      expect(refused).toEqual([["1.5.15", "cli-spends-turn"]]);
       expect(snapshot.sections).toMatchObject([
         { outcome: "unsupported", unsupportedReason: "cli-spends-turn" },
+      ]);
+      yield* run.advance(10 * 60_000);
+      yield* capability.refreshAccount!(permits, "force");
+      expect(run.state.spawns).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect("refuses an unverified version whose first answer is unrecognised", () =>
+    Effect.gen(function* () {
+      const permits = yield* Semaphore.make(1);
+      for (const [result, knownGood, expected] of [
+        [
+          ran("", { code: null, timedOut: true }),
+          undefined,
+          { unsupportedReason: "cli-unrecognized" },
+        ],
+        [ran("plain text answer"), undefined, { unsupportedReason: "cli-unrecognized" }],
+        [ran("", { code: null, timedOut: true }), "1.5.15", { errorCode: "timeout" }],
+        [
+          ran("", {
+            code: null,
+            timedOut: true,
+            stderr: "Authentication required. Please visit the URL to log in:",
+          }),
+          undefined,
+          { errorCode: "authentication-required" },
+        ],
+      ] as const) {
+        const run = harness({ result: () => result });
+        const refused: Array<string> = [];
+        const capability = yield* makeAntigravityLimits(
+          base(run, {
+            verifiedVersion: async () => knownGood,
+            refuse: async (version) => {
+              refused.push(version);
+            },
+          }),
+        );
+        const { snapshot } = yield* capability.refreshAccount!(permits, "force");
+        expect(snapshot.sections).toMatchObject([expected]);
+        expect(refused).toEqual("unsupportedReason" in expected ? ["1.5.15"] : []);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  effectIt.effect("hides another account's limits and quota stop after a sign-in switch", () =>
+    Effect.gen(function* () {
+      const run = harness({
+        gate: () => (run.state.account === "account-b" ? failing : undefined),
+      });
+      const failing = new AccountUsageReadError("timeout");
+      let signal: AntigravityQuotaSignal | undefined;
+      const capability = yield* makeAntigravityLimits(base(run, { quotaSignal: () => signal }));
+      const permits = yield* Semaphore.make(1);
+      const first = yield* capability.refreshAccount!(permits, "force");
+      expect(capability.identityForSnapshot!(first.snapshot)).toBe(
+        antigravityAccountLimitsIdentity("account-a"),
+      );
+      signal = { observedAt: new Date(1).toISOString(), resetsAt: null, account: "account-a" };
+      run.state.account = "account-b";
+      const switched = yield* capability.getSnapshot;
+      expect(switched.sections).toEqual([
+        expect.objectContaining({ snapshot: null, accountFingerprint: "account-b" }),
+      ]);
+      expect(switched.sections[0]).not.toHaveProperty("quotaExhausted");
+      expect(capability.identityForSnapshot!(switched)).toBe(
+        antigravityAccountLimitsIdentity("account-b"),
+      );
+      // B's first read fails; A's reading is never shown as B's last known limits.
+      yield* run.advance(61_000);
+      const failed = yield* capability.refreshAccount!(permits, "force");
+      expect(failed.snapshot.sections).toEqual([
+        expect.objectContaining({ errorCode: "timeout", snapshot: null }),
       ]);
     }).pipe(Effect.scoped),
   );
 
-  effectIt.effect(
-    "reports a timed-out sign-in prompt as signed out and other timeouts as such",
-    () =>
-      Effect.gen(function* () {
-        for (const [stderr, errorCode] of [
-          ["Authentication required. Please visit the URL to log in:", "authentication-required"],
-          ["", "timeout"],
-        ] as const) {
-          const capability = yield* makeAntigravityLimits(
-            base({ runUsage: async () => ran("", { code: null, timedOut: true, stderr }) }),
-          );
-          const { snapshot } = yield* capability.refreshAccount!(yield* Semaphore.make(1), "force");
-          expect(snapshot.sections).toMatchObject([{ outcome: "unavailable", errorCode }]);
-        }
-      }).pipe(Effect.scoped),
-  );
-
-  it("keeps each instance's history apart", () => {
+  it("keeps instances and accounts apart in history", () => {
     expect(antigravityLimitsIdentity("profile-a")).not.toBe(antigravityLimitsIdentity("profile-b"));
+    expect(antigravityAccountLimitsIdentity("a")).not.toBe(antigravityAccountLimitsIdentity("b"));
   });
 });
 
@@ -455,5 +593,25 @@ describe("withQuotaSignal", () => {
     expect(
       withQuotaSignal(reading("2026-11-28T11:55:00.000Z"), signal, now).sections[0],
     ).toHaveProperty("quotaExhausted");
+    // A later failed refresh keeps the newer reading; the cleared stop stays cleared.
+    const failedAfter = account({
+      ...reading("2026-11-28T12:05:00.000Z").sections[0],
+      outcome: "unavailable",
+      errorCode: "timeout",
+    });
+    expect(withQuotaSignal(failedAfter, signal, now).sections[0]).not.toHaveProperty(
+      "quotaExhausted",
+    );
+  });
+
+  it("never shows a stop observed under another account", () => {
+    const signal: AntigravityQuotaSignal = { observedAt, resetsAt: null, account: "account-a" };
+    const now = at("2026-11-28T12:10:00Z");
+    expect(withQuotaSignal(account(), signal, now, "account-a").sections[0]).toHaveProperty(
+      "quotaExhausted",
+    );
+    expect(withQuotaSignal(account(), signal, now, "account-b").sections[0]).not.toHaveProperty(
+      "quotaExhausted",
+    );
   });
 });

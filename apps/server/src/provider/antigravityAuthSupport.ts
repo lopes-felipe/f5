@@ -213,10 +213,16 @@ export interface AntigravityAuthState {
     readonly method?: AntigravityAuthMethod;
   };
   /**
-   * A runtime version whose `/usage` command spent a model turn. F5 never runs it again on that
-   * version; a different runtime version is asked again.
+   * A runtime version whose `/usage` command spent a model turn, or whose first report F5 could
+   * not recognise. F5 never runs it again on that version until limit reads are turned off and on;
+   * a different runtime version is asked again.
    */
-  readonly usageCommandRefusedVersion?: string;
+  readonly usageCommandRefused?: {
+    readonly version: string;
+    readonly reason: "cli-spends-turn" | "cli-unrecognized";
+  };
+  /** A runtime version whose `/usage` command answered with a recognised report. */
+  readonly usageCommandVerifiedVersion?: string;
 }
 
 const EMPTY_STATE: AntigravityAuthState = { version: 1, revision: 0, verified: false };
@@ -265,6 +271,14 @@ function decodeCatalog(value: unknown): Pick<AntigravityAuthState, "catalog"> {
   };
 }
 
+function decodeUsageRefusal(value: unknown): Pick<AntigravityAuthState, "usageCommandRefused"> {
+  if (value === null || typeof value !== "object") return {};
+  const { version, reason } = value as Record<string, unknown>;
+  if (typeof version !== "string" || version.length === 0) return {};
+  if (reason !== "cli-spends-turn" && reason !== "cli-unrecognized") return {};
+  return { usageCommandRefused: { version, reason } };
+}
+
 class AntigravityAuthStateUnreadableError extends Error {
   constructor(cause: unknown) {
     super("Antigravity account state could not be read. Check the instance profile folder.", {
@@ -307,9 +321,10 @@ function decodeStateOrUndefined(
         : {}),
       ...(fields.discoveryRequested === true ? { discoveryRequested: true } : {}),
       ...decodeCatalog(fields.catalog),
-      ...(typeof fields.usageCommandRefusedVersion === "string" &&
-      fields.usageCommandRefusedVersion.length > 0
-        ? { usageCommandRefusedVersion: fields.usageCommandRefusedVersion }
+      ...decodeUsageRefusal(fields.usageCommandRefused),
+      ...(typeof fields.usageCommandVerifiedVersion === "string" &&
+      fields.usageCommandVerifiedVersion.length > 0
+        ? { usageCommandVerifiedVersion: fields.usageCommandVerifiedVersion }
         : {}),
     };
   } catch {
@@ -534,6 +549,19 @@ export function reconcileAntigravityAuthState(
 }
 
 /** A token file only counts when it holds a readable OAuth credential, not merely bytes. */
+/**
+ * A secret-free key for the account behind a profile: the stored sign-in's identity (a hash of
+ * its OAuth client and subject) when the token names one, else the last known account, else the
+ * account revision. Usage history and quota signals are bound to it, so a sign-in to another
+ * account on the same instance never inherits the previous account's data.
+ */
+export async function antigravityAccountKey(profileDirectory: string): Promise<string> {
+  const identity = await readOAuthAccountFingerprint(profileDirectory).catch(() => undefined);
+  if (identity) return identity;
+  const state = await readAntigravityAuthState(profileDirectory);
+  return state.accountFingerprint ?? `revision:${state.revision}`;
+}
+
 export async function hasAntigravityOAuthToken(profileDirectory: string): Promise<boolean> {
   return (await readOAuthToken(profileDirectory)) !== undefined;
 }

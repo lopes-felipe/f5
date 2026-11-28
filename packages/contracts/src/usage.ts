@@ -479,7 +479,9 @@ export const AccountUsageSection = Schema.Union([
     /** Limit reads are off by a provider setting (Antigravity's `/usage` opt-in). */
     readsDisabled: Schema.optional(Schema.Boolean),
     /** Why an `unsupported` read did not run, when the reader knows a specific cause. */
-    unsupportedReason: Schema.optional(Schema.Literals(["cli-too-old", "cli-spends-turn"])),
+    unsupportedReason: Schema.optional(
+      Schema.Literals(["cli-too-old", "cli-spends-turn", "cli-unrecognized"]),
+    ),
     /**
      * A turn on this account recently stopped on an exhausted quota. Observed from the turn
      * itself, never read from the provider; it expires at `resetsAt`.

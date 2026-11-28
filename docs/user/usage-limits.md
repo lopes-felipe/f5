@@ -154,7 +154,9 @@ Antigravity CLI** for the instance in **Settings → Providers**. F5 then runs t
 `/usage` command with that instance's sign-in: when Usage refreshes, at most once a minute, and
 on the background quota sampler's schedule (every 10 minutes while a 5-hour window is close to
 resetting, otherwise hourly). The command needs Antigravity 1.5.15 or newer. If a version answers
-`/usage` with a model turn, F5 stops asking on that version.
+`/usage` with a model turn, or its first answer times out or isn't recognised, F5 stops asking on
+that version. Turn the setting off and on to try again. Limits and their history belong to the
+signed-in Google account, so signing in to another account on the same instance starts fresh.
 
 Whether or not reads are on, a turn that stops on an exhausted Antigravity quota shows "Quota
 reached during a turn" and its reset time on the card. F5 takes that from the turn itself, so it

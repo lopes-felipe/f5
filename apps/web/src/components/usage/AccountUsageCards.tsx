@@ -424,7 +424,9 @@ export function antigravityLimitsNotice(
   if (section.readsDisabled)
     return 'Limits are off. Turn on "Read limits with the Antigravity CLI" in Settings → Providers.';
   if (section.unsupportedReason === "cli-spends-turn")
-    return "This Antigravity version can't report limits without using a turn, so F5 stopped asking.";
+    return "This Antigravity version can't report limits without using a turn, so F5 stopped asking. Turn limit reads off and on to try again.";
+  if (section.unsupportedReason === "cli-unrecognized")
+    return "This Antigravity version's /usage answer wasn't recognised, so F5 stopped asking in case it used a turn. Turn limit reads off and on to try again.";
   if (section.unsupportedReason === "cli-too-old")
     return "Update Antigravity in Settings to read limits.";
   return "Antigravity didn't report subscription limits for this sign-in.";

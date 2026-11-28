@@ -44,7 +44,10 @@ describe("Antigravity limits text", () => {
       "Update Antigravity in Settings to read limits.",
     );
     expect(accountStatusText(account(limits({ unsupportedReason: "cli-spends-turn" })))).toBe(
-      "This Antigravity version can't report limits without using a turn, so F5 stopped asking.",
+      "This Antigravity version can't report limits without using a turn, so F5 stopped asking. Turn limit reads off and on to try again.",
+    );
+    expect(accountStatusText(account(limits({ unsupportedReason: "cli-unrecognized" })))).toMatch(
+      /wasn't recognised, so F5 stopped asking in case it used a turn\. Turn limit reads off and on/,
     );
     for (const section of [limits({ readsDisabled: true }), limits()])
       expect(accountStatusText(account(section))).not.toMatch(/does not expose/);

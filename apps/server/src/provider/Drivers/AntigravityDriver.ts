@@ -6,10 +6,9 @@ import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
 import {
   makeAntigravityLimits,
-  runAntigravityUsageCommand,
   type AntigravityQuotaSignal,
 } from "../../usage/antigravityCliUsage.ts";
-import { AccountUsageReadError } from "../../usage/accountUsageErrors.ts";
+import { makeAntigravityUsageRun } from "../antigravityUsageRun.ts";
 import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import * as AcpErrors from "effect-acp/errors";
 import { ProviderDriverError } from "../Errors.ts";
@@ -45,10 +44,8 @@ import {
   antigravityDriverRuntimeInput,
   antigravityLaunchedVersion,
   makeAntigravityAcpRuntime,
-  antigravityEnvironment,
   antigravityProfileDirectory,
   antigravityProfileKey,
-  prepareAntigravityProfile,
   type AntigravityThinkingLevels,
 } from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
@@ -59,6 +56,7 @@ import { buildAccountExecutionEnvironment } from "../../providerProcessEnv.ts";
 import { isProviderSecretUnavailable } from "../../serverSettingsSecrets.ts";
 import {
   ANTIGRAVITY_STALE_AUTH_MESSAGE,
+  antigravityAccountKey,
   antigravityAuthConfig,
   antigravityReadiness,
   isAntigravityAuthCurrent,
@@ -503,62 +501,27 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         );
       });
 
-      // The last quota stop a turn reported. In memory only: it is evidence from a turn, not a
-      // quota reading, so it never enters history and expires at its reset.
+      // The last quota stop a turn reported, tagged with the account it ran under. In memory
+      // only: it is evidence from a turn, not a quota reading, so it never enters history and
+      // expires at its reset. Another account signed in on this instance never sees it.
       let quotaSignal: AntigravityQuotaSignal | undefined;
       const onQuotaExhausted = (resetsAt: string | null) =>
-        Effect.sync(() => {
-          quotaSignal = { observedAt: new Date().toISOString(), resetsAt };
-        });
-      /**
-       * One `/usage` run with the instance's own sign-in. Gated like catalog discovery: current
-       * sign-in settings, a ready sign-in and account admission while the profile is prepared.
-       * A run that straddles an account change is discarded.
-       */
-      const runUsage = async (signal: AbortSignal) => {
-        if (!isAntigravityAuthCurrent(server.stateDir, instanceId, auth))
-          throw new AccountUsageReadError("temporary-failure");
-        const readiness = await antigravityReadiness({ profileDirectory, auth, keyUnavailable });
-        if (!readiness.ready) throw new AccountUsageReadError("authentication-required");
-        const before = await readAntigravityAuthState(profileDirectory);
-        let release: () => void;
-        try {
-          release = acquireAccountAdmission(server.stateDir, instanceId);
-        } catch {
-          throw new AccountUsageReadError("temporary-failure");
-        }
-        let prepared: Awaited<ReturnType<typeof prepareAntigravityProfile>>;
-        try {
-          prepared = await prepareAntigravityProfile({
-            stateDir: server.stateDir,
-            instanceId,
-            environment: processEnv,
-            auth,
-          });
-        } catch {
-          throw new AccountUsageReadError("process-unavailable");
-        } finally {
-          release();
-        }
-        const result = await runAntigravityUsageCommand({
-          executablePath: prepared.executable.executablePath,
-          profileDirectory: prepared.home,
-          environment: antigravityEnvironment(
-            processEnv,
-            prepared.home,
-            prepared.executable.harnessPath,
-            prepared.browser,
-            auth,
-          ),
-          signal,
-        }).catch(() => {
-          throw new AccountUsageReadError("process-unavailable");
-        });
-        const after = await readAntigravityAuthState(profileDirectory);
-        if (after.revision !== before.revision)
-          throw new AccountUsageReadError("temporary-failure");
-        return result;
-      };
+        Effect.promise(() => antigravityAccountKey(profileDirectory).catch(() => undefined)).pipe(
+          Effect.map((account) => {
+            quotaSignal = {
+              observedAt: new Date().toISOString(),
+              resetsAt,
+              ...(account !== undefined ? { account } : {}),
+            };
+          }),
+        );
+      // Turning limit reads off and on again is how a user retries a refused CLI version.
+      if (!config.readLimitsWithCli && before.usageCommandRefused)
+        yield* Effect.promise(() =>
+          updateAntigravityAuthState(profileDirectory, ({ usageCommandRefused: _, ...rest }) => ({
+            ...rest,
+          })).catch(() => undefined),
+        );
 
       const previewMcp = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
       const computerBroker = Option.getOrUndefined(
@@ -618,20 +581,31 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         billedPerToken: auth.authMethod === "gemini-api-key",
         readLimitsWithCli: config.readLimitsWithCli,
         quotaSignal: () => quotaSignal,
-        runUsage,
-        runtimeVersion,
-        refusedVersion: () =>
-          readAntigravityAuthState(profileDirectory).then(
-            (state) => state.usageCommandRefusedVersion,
-          ),
-        refuseVersion: (version) =>
+        currentAccount: () => antigravityAccountKey(profileDirectory),
+        usageRun: makeAntigravityUsageRun({
+          stateDir: server.stateDir,
+          instanceId,
+          profileDirectory,
+          auth,
+          keyUnavailable,
+          environment: processEnv,
+        }),
+        refusal: () =>
+          readAntigravityAuthState(profileDirectory).then((state) => state.usageCommandRefused),
+        refuse: (version, reason) =>
           updateAntigravityAuthState(profileDirectory, (state) => ({
             ...state,
-            usageCommandRefusedVersion: version,
-          })).then(
-            () => undefined,
-            () => undefined,
+            usageCommandRefused: { version, reason },
+          })).then(() => undefined),
+        verifiedVersion: () =>
+          readAntigravityAuthState(profileDirectory).then(
+            (state) => state.usageCommandVerifiedVersion,
           ),
+        verify: (version) =>
+          updateAntigravityAuthState(profileDirectory, (state) => ({
+            ...state,
+            usageCommandVerifiedVersion: version,
+          })).then(() => undefined),
       });
       const textGeneration = yield* makeGrokTextGeneration(
         { enabled, binaryPath: "", customModels: config.customModels },
