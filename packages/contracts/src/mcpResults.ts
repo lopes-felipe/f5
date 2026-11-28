@@ -675,6 +675,13 @@ export const McpImportCandidate = Schema.Struct({
 export const McpListImportCandidatesResult = Schema.Struct({
   candidates: Schema.Array(McpImportCandidate),
   issues: Schema.Array(McpImportIssue),
+  /** The configuration files detection found and read, so an empty result can say where it looked. */
+  readFiles: Schema.optional(Schema.Array(Schema.String)),
+  /**
+   * Set in a separate profile, whose agents have their own home folder: the user's own home
+   * and whether this detection read it (`includeUserHome`).
+   */
+  userHome: Schema.optional(Schema.Struct({ path: Schema.String, included: Schema.Boolean })),
 });
 export const McpProbeServerResult = Schema.Struct({
   ok: Schema.Boolean,
