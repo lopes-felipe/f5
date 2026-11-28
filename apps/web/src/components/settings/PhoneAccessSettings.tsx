@@ -259,7 +259,7 @@ export function PhoneAccessSettings() {
                 maxLength={128}
                 aria-label={"Name for " + device.name}
               />
-              <Button size="sm" variant="outline" disabled={busy}>
+              <Button type="submit" size="sm" variant="outline" disabled={busy}>
                 Rename
               </Button>
               {revokeId === device.deviceId ? (
@@ -381,7 +381,7 @@ export function PhoneAccessSettings() {
               </Button>
             </div>
           )}
-          <Button className="justify-self-start" disabled={busy}>
+          <Button type="submit" className="justify-self-start" disabled={busy}>
             Save APNs settings
           </Button>
         </form>

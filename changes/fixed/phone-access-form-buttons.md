@@ -1,0 +1,1 @@
+- Fixed the Phone access buttons for saving APNs settings and renaming paired devices.
