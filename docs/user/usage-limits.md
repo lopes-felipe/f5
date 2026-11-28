@@ -147,8 +147,18 @@ to its panel, such as `https://hub.example/cliproxy/management.html`. F5 appends
 `/v0/management` when it requests account usage. The management key goes only to the configured
 hub, and redirects are refused.
 
-Antigravity subscription quotas are unavailable in F5, including through CLIProxyAPI. An
-instance that signs in with a Gemini API key still shows "Billed per token".
+**Antigravity** limits are off by default. F5 never calls Google's quota APIs or reads them
+through CLIProxyAPI, because Google warned that those direct calls can get an account flagged. To
+see the Gemini and Claude & GPT 5-hour and weekly limits, turn on **Read limits with the
+Antigravity CLI** for the instance in **Settings → Providers**. F5 then runs the CLI's own
+`/usage` command with that instance's sign-in: when Usage refreshes, at most once a minute, and
+on the background quota sampler's schedule (every 10 minutes while a 5-hour window is close to
+resetting, otherwise hourly). The command needs Antigravity 1.5.15 or newer. If a version answers
+`/usage` with a model turn, F5 stops asking on that version.
+
+Whether or not reads are on, a turn that stops on an exhausted Antigravity quota shows "Quota
+reached during a turn" and its reset time on the card. F5 takes that from the turn itself, so it
+asks Google nothing. An instance that signs in with a Gemini API key shows "Billed per token".
 
 </details>
 

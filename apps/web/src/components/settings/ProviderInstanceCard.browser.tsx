@@ -283,6 +283,40 @@ describe("ProviderInstanceCard advisory", () => {
       await screen.unmount();
     }
   });
+
+  it("keeps Antigravity CLI limit reads off until opted in, and hides them for API keys", async () => {
+    const onUpdate = vi.fn();
+    const antigravity = ProviderDriverKind.make("antigravity");
+    const screen = await renderCard({
+      instance: makeInstance({ driver: antigravity }),
+      isExpanded: true,
+      onUpdate,
+    });
+    try {
+      const toggle = page.getByRole("switch", { name: "Read limits with the Antigravity CLI" });
+      await expect.element(toggle).not.toBeChecked();
+      await toggle.click();
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ config: { readLimitsWithCli: true } }),
+      );
+    } finally {
+      await screen.unmount();
+    }
+    const keyed = await renderCard({
+      instance: makeInstance({ driver: antigravity, config: { authMethod: "gemini-api-key" } }),
+      isExpanded: true,
+    });
+    try {
+      await expect
+        .element(page.getByRole("switch", { name: "Enable native /compact command" }))
+        .toBeInTheDocument();
+      expect(
+        page.getByRole("switch", { name: "Read limits with the Antigravity CLI" }).elements(),
+      ).toHaveLength(0);
+    } finally {
+      await keyed.unmount();
+    }
+  });
   beforeEach(() => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

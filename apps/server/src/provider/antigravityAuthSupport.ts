@@ -212,6 +212,11 @@ export interface AntigravityAuthState {
     /** The sign-in method Auto was advertised under. */
     readonly method?: AntigravityAuthMethod;
   };
+  /**
+   * A runtime version whose `/usage` command spent a model turn. F5 never runs it again on that
+   * version; a different runtime version is asked again.
+   */
+  readonly usageCommandRefusedVersion?: string;
 }
 
 const EMPTY_STATE: AntigravityAuthState = { version: 1, revision: 0, verified: false };
@@ -302,6 +307,10 @@ function decodeStateOrUndefined(
         : {}),
       ...(fields.discoveryRequested === true ? { discoveryRequested: true } : {}),
       ...decodeCatalog(fields.catalog),
+      ...(typeof fields.usageCommandRefusedVersion === "string" &&
+      fields.usageCommandRefusedVersion.length > 0
+        ? { usageCommandRefusedVersion: fields.usageCommandRefusedVersion }
+        : {}),
     };
   } catch {
     return undefined;

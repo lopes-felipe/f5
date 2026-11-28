@@ -279,6 +279,11 @@ export interface AntigravityAdapterHooks {
   /** Launch credentials (the Gemini API key) registered with each session's scrubber. */
   readonly credentials?: ReadonlyArray<string>;
   /**
+   * A turn ended on an exhausted quota; `resetsAt` is the reset the runtime reported, when it
+   * reported one. Usage shows it without asking Google anything.
+   */
+  readonly onQuotaExhausted?: (resetsAt: string | null) => Effect.Effect<void>;
+  /**
    * Whether the runtime version is certified for the private turn-outcome and child-work
    * formats. When false the session runs standard ACP only. Absent means certified.
    */
@@ -2923,6 +2928,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                         evidence: nativeFailure.evidence ?? ("typed" as const),
                       }
                     : undefined;
+                if (
+                  usageLimit &&
+                  PROVIDER === "antigravity" &&
+                  options?.antigravity?.onQuotaExhausted
+                )
+                  yield* options.antigravity.onQuotaExhausted(usageLimit.resetsAt);
                 if (nativeFailure)
                   yield* offerRuntimeEvent({
                     type: "runtime.error",

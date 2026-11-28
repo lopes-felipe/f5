@@ -238,6 +238,11 @@ export const AntigravitySettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   customModels: Schema.Array(CustomModelSetting).pipe(Schema.withDecodingDefault(() => [])),
   nativeCompaction: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  /**
+   * Read subscription limits by running the CLI's own `/usage` command. Off by default: F5 never
+   * calls Google's quota APIs itself, and this still asks Google through the CLI.
+   */
+  readLimitsWithCli: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   authMethod: AntigravityAuthMethod.pipe(
     Schema.withDecodingDefault(() => "oauth-personal" as const),
   ),

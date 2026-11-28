@@ -4,7 +4,12 @@ import { mcpHubAdapterOption } from "../../mcp/hub/McpHub";
 import { ComputerAutomationBroker } from "../../computer/ComputerAutomationBroker";
 import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
-import { makeProviderLimits } from "../../usage/providerLimits.ts";
+import {
+  makeAntigravityLimits,
+  runAntigravityUsageCommand,
+  type AntigravityQuotaSignal,
+} from "../../usage/antigravityCliUsage.ts";
+import { AccountUsageReadError } from "../../usage/accountUsageErrors.ts";
 import { acquireAccountAdmission } from "../../profiles/ProviderAccountGuard.ts";
 import * as AcpErrors from "effect-acp/errors";
 import { ProviderDriverError } from "../Errors.ts";
@@ -40,7 +45,10 @@ import {
   antigravityDriverRuntimeInput,
   antigravityLaunchedVersion,
   makeAntigravityAcpRuntime,
+  antigravityEnvironment,
   antigravityProfileDirectory,
+  antigravityProfileKey,
+  prepareAntigravityProfile,
   type AntigravityThinkingLevels,
 } from "../acp/AntigravityAcpSupport.ts";
 import type { GrokAcpRuntimeInput } from "../acp/GrokAcpSupport.ts";
@@ -495,6 +503,63 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         );
       });
 
+      // The last quota stop a turn reported. In memory only: it is evidence from a turn, not a
+      // quota reading, so it never enters history and expires at its reset.
+      let quotaSignal: AntigravityQuotaSignal | undefined;
+      const onQuotaExhausted = (resetsAt: string | null) =>
+        Effect.sync(() => {
+          quotaSignal = { observedAt: new Date().toISOString(), resetsAt };
+        });
+      /**
+       * One `/usage` run with the instance's own sign-in. Gated like catalog discovery: current
+       * sign-in settings, a ready sign-in and account admission while the profile is prepared.
+       * A run that straddles an account change is discarded.
+       */
+      const runUsage = async (signal: AbortSignal) => {
+        if (!isAntigravityAuthCurrent(server.stateDir, instanceId, auth))
+          throw new AccountUsageReadError("temporary-failure");
+        const readiness = await antigravityReadiness({ profileDirectory, auth, keyUnavailable });
+        if (!readiness.ready) throw new AccountUsageReadError("authentication-required");
+        const before = await readAntigravityAuthState(profileDirectory);
+        let release: () => void;
+        try {
+          release = acquireAccountAdmission(server.stateDir, instanceId);
+        } catch {
+          throw new AccountUsageReadError("temporary-failure");
+        }
+        let prepared: Awaited<ReturnType<typeof prepareAntigravityProfile>>;
+        try {
+          prepared = await prepareAntigravityProfile({
+            stateDir: server.stateDir,
+            instanceId,
+            environment: processEnv,
+            auth,
+          });
+        } catch {
+          throw new AccountUsageReadError("process-unavailable");
+        } finally {
+          release();
+        }
+        const result = await runAntigravityUsageCommand({
+          executablePath: prepared.executable.executablePath,
+          profileDirectory: prepared.home,
+          environment: antigravityEnvironment(
+            processEnv,
+            prepared.home,
+            prepared.executable.harnessPath,
+            prepared.browser,
+            auth,
+          ),
+          signal,
+        }).catch(() => {
+          throw new AccountUsageReadError("process-unavailable");
+        });
+        const after = await readAntigravityAuthState(profileDirectory);
+        if (after.revision !== before.revision)
+          throw new AccountUsageReadError("temporary-failure");
+        return result;
+      };
+
       const previewMcp = Option.getOrUndefined(yield* Effect.serviceOption(PreviewMcpHttpServer));
       const computerBroker = Option.getOrUndefined(
         yield* Effect.serviceOption(ComputerAutomationBroker),
@@ -516,6 +581,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             accountRevision,
             observeCatalog,
             staleAccount,
+            onQuotaExhausted,
             // The version the session's runtime was spawned from, not whatever is active now.
             nativeReaders: (runtime) => {
               const launched = antigravityLaunchedVersion(runtime);
@@ -544,13 +610,28 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
           ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         },
       );
-      const accountUsage = yield* makeProviderLimits({
-        provider: "antigravity",
+      const accountUsage = yield* makeAntigravityLimits({
         instanceId,
         displayName: displayName || "Antigravity",
         enabled,
-        environment: processEnv,
-        ...(auth.authMethod === "gemini-api-key" ? { antigravityBilledPerToken: true } : {}),
+        profileKey: antigravityProfileKey(instanceId),
+        billedPerToken: auth.authMethod === "gemini-api-key",
+        readLimitsWithCli: config.readLimitsWithCli,
+        quotaSignal: () => quotaSignal,
+        runUsage,
+        runtimeVersion,
+        refusedVersion: () =>
+          readAntigravityAuthState(profileDirectory).then(
+            (state) => state.usageCommandRefusedVersion,
+          ),
+        refuseVersion: (version) =>
+          updateAntigravityAuthState(profileDirectory, (state) => ({
+            ...state,
+            usageCommandRefusedVersion: version,
+          })).then(
+            () => undefined,
+            () => undefined,
+          ),
       });
       const textGeneration = yield* makeGrokTextGeneration(
         { enabled, binaryPath: "", customModels: config.customModels },
