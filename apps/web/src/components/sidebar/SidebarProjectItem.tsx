@@ -416,6 +416,7 @@ export function SidebarProjectItem(props: SidebarProjectItemProps) {
         key={entry.workflow.id}
         entry={entry}
         workflowThreads={workflowThreadsByWorkflowId.get(entry.workflow.id) ?? []}
+        snoozedThreadIds={sidebarLists.workflowSnoozedThreadIdsByKey.get(workflowEntryKey(entry))}
         threadLabels={meta?.threadLabels ?? new Map()}
         overallState={meta?.overallState ?? "pending"}
         phases={meta?.phases}
