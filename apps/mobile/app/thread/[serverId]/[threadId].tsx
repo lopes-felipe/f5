@@ -325,6 +325,13 @@ export default function ThreadScreen() {
     );
   if (!detail && !syncTimedOut && (status === "syncing" || status === "connecting"))
     return <Waiting />;
+  if (!detail && !shell && status === "ready")
+    return (
+      <View style={[styles.screen, styles.content]}>
+        <Text style={styles.text}>This conversation is no longer available.</Text>
+        <Action label="Go to Home" onPress={() => router.replace("/")} />
+      </View>
+    );
   const activeTurn = shell?.activeTurnId;
   const disabled = stale || status !== "ready";
 

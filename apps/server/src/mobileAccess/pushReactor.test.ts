@@ -50,7 +50,13 @@ it("seeds silently, isolates retries and skips a resolved approval even after a 
     reactor.enabled(true);
     await vi.advanceTimersByTimeAsync(0);
     expect(sent).not.toHaveBeenCalled();
-    reactor.presence({ device: second, send() {}, onClose() {} }, true, original.id);
+    const peer = { device: second, send() {}, onClose: vi.fn() };
+    for (let index = 0; index < 12; index++) {
+      reactor.presence(peer, true, original.id);
+      reactor.presence(peer, true, null);
+    }
+    reactor.presence(peer, true, original.id);
+    expect(peer.onClose).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(16_000);
     approvalIds = ["old-approval", "new-approval"];
     const activity = Schema.decodeUnknownSync(OrchestrationEvent)({

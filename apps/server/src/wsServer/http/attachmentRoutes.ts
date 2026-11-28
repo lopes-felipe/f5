@@ -20,7 +20,13 @@ export function makeAttachmentHttpRoutes(deps: {
   const { attachmentsDir, attachmentUploads, fileSystem, path } = deps;
   // Only mobile uploads created in this host runtime have a mobile owner.
   const mobileUploads = new Map<string, { deviceId: string; expiresAt: number }>();
-  return (req: http.IncomingMessage, res: http.ServerResponse, url: URL, clientId?: string) =>
+  return (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    clientId?: string,
+    authorizationStatus?: () => 401 | 503 | null,
+  ) =>
     Effect.gen(function* () {
       const uploadsPath = clientId ? "/mobile/v1/attachments/uploads" : "/api/attachments/uploads";
       const attachmentsPrefix = clientId ? "/mobile/v1/attachments/" : ATTACHMENTS_ROUTE_PREFIX;
@@ -28,6 +34,12 @@ export function makeAttachmentHttpRoutes(deps: {
         res.writeHead(status, clientId ? { ...headers, "Cache-Control": "no-store" } : headers);
         res.end(body);
       };
+      const respondUnavailable = (status: 401 | 503) =>
+        respond(
+          status,
+          { "Content-Type": "application/json" },
+          JSON.stringify({ error: status === 401 ? "unauthorized" : "disabled" }),
+        );
       if (
         url.pathname.startsWith(uploadsPath + "/") &&
         (req.method === "GET" || req.method === "HEAD")
@@ -41,6 +53,12 @@ export function makeAttachmentHttpRoutes(deps: {
           }
         }
         const opened = yield* Effect.exit(attachmentUploads.openUpload(id));
+        const unavailable = authorizationStatus?.();
+        if (unavailable) {
+          if (Exit.isSuccess(opened)) yield* Effect.promise(() => opened.value.file.close());
+          respondUnavailable(unavailable);
+          return true;
+        }
         if (Exit.isFailure(opened))
           respond(410, { "Cache-Control": "no-store" }, "Upload expired. Re-attach the file.");
         else
@@ -82,6 +100,15 @@ export function makeAttachmentHttpRoutes(deps: {
                 : (req.socket.remoteAddress ?? "unknown"),
           }),
         );
+        const unavailable = authorizationStatus?.();
+        if (unavailable) {
+          if (Exit.isSuccess(result))
+            yield* attachmentUploads
+              .releaseUploads(ThreadId.makeUnsafe(threadId), [result.value.uploadId])
+              .pipe(Effect.ignore);
+          respondUnavailable(unavailable);
+          return true;
+        }
         if (Exit.isFailure(result)) {
           const failure = Cause.squash(result.cause);
           const status = Schema.is(AttachmentUploadError)(failure) ? failure.status : 500;
@@ -133,15 +160,12 @@ export function makeAttachmentHttpRoutes(deps: {
           return true;
         }
 
-        if (
-          clientId &&
-          normalizedRelativePath.split("/").some((segment) => segment.startsWith("."))
-        ) {
+        const isIdLookup =
+          !normalizedRelativePath.includes("/") && !normalizedRelativePath.includes(".");
+        if (clientId && !isIdLookup) {
           respond(404, { "Content-Type": "text/plain" }, "Not Found");
           return true;
         }
-        const isIdLookup =
-          !normalizedRelativePath.includes("/") && !normalizedRelativePath.includes(".");
         const filePath = isIdLookup
           ? resolveAttachmentPathById({
               attachmentsDir,
@@ -174,6 +198,12 @@ export function makeAttachmentHttpRoutes(deps: {
               attachmentsDir,
               path.relative(attachmentsDir, filePath),
             );
+            const unavailable = authorizationStatus?.();
+            if (unavailable) {
+              await file.close();
+              respondUnavailable(unavailable);
+              return;
+            }
             await serveAsset(req, res, file, filePath, {
               cacheControl: clientId ? "no-store" : IMMUTABLE_PRIVATE_CACHE_CONTROL,
             });

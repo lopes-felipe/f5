@@ -300,7 +300,12 @@ it.each([false, true])(
   "redacts settings credentials or encrypts the settings entry (includeSecrets=%s)",
   async (includeSecrets) => {
     const { directory, config, db } = await fixture();
+    db.exec("CREATE TABLE mobile_devices(token_hash TEXT UNIQUE)");
+    db.prepare("INSERT INTO mobile_devices VALUES (?)").run("fixture-mobile-token-hash");
     db.close();
+    for (const name of ["mobile-server-id.bin", "mobile-apns-p8.bin"]) {
+      await writeFile(join(config.secretsDir!, name), "fixture credentials");
+    }
     const credentials = {
       providers: { opencode: { serverPassword: "global-private-password" } },
       providerInstances: {
@@ -327,6 +332,8 @@ it.each([false, true])(
     expect(manifest.files.find((entry) => entry.path === "settings.json")?.encrypted).toBe(
       includeSecrets,
     );
+    expect(manifest.files.map(({ path }) => path)).not.toContain("secrets/mobile-server-id.bin");
+    expect(manifest.files.map(({ path }) => path)).not.toContain("secrets/mobile-apns-p8.bin");
     const parsed = await parseBackupArchive({
       source: createReadStream(join(stagingDir, "backup.f5backup")),
       stagingDir: join(directory, "credentials-read"),
@@ -341,6 +348,8 @@ it.each([false, true])(
     ])
       expect(text.includes(secret)).toBe(includeSecrets);
     expect(text).toContain('"eu"');
+    const snapshot = await readFile(join(parsed.payloadDir, "database.sqlite"));
+    expect(snapshot.includes("fixture-mobile-token-hash")).toBe(false);
   },
 );
 

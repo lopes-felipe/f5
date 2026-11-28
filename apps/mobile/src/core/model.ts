@@ -7,7 +7,7 @@ import type {
   MobileThreadShell,
   MobileThreadTail,
 } from "@t3tools/contracts/mobile/v1";
-import { mergeMessageText } from "@t3tools/shared/messageMerge";
+import { boundMobileMessageText, mergeMessageText } from "@t3tools/shared/messageMerge";
 import { create } from "zustand";
 import type { PairedServer } from "./pairing";
 import type { LinkState } from "./wsClient";
@@ -78,11 +78,15 @@ export function applyMessageBatch(
       messageId: patch.messageId,
       role: patch.role,
       createdAt: existing?.createdAt ?? patch.createdAt,
-      text: mergeMessageText(existing, {
-        text: patch.text,
-        streaming: patch.mode === "append",
-        replace: patch.mode === "replace",
-      }).text,
+      ...(existing?.truncated && patch.mode === "append"
+        ? { text: existing.text, truncated: true }
+        : boundMobileMessageText(
+            mergeMessageText(existing, {
+              text: patch.text,
+              streaming: patch.mode === "append",
+              replace: patch.mode === "replace",
+            }).text,
+          )),
       streaming: patch.streaming,
     };
     messages.set(patch.messageId, next);

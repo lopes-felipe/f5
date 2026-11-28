@@ -84,6 +84,7 @@ export function makeMobilePushReactor(options: {
   const previous = new Map<string, Shell>();
   const projects = new Map<string, string>();
   const leases = new Map<MobilePeer, { threadId: string; expiresAt: number }>();
+  const observedPeers = new WeakSet<MobilePeer>();
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let inFlight = false;
@@ -276,7 +277,10 @@ export function makeMobilePushReactor(options: {
         leases.delete(peer);
         return;
       }
-      if (!leases.has(peer)) peer.onClose(() => leases.delete(peer));
+      if (!observedPeers.has(peer)) {
+        observedPeers.add(peer);
+        peer.onClose(() => leases.delete(peer));
+      }
       leases.set(peer, { threadId: viewingThreadId, expiresAt: Date.now() + 15_000 });
     },
   };

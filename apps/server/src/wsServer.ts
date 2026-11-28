@@ -2620,8 +2620,8 @@ export const createServer = Effect.fn(function* (
         fileSystem,
         path,
       });
-      return (request, response, url, deviceId) =>
-        runPromise(routes(request, response, url, deviceId));
+      return (request, response, url, deviceId, authorizationStatus) =>
+        runPromise(routes(request, response, url, deviceId, authorizationStatus));
     })(),
     update: (mobileAccess) => runPromise(serverSettings.updateSettings({ mobileAccess })),
     onStatus: (status) => {

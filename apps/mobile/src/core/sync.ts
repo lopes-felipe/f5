@@ -289,7 +289,17 @@ async function refreshTail(
     selection,
     async () => decodeTail(await socket.rpc("getThreadTail", { threadId, messageLimit: 50 })),
     (value) => value.snapshotSequence >= minimum,
-  );
+  ).catch((error: unknown) => {
+    if (!(error instanceof MobileRpcError) || error.code !== "stale-action") throw error;
+    if (owns(link, selection)) {
+      const details = new Map(get().details);
+      details.delete(threadId);
+      link.historyRevision++;
+      set({ selected: null, details });
+      invalidate(link);
+    }
+    return undefined;
+  });
   if (!tail) return false;
   const keepHistory =
     preserve &&
@@ -426,12 +436,7 @@ async function processBatches(link: Link) {
     };
     set({ status: "ready", stale: false, syncTimedOut: false });
   } catch (error) {
-    if (owns(link, selection)) {
-      if (error instanceof MobileRpcError && error.code === "stale-action") {
-        set({ selected: null });
-        invalidate(link);
-      } else disconnected(link, error);
-    }
+    if (owns(link, selection)) disconnected(link, error);
   } finally {
     if (owns(link, selection)) link.synchronizing = false;
   }

@@ -24,7 +24,7 @@ export async function detectTailscale(): Promise<TailscaleInterface | null> {
     ? ["tailscale", MAC_TAILSCALE]
     : ["tailscale"]) {
     try {
-      const { stdout } = await exec(binary, ["status", "--json"], {
+      const { stdout } = await exec(binary, ["status", "--json", "--peers=false"], {
         timeout: 3000,
         maxBuffer: 4 * 1024 * 1024,
         windowsHide: true,
@@ -51,7 +51,7 @@ export async function detectTailscale(): Promise<TailscaleInterface | null> {
     }
   }
   for (const [name, addresses] of Object.entries(networkInterfaces())) {
-    if (!/^(utun|tailscale)/.test(name)) continue;
+    if (!/^(utun|tailscale)/i.test(name)) continue;
     const match = addresses?.find(({ address }) => isIPv4(address) && isTailscaleAddress(address));
     if (match) return { address: match.address, detection: "heuristic" };
   }

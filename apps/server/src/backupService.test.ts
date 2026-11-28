@@ -105,15 +105,25 @@ describe("applyPendingRestore", () => {
     const stagingDir = join(stateDir, "restore-staging", restoreId);
     const payloadDir = join(stagingDir, "payload");
     await mkdir(join(payloadDir, "attachments"), { recursive: true });
+    await mkdir(join(payloadDir, "secrets"));
     await mkdir(join(stateDir, "attachments"), { recursive: true });
     await mkdir(join(stateDir, "secrets"), { recursive: true });
     createDatabase(join(stateDir, "state.sqlite"), "old-state");
     createDatabase(join(payloadDir, "database.sqlite"), "restored-state");
+    const stagedDatabase = new DatabaseSync(join(payloadDir, "database.sqlite"));
+    stagedDatabase.exec(
+      "CREATE TABLE mobile_devices(token_hash TEXT); INSERT INTO mobile_devices VALUES ('legacy-device')",
+    );
+    stagedDatabase.close();
     await writeFile(join(stateDir, "settings.json"), '{"old":true}');
     await writeFile(join(payloadDir, "settings.json"), '{"restored":true}');
     await writeFile(join(stateDir, "attachments/old.txt"), "old attachment");
     await writeFile(join(payloadDir, "attachments/new.txt"), "new attachment");
     await writeFile(join(stateDir, "secrets/token"), "keep me");
+    for (const name of ["mobile-server-id.bin", "mobile-apns-p8.bin"]) {
+      await writeFile(join(stateDir, "secrets", name), "current credential");
+      await writeFile(join(payloadDir, "secrets", name), "backed-up credential");
+    }
     await writeFile(
       join(stateDir, "restore-pending.json"),
       JSON.stringify({
@@ -140,6 +150,18 @@ describe("applyPendingRestore", () => {
     expect(await readFile(join(stateDir, "settings.json"), "utf8")).toContain("restored");
     expect(await readFile(join(stateDir, "attachments/new.txt"), "utf8")).toBe("new attachment");
     expect(await readFile(join(stateDir, "secrets/token"), "utf8")).toBe("keep me");
+    for (const name of ["mobile-server-id.bin", "mobile-apns-p8.bin"]) {
+      await expect(readFile(join(stateDir, "secrets", name))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(await readFile(join(result.rollbackDir!, name), "utf8")).toBe("current credential");
+    }
+    const restoredDatabase = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+    try {
+      expect(restoredDatabase.prepare("SELECT token_hash FROM mobile_devices").all()).toEqual([]);
+    } finally {
+      restoredDatabase.close();
+    }
     expect(readDatabaseValue(join(result.rollbackDir!, "database.sqlite"))).toBe("old-state");
     await expect(readFile(join(stateDir, "restore-pending.json"))).rejects.toThrow();
   });

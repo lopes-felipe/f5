@@ -11,9 +11,9 @@ Milestone 0 covers pairing, live conversations, approvals, questions, Stop, and 
 3. Choose **Pair a phone**. Open F5 on the phone and scan the QR code, or enter the displayed origin and ten-character code. Check the address on the confirmation sheet. Each code expires after five minutes and works once.
 4. Allow local-network access if iOS asks. Open **Needs you** to see pending approvals and questions, including requests that arrived before pairing. Open a conversation to follow the agent or respond to a supported request.
 
-Phone access binds to the Tailscale interface and starts with port 37730. F5 saves the selected port for the profile. The QR offers MagicDNS and the numeric Tailscale address when both are available. If MagicDNS is unavailable, enter the numeric origin shown for the host. If iOS denies local-network access, allow it in iOS Settings before retrying.
+Phone access binds to the Tailscale interface and starts with port 37730. F5 saves the selected port for the profile. Keep Tailscale connected on the phone before pairing or reconnecting. Use MagicDNS when available and use the numeric origin shown for the host while Tailscale is active. If iOS denies local-network access, allow it in iOS Settings before retrying.
 
-Turn Phone access off to disconnect phones temporarily. Choose **Revoke** beside a paired device to invalidate its token and force it to pair again. **Forget server** on the phone deletes its local credentials. A restored host profile receives a fresh identity and requires new pairing.
+Turn Phone access off to disconnect phones temporarily. Choose **Revoke** beside a paired device to invalidate its token and force it to pair again. **Forget server** on the phone deletes its local credentials. A restored host profile receives a fresh identity and requires new pairing. Upload the APNs private key again to resume notifications after a restore.
 
 ## Apple setup and TestFlight
 

@@ -57,6 +57,24 @@ describe("mobile timeline", () => {
     expect(result.needsTail).toBe(true);
   });
 
+  it("keeps oversized live text bounded and never appends after the truncation notice", () => {
+    const oversized = applyMessageBatch(detail, batch([patch(6, "😀".repeat(20_000))]));
+    const message = oversized.detail.messages[0]!;
+    expect(message.truncated).toBe(true);
+    expect(message.text).toMatch(/\[Open on the host for the full text\]$/);
+    const reconnected = applyMessageBatch(
+      { ...oversized.detail, snapshotSequence: 5 },
+      batch([patch(7, "continuing")]),
+    );
+    expect(reconnected.detail.messages[0]?.text).toBe(message.text);
+    const replacement = applyMessageBatch(
+      { ...reconnected.detail, snapshotSequence: 5 },
+      batch([patch(8, "replacement", "replace")]),
+    );
+    expect(replacement.detail.messages[0]).toMatchObject({ text: "replacement" });
+    expect(replacement.detail.messages[0]?.truncated).toBeUndefined();
+  });
+
   it("keeps live text when an older page overlaps and caps the retained window", () => {
     const oldMessages = Array.from({ length: 510 }, (_, i) => ({
       ...detail.messages[0]!,

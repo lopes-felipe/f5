@@ -28,6 +28,7 @@ import {
 } from "@t3tools/shared/pendingActivityWindow";
 import { requestKindFromRequestType } from "@t3tools/shared/pendingApprovals";
 import { resolveApprovalOptions } from "@t3tools/shared/approvalOptions";
+import { boundMobileMessageText } from "@t3tools/shared/messageMerge";
 import {
   archivedWorkflowThreadIds,
   threadIdsForPlanningWorkflow,
@@ -205,7 +206,7 @@ function boundedRows<T>(rows: readonly T[], budget: number): T[] {
 function message(message: OrchestrationMessage): typeof MobileMessage.Type {
   return {
     messageId: message.id,
-    text: boundedText(message.text, 64 * 1024),
+    ...boundMobileMessageText(message.text),
     role: message.role,
     streaming: message.streaming,
     createdAt: message.createdAt,

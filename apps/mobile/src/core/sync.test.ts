@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import fixtures from "../../../../packages/contracts/src/mobile/fixtures/v1/wire.json";
 import { useMobileModel } from "./model";
 import { mobileSync } from "./sync";
+import { MobileRpcError } from "./wsClient";
 
 const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
@@ -34,6 +35,62 @@ afterEach(async () => {
   await mobileSync.setServer(null);
   vi.resetAllMocks();
 });
+
+it.each(["during hydration", "while viewing"])(
+  "clears a deleted conversation %s without reconnecting",
+  async (when) => {
+    let push!: (channel: string, body: unknown) => void;
+    let deleted = false;
+    mocks.connect.mockImplementation(async (_server, _signal, handlers) => {
+      push = handlers.push;
+      return { origin: paired.origins[0], welcome: fixtures.bootstrap, rpc: mocks.rpc };
+    });
+    const emptyShell = { ...shell, snapshotSequence: 11, threads: [] };
+    mocks.shell.mockImplementation(async () => (deleted ? emptyShell : shell));
+    mocks.rpc.mockImplementation(async (method, body) => {
+      switch (method) {
+        case "subscribe":
+          return { head: deleted ? 11 : 10, snapshotRequired: !body.resume, batches: [] };
+        case "getThreadShells":
+          return emptyShell;
+        case "getThreadTail":
+          if (deleted) throw new MobileRpcError("stale-action");
+          return tail;
+        default:
+          throw new Error("Unexpected RPC " + method);
+      }
+    });
+    const model = useMobileModel.getState;
+    await mobileSync.setServer(paired);
+    await vi.waitFor(() => expect(model().status).toBe("ready"));
+    deleted = when === "during hydration";
+    mobileSync.select(threadId);
+    if (!deleted) {
+      await vi.waitFor(() => expect(model().details.has(threadId)).toBe(true));
+      deleted = true;
+      push("mobile.batch", {
+        afterSequence: 10,
+        throughSequence: 11,
+        selectedThreadId: threadId,
+        messages: [],
+        threadIds: [threadId],
+        projectsChanged: false,
+        tailInvalidated: true,
+        transcriptReset: false,
+      });
+    }
+    await vi.waitFor(
+      () => {
+        expect(model().selected).toBeNull();
+        expect(model().details.has(threadId)).toBe(false);
+        expect(model().shell?.threads).toEqual([]);
+        expect(model().status).toBe("ready");
+      },
+      { timeout: 4000 },
+    );
+    expect(mocks.connect).toHaveBeenCalledTimes(1);
+  },
+);
 
 it("reuses the shell on selection and discards a history page racing a rewind and tail refresh", async () => {
   const oldPage = Promise.withResolvers<unknown>();

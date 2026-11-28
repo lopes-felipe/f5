@@ -168,6 +168,13 @@ describe("Phone access", () => {
 
   it("pairs and resolves a pre-existing decision over the isolated mobile listener", async () => {
     const { desktop, mainPort, pairing, origin, engine } = await fixture(true);
+    expect(
+      (
+        await sendRequest(desktop, WS_METHODS.serverUpdateSettings, {
+          mobileAccess: { port: 37731 },
+        })
+      ).error?.message,
+    ).toContain("dedicated settings controls");
     async function expectPendingApprovalIds(ids: readonly string[]) {
       const model = await Effect.runPromise(engine.getReadModel());
       const thread = model.threads.find((entry) => entry.id === threadId);

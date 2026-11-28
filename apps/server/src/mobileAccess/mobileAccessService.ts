@@ -282,6 +282,15 @@ export const makeMobileAccessService = (options: {
       await closeListener();
       await Effect.runPromise(store.flushSeen).catch(() => {});
     };
+    async function getStatus(): Promise<MobileAccessStatus> {
+      const entries = await Effect.runPromise(options.secrets.list(MOBILE_APNS_KEY_SECRET)).catch(
+        () => [],
+      );
+      return {
+        ...status,
+        apnsKeyStored: entries.some(({ name }) => name === MOBILE_APNS_KEY_SECRET),
+      };
+    }
     return {
       apply,
       close,
@@ -291,24 +300,16 @@ export const makeMobileAccessService = (options: {
           pushes.event(event);
         }
       },
-      async getStatus(): Promise<MobileAccessStatus> {
-        const entries = await Effect.runPromise(options.secrets.list(MOBILE_APNS_KEY_SECRET)).catch(
-          () => [],
-        );
-        return {
-          ...status,
-          apnsKeyStored: entries.some(({ name }) => name === MOBILE_APNS_KEY_SECRET),
-        };
-      },
+      getStatus,
       async setEnabled(enabled: boolean) {
         await apply((await options.update({ enabled })).mobileAccess);
-        return status;
+        return getStatus();
       },
       async confirmInterface(address: string) {
         if (detected?.detection !== "heuristic" || detected.address !== address)
           throw new MobileRouteError("stale-action");
         await apply((await options.update({ confirmedInterface: address })).mobileAccess);
-        return status;
+        return getStatus();
       },
       createPairingCode() {
         if (!running || !detected || !config?.enabled || config.port === null)

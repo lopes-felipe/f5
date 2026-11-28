@@ -55,6 +55,7 @@ export function makeMobileBatches(
     let invalidated =
       selected &&
       (event.type === "thread.reverted" ||
+        event.type === "thread.deleted" ||
         event.type === "thread.proposed-plan-upserted" ||
         event.type === "thread.user-input-resolved" ||
         event.type === "thread.turn-processing-quiesced" ||

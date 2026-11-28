@@ -1,1 +1,3 @@
 - Pair the F5 iPhone companion over Tailscale from Settings → Phone access. See conversations that need attention, follow live responses, answer supported requests, and receive notifications from the host.
+- Keep iPhones paired across host restarts and temporary listener changes. Large transcripts can open with pending decisions, rewinds discard stale history, and approval cards show why the host is asking.
+- Register iPhone notifications after permission is granted and clear duplicate push registrations when a phone is paired again.

@@ -61,6 +61,7 @@ export function makeMobileListener(options: {
     response: http.ServerResponse,
     url: URL,
     deviceId: string,
+    authorizationStatus: () => 401 | 503 | null,
   ) => Promise<boolean>;
   call: (peer: MobilePeer, call: MobileCall) => Promise<unknown>;
 }) {
@@ -68,6 +69,17 @@ export function makeMobileListener(options: {
   let boundPort = port;
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_REQUEST_BYTES });
   const socketsByDeviceId = new Map<string, Set<WebSocket>>();
+  const awaitingPong = new WeakSet<WebSocket>();
+  const keepalive = setInterval(() => {
+    for (const socket of wss.clients) {
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      if (awaitingPong.has(socket)) socket.terminate();
+      else {
+        awaitingPong.add(socket);
+        socket.ping();
+      }
+    }
+  }, 25_000).unref();
   let closed = false;
 
   function send(socket: WebSocket, envelope: unknown) {
@@ -204,11 +216,17 @@ export function makeMobileListener(options: {
       return write(response, 401, { error: "unauthorized" });
     }
     store.touch(device);
+    const info = bootstrap();
     if (attachment) {
-      if (await options.attachments?.(request, response, url, device.device_id)) return;
+      if (!info.ready) return write(response, 503, { error: "starting" });
+      if (
+        await options.attachments?.(request, response, url, device.device_id, () =>
+          closed ? 503 : store.active(device) ? null : 401,
+        )
+      )
+        return;
       return write(response, 404, { error: "not-found" });
     }
-    const info = bootstrap();
     if (route.endsWith("/bootstrap")) return write(response, 200, info);
     if (url?.searchParams.get("incarnation") !== info.backendIncarnation) {
       return write(response, 409, { error: "backend-replaced" });
@@ -274,6 +292,7 @@ export function makeMobileListener(options: {
     }
     wss.handleUpgrade(request, connection, head, (socket) => {
       socket.on("error", () => socket.terminate());
+      socket.on("pong", () => awaitingPong.delete(socket));
       if (closed || !store.active(device)) {
         socket.close(closed ? MOBILE_CLOSE.disabled : MOBILE_CLOSE.revoked);
         return;
@@ -397,6 +416,7 @@ export function makeMobileListener(options: {
     async close() {
       if (closed) return;
       closed = true;
+      clearInterval(keepalive);
       const finished = new Promise<void>((resolve) => server.close(() => resolve()));
       for (const socket of wss.clients) socket.close(MOBILE_CLOSE.disabled);
       const timeout = setTimeout(() => {

@@ -80,6 +80,7 @@ export const MobileMessage = Schema.Struct({
   messageId: Id,
   role: Schema.String,
   text: Schema.String,
+  truncated: Schema.optionalKey(Schema.Boolean),
   streaming: Schema.Boolean,
   createdAt: Schema.String,
 });
