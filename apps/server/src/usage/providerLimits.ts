@@ -13,6 +13,7 @@ import type {
 import { makeAccountUsageCapability, emptyAccountSection } from "./Layers/AccountUsageService.ts";
 import { accountUsageIdentity, type AccountUsageCapability } from "./accountUsage.ts";
 import { asRecord, asNonNegativeNumber, asTrimmedString, resetDate } from "./accountUsageJson.ts";
+import { cliProxyHubBasePath } from "./cliProxyHubUrl.ts";
 
 const DEFAULT_CURSOR_API_ENDPOINT = "https://api2.cursor.sh";
 export const GROK_USAGE_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
@@ -183,8 +184,7 @@ async function readGrokHubUsage(env: NodeJS.ProcessEnv, signal: AbortSignal) {
     !(hub.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(hub.hostname))
   )
     throw new Error("Invalid hub URL.");
-  // Users often paste the hub's web panel URL, which ends in management.html.
-  hub.pathname = hub.pathname.replace(/(\/management\.html)?\/?$/i, "/");
+  hub.pathname = cliProxyHubBasePath(hub.pathname);
   const files = asRecord(
     await fetchJsonWithTimeout(
       new URL("v0/management/auth-files", hub).toString(),

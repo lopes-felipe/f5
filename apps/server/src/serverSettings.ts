@@ -28,7 +28,6 @@ import {
   type MigrateClientSettingResult,
   type ProviderInstanceConfig,
   type ProviderInstanceEnvironmentVariable,
-  ProviderInstanceId,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
@@ -57,12 +56,15 @@ import * as Semaphore from "effect/Semaphore";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import { ServerConfig } from "./config.ts";
 import { summarizeSettingsIssue } from "./serverSettingsDiagnostics.ts";
-import { prepareSettingsSecrets, materializeSettingsSecrets } from "./serverSettingsSecrets.ts";
+import {
+  applySettingsPatchWithSecretDestinations,
+  prepareSettingsSecrets,
+  materializeSettingsSecrets,
+} from "./serverSettingsSecrets.ts";
 import { watchSettingsFile } from "./watchSettingsFile.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
-  applyServerSettingsPatch,
   providerInstanceSecretField,
   resolveTextGenerationProvider,
 } from "@t3tools/shared/serverSettings";
@@ -352,7 +354,7 @@ export class ServerSettingsService extends ServiceMap.Service<
                   Effect.flatMap((currentSettings) =>
                     Schema.decodeEffect(ServerSettings)(
                       withBridgeActivation(
-                        applyServerSettingsPatch(currentSettings, patch),
+                        applySettingsPatchWithSecretDestinations(currentSettings, patch).settings,
                         currentSettings,
                         patch,
                       ),
@@ -959,10 +961,9 @@ const makeServerSettings = Effect.gen(function* () {
           // patch is merged into: a builder's whole-map patch can't land on a newer base it
           // never checked.
           const current = yield* reloadSettingsForWrite;
+          const currentMaterialized = yield* materializeProviderEnvironmentSecrets(current);
           const built =
-            typeof patchOrBuild === "function"
-              ? patchOrBuild(yield* materializeProviderEnvironmentSecrets(current))
-              : patchOrBuild;
+            typeof patchOrBuild === "function" ? patchOrBuild(currentMaterialized) : patchOrBuild;
           if (!built) return undefined;
           const heldAccountChanges = new Set(options?.heldAccountChanges ?? []);
           let patch = yield* normalizeStorageDiscoveryPatch(built);
@@ -1080,34 +1081,12 @@ const makeServerSettings = Effect.gen(function* () {
               Option.isSome(retained) ? retained.value : previousLocations,
             ),
           );
-          // Apply explicit replacements/removals before resolving references. This lets a
-          // user repair a missing secret, while unchanged references still fail closed.
-          const secretSafePatch = patch.textGenerators
-            ? {
-                ...patch,
-                textGenerators: Object.fromEntries(
-                  Object.entries(patch.textGenerators).map(([id, generator]) => {
-                    const old = current.textGenerators[ProviderInstanceId.make(id)];
-                    const moved =
-                      old &&
-                      (old.kind !== generator.kind ||
-                        new URL(old.baseUrl).origin !== new URL(generator.baseUrl).origin);
-                    return [
-                      id,
-                      moved && !generator.apiKey
-                        ? { ...generator, apiKeyRedacted: false }
-                        : generator,
-                    ];
-                  }),
-                ),
-              }
-            : patch;
-          const patched = yield* materializeProviderEnvironmentSecrets(
-            applyServerSettingsPatch(
-              { ...current, previousWorktreesDirectories: retainedLocations },
-              secretSafePatch,
-            ),
+          const destinationSafe = applySettingsPatchWithSecretDestinations(
+            { ...current, previousWorktreesDirectories: retainedLocations },
+            patch,
+            currentMaterialized,
           );
+          const patched = yield* materializeProviderEnvironmentSecrets(destinationSafe.settings);
           const prepared = yield* prepareProviderEnvironmentSecrets(current, patched);
           const next = yield* Schema.decodeEffect(ServerSettings)({
             ...withBridgeActivation(prepared.settings, current, patch),
@@ -1135,7 +1114,6 @@ const makeServerSettings = Effect.gen(function* () {
           // the instance is running work (a turn, a title or commit message) or another account
           // job, the whole save is refused with a message to save again. Both sides are compared
           // materialized: the cache holds references, `patched` holds values.
-          const currentMaterialized = yield* materializeProviderEnvironmentSecrets(current);
           const accountChanges = antigravityAccountTransitions(currentMaterialized, patched);
           // Removing or creating an instance moves its fence too, so a recreated ID is judged
           // by its own settings, not an identity published for the instance it replaced.
@@ -1191,7 +1169,7 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             }),
             () =>
-              publishSettings(next, prepared.changes).pipe(
+              publishSettings(next, [...destinationSafe.removals, ...prepared.changes]).pipe(
                 Effect.onError(() =>
                   Effect.sync(() => {
                     for (const restore of fences.toReversed()) restore();

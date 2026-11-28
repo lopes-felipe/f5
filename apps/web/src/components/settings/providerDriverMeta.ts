@@ -282,7 +282,7 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
         label: "Server password",
         placeholder: "Optional",
         type: "password",
-        description: "Stored in plain text on disk.",
+        description: "Changing the server URL clears the saved password unless you enter one.",
       },
     ],
   },
