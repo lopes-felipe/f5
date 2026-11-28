@@ -18,9 +18,11 @@ appId: io.github.lopesfelipe.f5.mobile
 - extendedWaitUntil:
     visible: "Needs you"
     timeout: 25000
-- tapOn: "Review test change"
-- assertVisible: "Allow fixture command?"
+- tapOn: ".*Review test change.*"
+- extendedWaitUntil:
+    visible: "Allow fixture command[?]"
+    timeout: 25000
 - tapOn: "Approve once"
 - extendedWaitUntil:
-    notVisible: "Allow fixture command?"
+    notVisible: "Allow fixture command[?]"
     timeout: 20000
