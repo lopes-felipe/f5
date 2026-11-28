@@ -48,7 +48,7 @@ import {
 } from "../lib/threadPullRequests";
 import { useStore } from "../store";
 import { selectThreadById } from "../threadSelectors";
-import { WorktreeMissingControl } from "./chat/WorktreeMissingControl";
+import { WorktreeDormantLabel } from "./chat/WorktreeDormantLabel";
 import {
   ThreadPullRequestMenuItems,
   threadPullRequestsSpanRepositories,
@@ -1046,7 +1046,7 @@ function RepositoryGitActionsControl({
   return (
     <>
       {branchList?.worktreeMissing ? (
-        <WorktreeMissingControl threadId={activeThreadId} isServerThread={isServerThread} />
+        <WorktreeDormantLabel threadId={activeThreadId} isServerThread={isServerThread} />
       ) : !isRepo ? (
         <Button
           variant="outline"

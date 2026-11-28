@@ -1,5 +1,5 @@
 import { isAdmittedDeliveryQueueItem } from "@t3tools/contracts";
-import { WorkspaceTransitionSummary } from "./WorkspaceTransitionBanner";
+import { workspaceNeedsCard } from "./WorkspaceStatusCard.logic";
 import type {
   CommandId,
   CompactRuntimeConfiguredActivityPayload,
@@ -146,7 +146,6 @@ export function NextTurnQueuePanel({
             sessionGeneration: entry.session?.capabilities?.generation ?? null,
             interactionMode: entry.interactionMode,
             runtimeMode: entry.runtimeMode,
-            hasWorktree: entry.worktreePath != null,
           }
         : undefined;
     }),
@@ -287,18 +286,12 @@ export function NextTurnQueuePanel({
   }
   if (!snapshot) return null;
   const itemCount = snapshot.items.length - hiddenIds.size + state.optimistic.length;
-  if (
-    itemCount === 0 &&
-    !snapshot.paused &&
-    !state.syncError &&
-    snapshot.quarantinedCount === 0 &&
-    (!snapshot.workspaceTransition ||
-      ["completed", "cancelled"].includes(snapshot.workspaceTransition.phase))
-  ) {
+  if (itemCount === 0 && !snapshot.paused && !state.syncError && snapshot.quarantinedCount === 0) {
     return null;
   }
+  // The workspace status card above says what the workspace is doing or needs.
   const blockedDescription = describeQueueBlockedState(snapshot, {
-    workspaceBannerShown: thread?.hasWorktree ?? false,
+    workspaceCardShown: workspaceNeedsCard(snapshot.workspace),
   });
   // Gate on the delivery the server can still act on, not on the pause reason:
   // a superseded delivery can leave a stale reason with nothing to recover.
@@ -456,9 +449,6 @@ export function NextTurnQueuePanel({
           className={`mt-1 rounded px-2 py-1 text-xs ${snapshot.blockedKind === "waiting" ? "text-muted-foreground" : "bg-warning/10 text-warning-foreground"}`}
         >
           {blockedDescription}
-          {snapshot.workspaceTransition && (
-            <WorkspaceTransitionSummary transition={snapshot.workspaceTransition} />
-          )}
           {hasDeliveryFailure || hasDeliveryPause ? (
             <span className="ml-1 inline-flex gap-1">
               <Button

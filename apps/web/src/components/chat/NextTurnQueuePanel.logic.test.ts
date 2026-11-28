@@ -97,7 +97,7 @@ describe("describeQueueBlockedState", () => {
     );
   });
 
-  it("points a workspace pause at the banner instead of repeating its details", () => {
+  it("leaves a workspace pause to the workspace status card", () => {
     const snapshot: NextTurnQueueSnapshot = {
       threadId: ThreadId.makeUnsafe("drifted"),
       items: [],
@@ -109,11 +109,21 @@ describe("describeQueueBlockedState", () => {
       maxItems: 10,
       quarantinedCount: 0,
     };
-    expect(describeQueueBlockedState(snapshot, { workspaceBannerShown: true })).toBe(
-      "Queue paused: workspace needs attention (see above).",
-    );
-    // Without a recorded worktree no banner renders, so keep the server's detail.
+    // The card says what the workspace needs, so the queue says nothing about it.
+    expect(describeQueueBlockedState(snapshot, { workspaceCardShown: true })).toBeNull();
+    for (const reasonCode of ["workspace_switch", "worktree_setup_failed"] as const)
+      expect(
+        describeQueueBlockedState({ ...snapshot, reasonCode }, { workspaceCardShown: true }),
+      ).toBeNull();
+    // Without the card (an older server, or a snapshot still loading) keep the server's detail.
     expect(describeQueueBlockedState(snapshot)).toBe(snapshot.reasonDetail);
+    // A pause that is not about the workspace is still explained beside the card.
+    expect(
+      describeQueueBlockedState(
+        { ...snapshot, reasonCode: "manual_pause" },
+        { workspaceCardShown: true },
+      ),
+    ).toBe("Queue paused — new turns will wait here.");
   });
 });
 

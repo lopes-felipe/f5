@@ -1,0 +1,49 @@
+import {
+  CommandId,
+  EventId,
+  type ThreadId,
+  WORKSPACE_NOTE_ACTIVITY_KIND,
+} from "@t3tools/contracts";
+import { timeOrderedUuid } from "@t3tools/shared/ids";
+import { Effect } from "effect";
+import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
+
+export { WORKSPACE_NOTE_ACTIVITY_KIND };
+
+export interface WorkspaceNote {
+  readonly kind?: string;
+  readonly summary: string;
+  /** "error" when the user asked for something that did not happen or left files behind. */
+  readonly tone?: "info" | "error";
+  readonly payload?: Record<string, unknown>;
+}
+
+/**
+ * Reports in the thread's timeline what happened to its workspace without the
+ * user asking, so nothing has to be held open for them to acknowledge. Best
+ * effort: a thread archived or deleted meanwhile does not get the note.
+ */
+export const appendWorkspaceNote = (
+  engine: Pick<OrchestrationEngineShape, "dispatch">,
+  threadId: ThreadId,
+  note: WorkspaceNote,
+) => {
+  const createdAt = new Date().toISOString();
+  return engine
+    .dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.makeUnsafe(`server:workspace-note:${timeOrderedUuid()}`),
+      threadId,
+      activity: {
+        id: EventId.makeUnsafe(`workspace-note:${timeOrderedUuid()}`),
+        kind: note.kind ?? WORKSPACE_NOTE_ACTIVITY_KIND,
+        tone: note.tone ?? "info",
+        summary: note.summary,
+        payload: note.payload ?? {},
+        turnId: null,
+        createdAt,
+      },
+      createdAt,
+    })
+    .pipe(Effect.ignore);
+};

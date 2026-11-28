@@ -165,9 +165,6 @@ export function filterEnabledMcpServers(
   );
 }
 
-export const CODEX_SSE_TRANSPORT_HINT =
-  "Codex connects to this URL with streamable HTTP. SSE-only endpoints fail under Codex; switch the type to HTTP if the server supports it.";
-
 export interface McpToolFilter {
   readonly enabled: ReadonlySet<string>;
   readonly disabled: ReadonlySet<string>;

@@ -8,7 +8,7 @@ import { ensureNativeApi } from "../../../nativeApi";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
-import { MCP_HUB_PROVIDER_LABELS, readErrorMessage } from "./mcpSettingsHelpers";
+import { readErrorMessage } from "./mcpSettingsHelpers";
 
 function describeExpiry(server: McpHubAuthServerStatus): string | null {
   if (!server.signedIn) return null;
@@ -224,11 +224,14 @@ export function McpHubSignIn({
   const authStatus = useQuery(mcpHubAuthQueryOptions({ projectId }));
   const server = authStatus.data?.servers.find((entry) => entry.name === serverName);
   return (
-    <section aria-label="Sign-in for other agents" className="space-y-2 text-xs">
-      <p className="font-medium text-foreground">Other agents</p>
+    <section aria-label="F5 sign-in" className="space-y-2 text-xs">
+      <p className="font-medium text-foreground">F5 sign-in</p>
       <p className="text-muted-foreground">
-        F5 signs in for {MCP_HUB_PROVIDER_LABELS.join(", ")}. A sign-in is shared by every project
-        that uses the same server.
+        F5 signs in for every agent. A sign-in is shared by every project that uses the same server.
+      </p>
+      <p className="text-muted-foreground">
+        Sign-ins Codex and Claude saved before they reached servers through F5 are not carried over,
+        so a server that needed one asks once more here.
       </p>
       {authStatus.error ? (
         <p className="text-destructive">

@@ -62,6 +62,7 @@ function deriveInvestigationPhase(workflow: InvestigationWorkflow): TimelinePhas
     key: `investigator-${id}`,
     label: investigator.label,
     threadId: investigator.investigationThreadId,
+    turnId: investigator.investigationTurnId,
     state: workflowStepState(investigator.investigationStatus),
     modelSlot: investigator.slot,
   }));
@@ -69,6 +70,7 @@ function deriveInvestigationPhase(workflow: InvestigationWorkflow): TimelinePhas
     id: "investigation",
     label: "Investigation",
     state: combineStepStates(steps.map((step) => step.state)),
+    parallel: true,
     steps,
   };
 }
@@ -85,6 +87,7 @@ function deriveCrossReviewPhase(workflow: InvestigationWorkflow): TimelinePhase 
         : `cross-review-${view.reviewerId}`,
       label: mesh ? `Cross-review ${reviewer} on ${reviewee}` : `Cross-review ${reviewer}`,
       threadId: view.threadId,
+      turnId: view.turnId,
       state: investigationPhaseStepState(view.status),
       modelSlot: null,
     };
@@ -93,6 +96,7 @@ function deriveCrossReviewPhase(workflow: InvestigationWorkflow): TimelinePhase 
     id: "cross-review",
     label: "Cross-review",
     state: combineStepStates(steps.map((step) => step.state)),
+    parallel: true,
     steps,
   };
 }
@@ -102,6 +106,7 @@ function deriveSelfReviewPhase(workflow: InvestigationWorkflow): TimelinePhase {
     key: `own-model-review-${id}`,
     label: `Own-model review ${workflowParticipantLabel(id)}`,
     threadId: investigator.selfReviewThreadId,
+    turnId: investigator.selfReviewTurnId,
     state: investigationPhaseStepState(investigator.selfReviewStatus),
     modelSlot: null,
   }));
@@ -109,6 +114,7 @@ function deriveSelfReviewPhase(workflow: InvestigationWorkflow): TimelinePhase {
     id: "own-model-review",
     label: "Own-model review",
     state: combineStepStates(steps.map((step) => step.state)),
+    parallel: true,
     steps,
   };
 }
@@ -124,6 +130,7 @@ function deriveSynthesisPhase(workflow: InvestigationWorkflow): TimelinePhase {
         key: "synthesis",
         label: "RCA Synthesis",
         threadId: workflow.synthesis.threadId,
+        turnId: workflow.synthesis.pinnedTurnId,
         state,
         modelSlot: workflow.synthesis.slot,
       },

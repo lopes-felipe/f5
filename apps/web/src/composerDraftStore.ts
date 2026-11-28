@@ -52,7 +52,6 @@ import {
   providerSelectionsToModelOptions,
 } from "./providerModelOptions";
 import { recordModelSelection, useModelPreferencesStore } from "./modelPreferencesStore";
-import { Debouncer } from "@tanstack/react-pacer";
 import { create } from "zustand";
 import {
   persist,
@@ -68,7 +67,6 @@ import { processComposerImageBounded } from "./lib/imageCompressionQueue";
 const loadImageCompression = () => import("./lib/imageCompression");
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
-export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
 export const MAX_PROMPT_STASH_ENTRIES = 20;
 export const MAX_PROMPT_STASH_IMAGE_DATA_CHARS = 3_000_000;
 
@@ -85,152 +83,33 @@ function normalizeDraftModel(
 export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
 
-const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
-
-/**
- * Debounced writes over a string storage. `setItem` keeps only a reference to
- * the latest value per name; `serialize` runs when that name's debounce fires
- * (or on `flush` / `pendingValue`), so rapid edits cost one serialization per
- * window instead of one per keystroke.
- */
-interface DeferredStorage<T> {
-  /** The stored string, without any pending write applied. */
-  getItem: (name: string) => string | null | Promise<string | null>;
-  setItem: (name: string, value: T) => void;
-  removeItem: (name: string) => void;
-  cancelPending: () => void;
-  flush: () => void;
-  /** Serialized pending value for `name` (default: the last name written), if any. */
-  pendingValue: (name?: string) => string | null;
-}
-
-interface PendingWrite<T> {
-  readonly debouncer: Debouncer<() => void>;
-  latest: { readonly value: T } | null;
-  serialized: { readonly value: T; readonly text: string } | null;
-}
-
-export function createDeferredStorage<T>(
-  baseStorage: StateStorage,
-  serialize: (value: T) => string,
-): DeferredStorage<T> {
-  const pendingByName = new Map<string, PendingWrite<T>>();
-  let lastName: string | null = null;
-  const reportWriteFailure = (error: unknown) => {
-    if (typeof window === "undefined") return;
-    window.dispatchEvent(
-      new CustomEvent(COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT, {
-        detail: error instanceof Error ? error.message : String(error),
-      }),
-    );
-  };
-  const serializePending = (pending: PendingWrite<T>): string | null => {
-    const latest = pending.latest;
-    if (!latest) return null;
-    if (pending.serialized?.value !== latest.value) {
-      pending.serialized = { value: latest.value, text: serialize(latest.value) };
-    }
-    return pending.serialized.text;
-  };
-  const write = (name: string) => {
-    const pending = pendingByName.get(name);
-    if (!pending?.latest) return;
-    try {
-      const text = serializePending(pending);
-      pending.latest = null;
-      pending.serialized = null;
-      if (text === null) return;
-      const result = baseStorage.setItem(name, text);
-      if (result instanceof Promise) {
-        void result.catch(reportWriteFailure);
-      }
-    } catch (error) {
-      pending.latest = null;
-      pending.serialized = null;
-      reportWriteFailure(error);
-    }
-  };
-  const pendingFor = (name: string): PendingWrite<T> => {
-    let pending = pendingByName.get(name);
-    if (!pending) {
-      pending = {
-        debouncer: new Debouncer(() => write(name), { wait: COMPOSER_PERSIST_DEBOUNCE_MS }),
-        latest: null,
-        serialized: null,
-      };
-      pendingByName.set(name, pending);
-    }
-    return pending;
-  };
-  const cancel = (pending: PendingWrite<T>) => {
-    pending.debouncer.cancel();
-    pending.latest = null;
-    pending.serialized = null;
-  };
-
-  return {
-    getItem: (name) => baseStorage.getItem(name),
-    setItem: (name, value) => {
-      lastName = name;
-      const pending = pendingFor(name);
-      pending.latest = { value };
-      pending.debouncer.maybeExecute();
-    },
-    removeItem: (name) => {
-      const pending = pendingByName.get(name);
-      if (pending) cancel(pending);
-      baseStorage.removeItem(name);
-    },
-    cancelPending: () => {
-      for (const pending of pendingByName.values()) cancel(pending);
-    },
-    flush: () => {
-      for (const pending of pendingByName.values()) pending.debouncer.flush();
-    },
-    pendingValue: (name) => {
-      const target = name ?? lastName;
-      const pending = target === null ? undefined : pendingByName.get(target);
-      if (!pending) return null;
-      try {
-        return serializePending(pending);
-      } catch {
-        return null;
-      }
-    },
-  };
-}
-
-/** String-valued deferred storage (serialization is the identity). */
-export function createDebouncedStorage(baseStorage: StateStorage): DeferredStorage<string> {
-  return createDeferredStorage<string>(baseStorage, (value) => value);
-}
-
-function createMemoryStateStorage(): StateStorage {
-  const store = new Map<string, string>();
-  return {
-    getItem: (name) => store.get(name) ?? null,
-    setItem: (name, value) => {
-      store.set(name, value);
-    },
-    removeItem: (name) => {
-      store.delete(name);
-    },
-  };
-}
-
-function isStateStorage(value: unknown): value is StateStorage {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "getItem" in value &&
-    typeof value.getItem === "function" &&
-    "setItem" in value &&
-    typeof value.setItem === "function" &&
-    "removeItem" in value &&
-    typeof value.removeItem === "function"
-  );
-}
-
+import {
+  COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT,
+  type DeferredStorage,
+  createDeferredStorage,
+  createDebouncedStorage,
+  createMemoryStateStorage,
+  isStateStorage,
+} from "./stores/drafts/deferredStorage";
+import {
+  resolveDraftWorktreeOptions,
+  type PersistedDraftThreadState,
+  type DraftThreadState,
+  resolveDraftWorkspace,
+  type ProjectDraftThread,
+  projectIdFromDraftThreadKey,
+  keyForDraftThread,
+  isProjectDraftKeyForProject,
+  selectProjectDraftThread,
+} from "./stores/drafts/draftWorkspaceKey";
+export {
+  COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT,
+  createDeferredStorage,
+  createDebouncedStorage,
+  type DraftThreadState,
+  type ProjectDraftThread,
+  selectProjectDraftThread,
+};
 const fallbackComposerBaseStorage = createMemoryStateStorage();
 
 function resolveComposerBaseStorage(): StateStorage {
@@ -490,39 +369,6 @@ interface PersistedComposerThreadDraftState {
   serviceTier?: string | null;
 }
 
-interface WorktreeCreationOptions {
-  worktreeBranchName?: string | null;
-  runSetupScript?: boolean | null;
-}
-
-function resolveDraftWorktreeOptions(
-  current?: WorktreeCreationOptions,
-  patch?: WorktreeCreationOptions,
-) {
-  return {
-    worktreeBranchName:
-      patch?.worktreeBranchName === undefined
-        ? (current?.worktreeBranchName ?? null)
-        : patch.worktreeBranchName,
-    runSetupScript:
-      patch?.runSetupScript === undefined
-        ? (current?.runSetupScript ?? null)
-        : patch.runSetupScript,
-  };
-}
-
-interface PersistedDraftThreadState extends WorktreeCreationOptions {
-  projectId: ProjectId;
-  createdAt: string;
-  runtimeMode: RuntimeMode;
-  interactionMode: ProviderInteractionMode;
-  branch: string | null;
-  worktreePath: string | null;
-  sharedFilesystemConfirmed?: boolean;
-  plainWorktreeOptIn?: true;
-  envMode: DraftThreadEnvMode;
-}
-
 interface PersistedComposerDraftStoreState {
   draftsByThreadId: Record<ThreadId, PersistedComposerThreadDraftState>;
   draftThreadsByThreadId: Record<ThreadId, PersistedDraftThreadState>;
@@ -593,164 +439,6 @@ export type PromptStashRestoreResult =
       readonly message: string;
     }
   | { readonly status: "failed"; readonly message: string };
-
-export interface DraftThreadState extends WorktreeCreationOptions {
-  /** True while admission is unresolved; "accepted" reserves until server sync. Never persisted. */
-  promoting?: boolean | "accepted";
-  projectId: ProjectId;
-  createdAt: string;
-  runtimeMode: RuntimeMode;
-  interactionMode: ProviderInteractionMode;
-  branch: string | null;
-  worktreePath: string | null;
-  sharedFilesystemConfirmed?: boolean;
-  /**
-   * The user picked "New worktree" for a project folder that is not a git
-   * repository but holds repositories. Such folders ignore `envMode` and run
-   * in the project folder unless this is set.
-   */
-  plainWorktreeOptIn?: true;
-  envMode: DraftThreadEnvMode;
-}
-
-function resolveDraftWorkspace(
-  projectId: ProjectId,
-  existing: DraftThreadState | undefined,
-  options?: Partial<Pick<DraftThreadState, "branch" | "worktreePath" | "envMode">>,
-) {
-  const projectChanged = existing !== undefined && projectId !== existing.projectId;
-  const worktreePath =
-    options?.worktreePath === undefined
-      ? projectChanged
-        ? null
-        : (existing?.worktreePath ?? null)
-      : (options.worktreePath ?? null);
-  return {
-    branch:
-      options?.branch === undefined
-        ? projectChanged
-          ? null
-          : (existing?.branch ?? null)
-        : (options.branch ?? null),
-    worktreePath,
-    // Workspace paths belong to a machine; the user's environment choice carries over.
-    envMode: options?.envMode ?? (worktreePath ? "worktree" : (existing?.envMode ?? "local")),
-  };
-}
-
-export interface ProjectDraftThread extends DraftThreadState {
-  threadId: ThreadId;
-}
-
-const PROJECT_DRAFT_KEY_SEPARATOR = "::";
-const LEGACY_PROJECT_DRAFT_KEY_SEPARATOR = "\u0000";
-type ProjectDraftThreadKey = string;
-
-function normalizeDraftWorkspaceKey(input?: {
-  worktreePath?: string | null;
-  envMode?: DraftThreadEnvMode | null;
-}): string {
-  const worktreePath = typeof input?.worktreePath === "string" ? input.worktreePath : "";
-  if (worktreePath.length > 0) {
-    return `worktree:${worktreePath}`;
-  }
-  return input?.envMode === "worktree" ? "worktree:new" : "local";
-}
-
-function projectDraftThreadKey(
-  projectId: ProjectId,
-  input?: {
-    worktreePath?: string | null;
-    envMode?: DraftThreadEnvMode | null;
-  },
-): ProjectDraftThreadKey {
-  return `${projectId}${PROJECT_DRAFT_KEY_SEPARATOR}${normalizeDraftWorkspaceKey(input)}`;
-}
-
-function projectIdFromDraftThreadKey(key: string): ProjectId {
-  const separatorIndex = key.indexOf(PROJECT_DRAFT_KEY_SEPARATOR);
-  if (separatorIndex !== -1) {
-    return key.slice(0, separatorIndex) as ProjectId;
-  }
-  const legacySeparatorIndex = key.indexOf(LEGACY_PROJECT_DRAFT_KEY_SEPARATOR);
-  return (legacySeparatorIndex === -1 ? key : key.slice(0, legacySeparatorIndex)) as ProjectId;
-}
-
-function keyForDraftThread(draftThread: DraftThreadState): ProjectDraftThreadKey {
-  return projectDraftThreadKey(draftThread.projectId, draftThread);
-}
-
-function isProjectDraftKeyForProject(key: string, projectId: ProjectId): boolean {
-  return projectIdFromDraftThreadKey(key) === projectId;
-}
-
-/**
- * The project's draft thread for `options`' workspace, or its newest draft.
- * Components pass the maps they subscribe to, so memoization (including the
- * React Compiler's) tracks them; the store getter hides them behind `get()`.
- */
-export function selectProjectDraftThread(
-  state: Pick<
-    ComposerDraftStoreState,
-    "draftThreadsByThreadId" | "projectDraftThreadIdByProjectId"
-  >,
-  projectId: ProjectId,
-  options?: {
-    worktreePath?: string | null;
-    envMode?: DraftThreadEnvMode | null;
-  },
-): ProjectDraftThread | null {
-  if (projectId.length === 0) {
-    return null;
-  }
-  if (options !== undefined) {
-    const threadId =
-      state.projectDraftThreadIdByProjectId[projectDraftThreadKey(projectId, options)];
-    if (!threadId) {
-      return null;
-    }
-    const draftThread = state.draftThreadsByThreadId[threadId];
-    if (!draftThread || draftThread.promoting || draftThread.projectId !== projectId) {
-      return null;
-    }
-    return {
-      threadId,
-      ...draftThread,
-    };
-  }
-
-  let latestDraftThread: ProjectDraftThread | null = null;
-  for (const [key, threadId] of Object.entries(state.projectDraftThreadIdByProjectId)) {
-    if (!isProjectDraftKeyForProject(key, projectId)) {
-      continue;
-    }
-    const draftThread = state.draftThreadsByThreadId[threadId];
-    if (!draftThread || draftThread.promoting || draftThread.projectId !== projectId) {
-      continue;
-    }
-    const draftThreadCreatedAtMs = Date.parse(draftThread.createdAt);
-    const latestDraftThreadCreatedAtMs = latestDraftThread
-      ? Date.parse(latestDraftThread.createdAt)
-      : Number.NEGATIVE_INFINITY;
-    const draftThreadSortTime = Number.isFinite(draftThreadCreatedAtMs)
-      ? draftThreadCreatedAtMs
-      : Number.NEGATIVE_INFINITY;
-    const latestDraftThreadSortTime = Number.isFinite(latestDraftThreadCreatedAtMs)
-      ? latestDraftThreadCreatedAtMs
-      : Number.NEGATIVE_INFINITY;
-    if (
-      !latestDraftThread ||
-      draftThreadSortTime > latestDraftThreadSortTime ||
-      (draftThreadSortTime === latestDraftThreadSortTime && threadId > latestDraftThread.threadId)
-    ) {
-      latestDraftThread = {
-        threadId,
-        ...draftThread,
-      };
-    }
-  }
-  return latestDraftThread;
-}
 
 interface ComposerDraftStoreState {
   draftsByThreadId: Record<ThreadId, ComposerThreadDraftState>;

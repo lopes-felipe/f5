@@ -1,7 +1,5 @@
-import {
-  useWorktreeRemovalDialogStore,
-  type WorktreeRemovalRow,
-} from "./worktreeRemovalDialogStore";
+import type { WorktreeRemovalRow } from "./worktreeRemovalDialogStore";
+import { offerWorktreeRemovalAfterDeletion } from "./worktreeSilentRemoval";
 import { recordThreadUndo } from "./threadUndo";
 import { cleanupDeletedThread } from "./lib/deletedThreadCleanup";
 import { useComposerMentionHistoryStore } from "./composerMentionHistoryStore";
@@ -38,7 +36,8 @@ function offerOrphanedWorktreeCleanup(
     checkedPaths.add(pathKey);
     removalRows.push({ projectId: project.id, path: orphanedPath });
   }
-  if (removalRows.length) void useWorktreeRemovalDialogStore.getState().request(removalRows);
+  // Worktrees that are safe to remove go without a dialog; the rest are asked about.
+  if (removalRows.length) void offerWorktreeRemovalAfterDeletion(removalRows);
 }
 
 export type WorkflowArchiveKind = "planning" | "codeReview" | "investigation";

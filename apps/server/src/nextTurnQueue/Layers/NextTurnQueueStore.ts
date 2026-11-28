@@ -590,12 +590,12 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
             }
             const threadId = input.command.threadId;
             if (
-              (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${threadId} AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`)
+              (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${threadId} AND phase IN ('reserved','stopping','applying','applied') LIMIT 1`)
                 .length
             )
               return yield* new NextTurnQueueConflictError({
                 message:
-                  "A workspace transition must finish or be resolved before scheduling a continuation.",
+                  "Wait for the workspace switch to finish before scheduling a continuation.",
               });
             const at = now();
             const ledger = (yield* sql<
@@ -813,10 +813,10 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
 
             const switching =
               yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id = ${input.command.threadId}
-              AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`;
+              AND phase IN ('reserved','stopping','applying','applied') LIMIT 1`;
             if (switching.length)
               return yield* new NextTurnQueueConflictError({
-                message: "A workspace transition must finish or be resolved before sending.",
+                message: "Wait for the workspace switch to finish before sending.",
               });
 
             if (input.supersedeUsageResume) {
@@ -1162,11 +1162,11 @@ export const makeNextTurnQueueStore = Effect.gen(function* () {
           Effect.gen(function* () {
             if (
               input.token !== null &&
-              (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${input.threadId} AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`)
+              (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${input.threadId} AND phase IN ('reserved','stopping','applying','applied') LIMIT 1`)
                 .length
             )
               return yield* new NextTurnQueueConflictError({
-                message: "Resolve the workspace transition before starting setup.",
+                message: "Wait for the workspace switch to finish before starting setup.",
               });
             yield* ensureState(input.threadId);
             const at = now();

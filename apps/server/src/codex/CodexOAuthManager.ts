@@ -1,4 +1,3 @@
-import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
 import {
   McpOauthLoginStatusResult,
   type ProjectId,
@@ -9,6 +8,7 @@ import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "@t3tools/shared/codexOAuthTim
 import { Effect, FiberSet, Layer, Schema, ServiceMap } from "effect";
 
 import { combineStatusMessage } from "../mcp/combineStatusMessage.ts";
+import { CODEX_ADMIN_MCP_CONFIG } from "../mcp/hub/nativeHubOptions.ts";
 import { ProjectMcpConfigService } from "../mcp/ProjectMcpConfigService.ts";
 import { reloadCodexMcpConfigAfterLogin } from "../mcp/reloadCodexMcpConfigAfterLogin.ts";
 import { toCodexProviderStartOptions } from "../provider/codexProviderOptions.ts";
@@ -16,10 +16,7 @@ import { ProviderService } from "../provider/Services/ProviderService.ts";
 import type { CodexControlClient } from "./CodexControlClient.ts";
 import { CodexControlClientRegistry } from "./CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
-import {
-  preflightCodexOAuthCallback,
-  validateCodexOAuthCallbackConfig,
-} from "./CodexOAuthCallbackPreflight.ts";
+import { preflightCodexOAuthCallback } from "./CodexOAuthCallbackPreflight.ts";
 import {
   codexServerNamesMatch,
   codexServerStatusCanReconcileCompletedOauthLogin,
@@ -79,9 +76,10 @@ function makeFailedStatus(
 
 interface PendingOAuthMetadata {
   readonly providerOptions: ProviderStartOptions | undefined;
+  /** The saved MCP config version the sign-in ran against, published on completion. */
+  readonly configVersion: string;
+  /** The admin client's pool key, which differs from `configVersion` on the hub. */
   readonly mcpEffectiveConfigVersion: string | null | undefined;
-  readonly mcpOAuthCallbackPort: number | undefined;
-  readonly mcpOAuthCallbackUrl: string | undefined;
   readonly client: CodexControlClient;
   readonly release: Effect.Effect<void>;
   readonly cleanupListeners: () => void;
@@ -133,9 +131,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       projectId: input.projectId,
       ...(input.instanceId ? { instanceId: input.instanceId } : {}),
       reason: "oauth-completed",
-      ...(metadata.mcpEffectiveConfigVersion
-        ? { configVersion: metadata.mcpEffectiveConfigVersion }
-        : {}),
+      ...(metadata.configVersion ? { configVersion: metadata.configVersion } : {}),
     });
 
   const runBackgroundReloadAfterLogin = (
@@ -293,12 +289,6 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         ...(metadata?.mcpEffectiveConfigVersion !== undefined
           ? { mcpEffectiveConfigVersion: metadata.mcpEffectiveConfigVersion }
           : {}),
-        ...(metadata?.mcpOAuthCallbackPort
-          ? { mcpOAuthCallbackPort: metadata.mcpOAuthCallbackPort }
-          : {}),
-        ...(metadata?.mcpOAuthCallbackUrl
-          ? { mcpOAuthCallbackUrl: metadata.mcpOAuthCallbackUrl }
-          : {}),
       });
       if (hasLease) {
         return existing;
@@ -341,6 +331,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
               }),
           ),
         );
+        // F5's servers sign in through the hub; only Codex's own servers sign in here.
 
         const startedAt = nowIso();
         const key = statusKeyFor(input);
@@ -359,10 +350,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
             ...(input.instanceId ? { instanceId: input.instanceId } : {}),
             serverName: input.serverName,
             ...(providerOptions ? { providerOptions } : {}),
-            mcpEffectiveConfigVersion: stored.effectiveVersion,
-            mcpServers: stored.servers,
-            ...(stored.oauthCallbackPort ? { mcpOAuthCallbackPort: stored.oauthCallbackPort } : {}),
-            ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
+            ...CODEX_ADMIN_MCP_CONFIG,
           })
           .pipe(
             Effect.tapError((error) =>
@@ -391,9 +379,8 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         let closedListener: ((error: Error) => void) | undefined;
         const pendingMetadata: PendingOAuthMetadata = {
           providerOptions,
-          mcpEffectiveConfigVersion: stored.effectiveVersion,
-          mcpOAuthCallbackPort: stored.oauthCallbackPort,
-          mcpOAuthCallbackUrl: stored.oauthCallbackUrl,
+          configVersion: stored.effectiveVersion,
+          mcpEffectiveConfigVersion: CODEX_ADMIN_MCP_CONFIG.mcpEffectiveConfigVersion,
           client: lease.client,
           release: lease.release,
           cleanupListeners: () => {
@@ -477,24 +464,11 @@ const makeCodexOAuthManager = Effect.gen(function* () {
 
         return yield* Effect.tryPromise({
           try: async () => {
-            validateCodexOAuthCallbackConfig({
-              ...(stored.oauthCallbackPort
-                ? { mcpOAuthCallbackPort: stored.oauthCallbackPort }
-                : {}),
-              ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
-            });
-            if (stored.oauthCallbackPort) await assertOAuthPortAvailable(stored.oauthCallbackPort);
             const loginResult = await lease.client.startOAuthLogin({
               name: input.serverName,
               timeoutSecs: CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC,
             });
-            await preflightCodexOAuthCallback({
-              authorizationUrl: loginResult.authorizationUrl,
-              ...(stored.oauthCallbackPort
-                ? { mcpOAuthCallbackPort: stored.oauthCallbackPort }
-                : {}),
-              ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
-            });
+            await preflightCodexOAuthCallback({ authorizationUrl: loginResult.authorizationUrl });
             return loginResult;
           },
           catch: (cause) =>

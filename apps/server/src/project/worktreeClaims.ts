@@ -90,8 +90,6 @@ export interface WorktreeClaims {
     readonly cwd: string;
     readonly live?: boolean;
   }>;
-  /** Referencing threads that record a worktree path, and so a branch, for this checkout. */
-  readonly worktreeThreadIds?: ReadonlyArray<ThreadId>;
   /** False when pending turn starts could not be read because the service is missing. */
   readonly pendingTurnsChecked?: boolean;
 }
@@ -169,7 +167,6 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     target !== null && candidate !== null && pathContains(target, candidate);
   const readModel = yield* engine.getReadModel();
   const threadIds: ThreadId[] = [];
-  const worktreeThreadIds: ThreadId[] = [];
   const deletedThreadIds: ThreadId[] = [];
   const activeThreadIds: ThreadId[] = [];
   const setupThreadIds: ThreadId[] = [];
@@ -198,7 +195,6 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
       continue;
     }
     threadIds.push(thread.id);
-    if (thread.worktreePath !== null) worktreeThreadIds.push(thread.id);
     const session = thread.session;
     if (
       session &&
@@ -352,7 +348,6 @@ export const readWorktreeClaims = Effect.fn("readWorktreeClaims")(function* (pat
     queuedThreadIds,
     terminals: liveTerminals,
     sessions: liveSessions,
-    worktreeThreadIds,
     pendingTurnsChecked: Option.isSome(turns),
   } satisfies WorktreeClaims;
 });
@@ -403,17 +398,17 @@ export interface InPlaceSwitchBlocker {
 }
 
 /**
- * What stops switching the branch of `usage`'s checkout in place. Live use
- * always blocks: running or pending turns, queued work, setup and transition
- * owners, and terminals. In the project folder, idle and archived local
- * threads and their idle provider sessions do not: they already follow the
- * folder's live branch. A managed worktree keeps the strict rule, because its
- * threads record a branch and would see a drift banner. `otherProfile` is
- * added by callers that check other profiles; this function is pure.
+ * What stops switching the branch of `usage`'s checkout in place. Only live
+ * use blocks: running or pending turns, queued work, setup and transition
+ * owners, terminals, and agent sessions that are starting or running. Idle and
+ * archived threads and their idle sessions do not, in the project folder and
+ * in a worktree alike: a thread follows whatever branch its folder is on.
+ * `otherProfile` is added by callers that check other profiles; this function
+ * is pure.
  */
 export function inPlaceSwitchBlockers(
   usage: WorktreeClaims,
-  options: { readonly requester: ThreadId | null; readonly projectCheckout: boolean },
+  options: { readonly requester: ThreadId | null },
 ): ReadonlyArray<InPlaceSwitchBlocker> {
   // Without the turn repository, accepted-but-undelivered turns are invisible;
   // refuse rather than let a wiring gap skip that check.
@@ -438,18 +433,9 @@ export function inPlaceSwitchBlockers(
     seen.add(key);
     blockers.push({ kind: "terminal", threadId: terminal.threadId });
   }
-  const live = new Set(blockers.map((blocker) => blocker.threadId));
-  if (!options.projectCheckout) {
-    for (const id of usage.threadIds) if (!live.has(id)) add("thread", id);
-    for (const session of usage.sessions) add("session", session.threadId);
-    return blockers;
-  }
-  // A thread that records a worktree path records a branch for this checkout
-  // and would see a drift banner, even when the path is also a project root.
-  for (const id of usage.worktreeThreadIds ?? []) if (!live.has(id)) add("thread", id);
-  // An idle session of a local thread follows the folder. A starting, connecting
-  // or running session is live use, and one whose thread is not a known
-  // reference (deleted or from elsewhere) is not proven idle.
+  // An idle session follows the folder. A starting, connecting or running
+  // session is live use, and one whose thread is not a known reference
+  // (deleted or from elsewhere) is not proven idle.
   const known = new Set<string>(usage.threadIds);
   for (const session of usage.sessions)
     if (session.live || !known.has(session.threadId)) add("session", session.threadId);
@@ -461,7 +447,6 @@ const SWITCH_BLOCKER_LABELS: Record<InPlaceSwitchBlockerKind, string> = {
   queued: "queued messages",
   setup: "workspace setup",
   terminal: "open terminal",
-  thread: "uses this worktree",
   session: "agent session",
   otherProfile: "another profile",
   unknown: "usage could not be verified",
@@ -532,6 +517,18 @@ export type WorktreeRemovalPolicy = WorktreeRemovalContext &
     | {
         readonly kind: "manual";
         readonly approvedIgnoredEntries?: ReadonlyArray<string> | undefined;
+        /**
+         * Ignored files go without being named, but only build and cache
+         * output, as in automatic cleanup. Anything else refuses the removal.
+         */
+        readonly disposableIgnoredOnly?: boolean | undefined;
+        /**
+         * Nobody confirmed the removal. A worktree that any thread still uses,
+         * or a group of worktrees, is then refused, and ignored files are
+         * treated as with `disposableIgnoredOnly`. Being part of the policy,
+         * it is checked again under the locks like everything else.
+         */
+        readonly silent?: boolean | undefined;
       }
     | { readonly kind: "autoCleanup" | "legacyCleanup" | "ownedRollback" }
     | {
@@ -602,10 +599,14 @@ const worktreeHasUsageLimitRecovery = Effect.fn("worktreeHasUsageLimitRecovery")
 });
 
 const USAGE_LIMIT_CLEANUP_BLOCK = "a thread is waiting to resume after a usage limit";
+/** Why a removal nobody confirmed is refused while a thread, archived or not, uses the folder. */
+const SILENT_REMOVAL_IN_USE = "a thread uses this worktree";
 
 const ignoredRemovalPolicy = (policy: WorktreeRemovalPolicy): IgnoredFilesRemovalPolicy =>
   policy.kind === "manual"
-    ? { kind: "manual", approvedEntries: policy.approvedIgnoredEntries }
+    ? policy.disposableIgnoredOnly || policy.silent
+      ? { kind: "rebuildable" }
+      : { kind: "manual", approvedEntries: policy.approvedIgnoredEntries }
     : // Automatic cleanup may run unattended on rules users enabled long ago, so
       // it gets no wider an ignored-file exception than storage maintenance.
       policy.kind === "autoCleanup" || isStorageCleanupPolicy(policy)
@@ -645,6 +646,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
         entries: ReadonlyArray<string>;
         truncated: boolean;
         requiresApproval: boolean;
+        disposableOnly: boolean;
       }
     | undefined;
   let ignoredReason: string | null = null;
@@ -713,6 +715,7 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       blockedReasons,
       linkedThreads: [] as ThreadId[],
       deletedThreadClaims: [] as ThreadId[],
+      grouped: false,
       ignoredEntries,
       branch,
       headSha,
@@ -832,6 +835,13 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
       blockedReasons.push("it contains a project checkout");
   }
   const claims = yield* readWorktreeClaims(input.path);
+  // A removal nobody confirmed leaves alone whatever a person would be asked
+  // about. This runs again under the locks, so a thread that attached after
+  // the client looked still keeps its folder.
+  if (input.policy.kind === "manual" && input.policy.silent) {
+    if (claims.threadIds.length > 0) blockedReasons.push(SILENT_REMOVAL_IN_USE);
+    if (manifest) blockedReasons.push("it is a group of worktrees");
+  }
   const archiveableThreadIds =
     isStorageCleanupPolicy(input.policy) && input.policy.archiveIdleThreads
       ? (yield* engine.getReadModel()).threads
@@ -1094,17 +1104,31 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
   }
   if (exists && (group || registration)) {
     ignoredEntries = [...new Set([...ignoredEntries, ...childIgnoredEntries])];
+    const ignoredPolicy = ignoredRemovalPolicy(input.policy);
     ignoredReason = yield* ignoredFilesBlockRemoval(
       git,
       input.path,
       { entries: ignoredEntries, truncated: childIgnoredTruncated },
-      ignoredRemovalPolicy(input.policy),
+      ignoredPolicy,
     );
+    const entries = ignoredEntries;
     ignoredFiles = {
-      entries: ignoredEntries,
+      entries,
       truncated: childIgnoredTruncated,
       requiresApproval:
         input.policy.kind === "manual" && !childIgnoredTruncated && ignoredReason !== null,
+      // The same rule automatic cleanup applies, so a person is asked only
+      // about the rest. Only a manual removal reads it, and when its policy is
+      // that rule already, the check above has answered it.
+      disposableOnly:
+        input.policy.kind === "manual" &&
+        !childIgnoredTruncated &&
+        entries.length > 0 &&
+        (ignoredPolicy.kind === "rebuildable"
+          ? ignoredReason === null
+          : (yield* Effect.promise(() =>
+              blockingIgnoredEntriesOnDisk(input.path, entries, { kind: "rebuildable" }),
+            )).length === 0),
     };
   }
   return {
@@ -1113,6 +1137,8 @@ export const evaluateWorktreeRemoval = Effect.fn("evaluateWorktreeRemoval")(func
     blockedReasons: [...new Set([...blockedReasons, ...(ignoredReason ? [ignoredReason] : [])])],
     linkedThreads: claims.threadIds,
     deletedThreadClaims: claims.deletedThreadIds,
+    /** The folder is a group of worktrees, with or without a checkout of its own. */
+    grouped: manifest !== null,
     ignoredEntries,
     branch,
     headSha,
@@ -1264,6 +1290,15 @@ export const removeWorktreeSafely = Effect.fn("removeWorktreeSafely")(function* 
               "HEAD changed since inspection. Review the checkout again.",
             );
           if (claims.unknown) checked.blockedReasons.push("workspace usage could not be verified");
+          // The claims were just read again, as the last thing before Git
+          // runs: a thread that attached during the checks above keeps its folder.
+          if (
+            input.policy.kind === "manual" &&
+            input.policy.silent &&
+            claims.threadIds.length > 0 &&
+            !checked.blockedReasons.includes(SILENT_REMOVAL_IN_USE)
+          )
+            checked.blockedReasons.push(SILENT_REMOVAL_IN_USE);
           if (
             isStorageCleanupPolicy(input.policy) &&
             !sameDiscardableChanges(checked.discardChanges, input.expectedDiscardChanges)

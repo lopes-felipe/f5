@@ -901,7 +901,7 @@ describe("OrchestrationEngine", () => {
             branch: "bypass",
           }),
         ),
-      ).rejects.toThrow(/transition/);
+      ).rejects.toThrow(/workspace switch is still running/);
       const turn = {
         type: "thread.turn.start" as const,
         commandId: CommandId.makeUnsafe("blocked-turn"),
@@ -916,7 +916,9 @@ describe("OrchestrationEngine", () => {
         runtimeMode: "approval-required" as const,
         createdAt,
       };
-      await expect(system.run(system.engine.dispatch(turn))).rejects.toThrow(/transition/);
+      await expect(system.run(system.engine.dispatch(turn))).rejects.toThrow(
+        /workspace switch is still running/,
+      );
       record = await system.run(
         system.transitions.update(record, {
           phase: "applied",
@@ -1075,7 +1077,7 @@ describe("OrchestrationEngine", () => {
     }
   });
 
-  it("admits steers into the live turn on a drifted branch but not new turns", async () => {
+  it("admits new turns and steers on a worktree whose branch the agent switched", async () => {
     const target = await canonicalWorktreePath(
       fs.mkdtempSync(path.join(os.tmpdir(), "f5-engine-drift-")),
     );
@@ -1161,26 +1163,21 @@ describe("OrchestrationEngine", () => {
           },
         }),
       );
-      const rejected = await system.run(
-        system.engine
-          .dispatch({ type: "thread.turn.start", ...turn("drift-start") })
-          .pipe(Effect.flip),
-      );
-      expect(rejected.message).toContain("does not match this repository and branch");
-      const steerError = await system.run(
-        system.engine
-          .dispatch({
-            type: "thread.turn.steer",
-            ...turn("drift-steer"),
-            expectedTurnId: liveTurn,
-          })
-          .pipe(
-            Effect.flip,
-            Effect.map((error) => error.message),
-            Effect.orElseSucceed(() => null),
+      const admitted = (command: Parameters<typeof system.engine.dispatch>[0]) =>
+        system.run(
+          system.engine.dispatch(command).pipe(
+            Effect.as(null),
+            Effect.catch((error) => Effect.succeed(error.message)),
           ),
-      );
-      expect(steerError).toBeNull();
+        );
+      expect(await admitted({ type: "thread.turn.start", ...turn("drift-start") })).toBeNull();
+      expect(
+        await admitted({
+          type: "thread.turn.steer",
+          ...turn("drift-steer"),
+          expectedTurnId: liveTurn,
+        }),
+      ).toBeNull();
     } finally {
       await system.dispose();
       fs.rmSync(target, { recursive: true, force: true });

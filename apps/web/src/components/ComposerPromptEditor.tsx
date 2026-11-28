@@ -3,6 +3,10 @@ import {
   $createPullRequestReferenceNode,
 } from "./chat/composer/ComposerPullRequestReferenceNode";
 import {
+  ComposerMcpResourceReferenceNode,
+  $createMcpResourceReferenceNode,
+} from "./chat/composer/ComposerMcpResourceReferenceNode";
+import {
   ComposerModelReferenceNode,
   $createModelReferenceNode,
 } from "./chat/composer/ComposerModelReferenceNode";
@@ -320,6 +324,7 @@ type ComposerInlineTokenNode =
   | ComposerTerminalContextNode
   | ComposerPullRequestReferenceNode
   | ComposerThreadReferenceNode
+  | ComposerMcpResourceReferenceNode
   | ComposerModelReferenceNode
   | ComposerAssistantQuoteNode;
 
@@ -329,6 +334,7 @@ function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInl
     candidate instanceof ComposerTerminalContextNode ||
     candidate instanceof ComposerPullRequestReferenceNode ||
     candidate instanceof ComposerThreadReferenceNode ||
+    candidate instanceof ComposerMcpResourceReferenceNode ||
     candidate instanceof ComposerModelReferenceNode ||
     candidate instanceof ComposerAssistantQuoteNode
   );
@@ -683,6 +689,10 @@ function $setComposerEditorPrompt(
     }
     if (segment.type === "thread-reference") {
       paragraph.append($createThreadReferenceNode(segment.raw));
+      continue;
+    }
+    if (segment.type === "mcp-resource") {
+      paragraph.append($createMcpResourceReferenceNode(segment.raw));
       continue;
     }
     if (segment.type === "model-reference") {
@@ -1533,6 +1543,7 @@ export const ComposerPromptEditor = forwardRef<
         ComposerAssistantQuoteNode,
         ComposerPullRequestReferenceNode,
         ComposerThreadReferenceNode,
+        ComposerMcpResourceReferenceNode,
         ComposerModelReferenceNode,
       ],
       editorState: () => {

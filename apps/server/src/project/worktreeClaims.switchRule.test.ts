@@ -24,11 +24,11 @@ const claims = (overrides: Partial<WorktreeClaims> = {}): WorktreeClaims => ({
   ...overrides,
 });
 
-const projectFolder = { requester: own, projectCheckout: true } as const;
-const managed = { requester: own, projectCheckout: false } as const;
+// One rule for the project folder and for worktrees: only live use blocks.
+const projectFolder = { requester: own } as const;
 
 describe("inPlaceSwitchBlockers", () => {
-  it("lets idle and archived local threads and their idle sessions through in the project folder", () => {
+  it("lets idle and archived threads and their idle sessions through", () => {
     expect(
       inPlaceSwitchBlockers(
         claims({ sessions: [{ threadId: idle, cwd: "/repo" }] }),
@@ -37,24 +37,13 @@ describe("inPlaceSwitchBlockers", () => {
     ).toEqual([]);
   });
 
-  it("keeps the strict rule in a managed worktree", () => {
-    expect(
-      inPlaceSwitchBlockers(claims({ sessions: [{ threadId: idle, cwd: "/wt" }] }), managed),
-    ).toEqual([
-      { kind: "thread", threadId: idle },
-      { kind: "thread", threadId: archived },
-      { kind: "session", threadId: idle },
-    ]);
-  });
-
   it.each([
     ["running or pending turn", { activeThreadIds: [busy] }, "turn"],
     ["queued work", { queuedThreadIds: [busy] }, "queued"],
     ["setup or transition owner", { setupThreadIds: [busy], transitionThreadIds: [busy] }, "setup"],
-  ] as const)("blocks on another thread's %s in either checkout", (_label, overrides, kind) => {
+  ] as const)("blocks on another thread's %s", (_label, overrides, kind) => {
     const usage = claims({ threadIds: [own, busy], ...overrides });
     expect(inPlaceSwitchBlockers(usage, projectFolder)).toEqual([{ kind, threadId: busy }]);
-    expect(inPlaceSwitchBlockers(usage, managed)).toEqual([{ kind, threadId: busy }]);
   });
 
   it("never blocks on the requester's own turn, queue or setup", () => {
@@ -101,19 +90,13 @@ describe("inPlaceSwitchBlockers", () => {
     ]);
   });
 
-  it("blocks on a known thread's starting, connecting or running session in the project folder", () => {
+  it("blocks on a known thread's starting, connecting or running session", () => {
     expect(
       inPlaceSwitchBlockers(
         claims({ sessions: [{ threadId: idle, cwd: "/repo", live: true }] }),
         projectFolder,
       ),
     ).toEqual([{ kind: "session", threadId: idle }]);
-  });
-
-  it("keeps blocking threads that record a worktree for a path that is also a project root", () => {
-    expect(
-      inPlaceSwitchBlockers(claims({ worktreeThreadIds: [own, idle] }), projectFolder),
-    ).toEqual([{ kind: "thread", threadId: idle }]);
   });
 });
 

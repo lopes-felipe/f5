@@ -476,6 +476,8 @@ export const makeOrchestrationIntegrationHarness = (
       drain: Effect.void,
       submitAndSettle: () => Effect.die("unsupported in orchestration harness"),
       getSnapshot: () => Effect.die("unsupported in orchestration harness"),
+      getWorkspaceStatus: () => Effect.succeed(null),
+      setWorkspaceRestorer: () => Effect.void,
       getSummary: Effect.die("unsupported in orchestration harness"),
       promote: () => Effect.die("unsupported in orchestration harness"),
       refreshGate: () => Effect.die("unsupported in orchestration harness"),

@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { makeThreadMcpBroker } from "../../mcp/threadMcpTools.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -30,6 +32,7 @@ import { ComputerControlError } from "@t3tools/shared/computerControl";
 import * as claudeAgentBrowser from "./claudeAgentBrowser";
 import { beginClaudeTranscriptMaintenance } from "../claudeTranscript.ts";
 import { CLAUDE_AUTO_UNAVAILABLE_WARNING } from "../claudeAutoMode.ts";
+import { hasClaudeManagedMcpConfig } from "../claudeInventory.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -111,6 +114,8 @@ function makeHarness(config?: {
   readonly reportedModelCapabilities?: ClaudeAdapterLiveOptions["reportedModelCapabilities"];
   readonly resolveBypassAvailability?: ClaudeAdapterLiveOptions["resolveBypassAvailability"];
   readonly threadMcpBroker?: ClaudeAdapterLiveOptions["threadMcpBroker"];
+  /** Configured servers reach Claude only through the hub; a fake one by default, `null` for none. */
+  readonly mcpHub?: ClaudeAdapterLiveOptions["mcpHub"] | null;
 }) {
   const query = new FakeClaudeQuery();
   const queries = [query];
@@ -182,6 +187,7 @@ function makeHarness(config?: {
       ? { previewAutomationBroker: config.previewAutomationBroker }
       : {}),
     ...(config?.threadMcpBroker ? { threadMcpBroker: config.threadMcpBroker } : {}),
+    ...(config?.mcpHub === null ? {} : { mcpHub: config?.mcpHub ?? makeFakeMcpHub().hub }),
   };
 
   return {
@@ -634,284 +640,6 @@ describe("ClaudeAdapter agent browser", () => {
     ...(mcpServer ? { mcp_server: mcpServer } : {}),
   });
 
-  for (const runtimeMode of ["full-access", "approval-required"] as const) {
-    it.effect(
-      `enforces MCP filters in ${runtimeMode} and updates the hook after a live reload`,
-      () => {
-        const harness = makeHarness();
-        const setMcpServers = vi.fn(async () => ({ added: [], removed: [], errors: {} }));
-        Object.assign(harness.query, { setMcpServers });
-        harness.query.mcpServerStatusValue = [
-          { name: "team__docs", status: "connected", source: "dynamic" },
-        ];
-        return Effect.gen(function* () {
-          const adapter = yield* ClaudeAdapter;
-          yield* adapter.startSession({
-            threadId: THREAD_ID,
-            runtimeMode,
-            providerOptions: {
-              claudeAgent: { subagentsEnabled: false },
-              mcpServers: {
-                team__docs: {
-                  type: "stdio",
-                  command: "node",
-                  enabledTools: ["a__b"],
-                  disabledTools: ["write"],
-                  toolTimeoutSec: 15,
-                },
-              },
-            },
-          });
-          const options = harness.getLastCreateQueryInput()!.options;
-          assert.equal(
-            options.permissionMode,
-            runtimeMode === "full-access" ? "bypassPermissions" : "default",
-          );
-          assert.deepEqual(options.disallowedTools, ["Agent", "Task", "mcp__team__docs__write"]);
-          assert.equal((options.mcpServers!.team__docs as { timeout?: number }).timeout, 15_000);
-          const hook = options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
-          const call = (tool: string, source = "dynamic") =>
-            Effect.promise(() =>
-              hook(
-                preToolUse(`mcp__team__docs__${tool}`, { name: "team__docs", source }),
-                undefined,
-                {
-                  signal: new AbortController().signal,
-                },
-              ),
-            );
-          assert.notEqual(hookDecision(yield* call("a__b")), "deny");
-          assert.equal(hookDecision(yield* call("write")), "deny");
-          assert.equal(hookDecision(yield* call("unlisted")), "deny");
-          assert.notEqual(hookDecision(yield* call("write", "sdk")), "deny");
-          // Startup names the launch servers once so a reload can remove them in place.
-          assert.equal(setMcpServers.mock.calls.length, 1);
-          setMcpServers.mockClear();
-          const reloaded = yield* adapter.reloadMcpConfig!({
-            threadId: THREAD_ID,
-            mcpServers: {
-              team__docs: {
-                type: "stdio",
-                command: "node",
-                enabledTools: [],
-                disabledTools: ["a__b"],
-              },
-            },
-          });
-          assert.equal(reloaded.converged, false);
-          assert.equal(reloaded.restartRequired, true);
-          assert.ok(reloaded.errors.some((error) => error.message.includes("tool deny list")));
-          assert.equal(setMcpServers.mock.calls.length, 1);
-          assert.equal(hookDecision(yield* call("a__b")), "deny");
-          assert.notEqual(hookDecision(yield* call("write")), "deny");
-          assert.notEqual(hookDecision(yield* call("unlisted")), "deny");
-          // Recovery uses the new list, but the current SDK query still needs a restart.
-          assert.deepEqual(options.disallowedTools, ["Agent", "Task", "mcp__team__docs__a__b"]);
-          const repeated = yield* adapter.reloadMcpConfig!({
-            threadId: THREAD_ID,
-            mcpServers: { team__docs: { type: "stdio", command: "node", disabledTools: ["a__b"] } },
-          });
-          assert.equal(repeated.restartRequired, true);
-          assert.equal(repeated.converged, false);
-        }).pipe(Effect.provide(harness.layer));
-      },
-    );
-  }
-
-  for (const change of ["removed", "disabled"] as const) {
-    for (const activeTurn of [false, true]) {
-      it.effect(`denies lingering ${change} MCP servers (active turn: ${activeTurn})`, () => {
-        const harness = makeHarness();
-        Object.assign(harness.query, {
-          setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
-        });
-        harness.query.mcpServerStatusValue = [
-          { name: "docs", status: "connected", source: "dynamic" },
-        ];
-        return Effect.gen(function* () {
-          const adapter = yield* ClaudeAdapter;
-          yield* adapter.startSession({
-            threadId: THREAD_ID,
-            runtimeMode: "full-access",
-            providerOptions: {
-              mcpServers: { docs: { type: "stdio", command: "node", enabledTools: ["read"] } },
-            },
-          });
-          if (activeTurn) yield* adapter.sendTurn({ threadId: THREAD_ID, input: "Read the docs" });
-          const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!
-            .hooks[0]!;
-          const call = (tool: string, source?: string) =>
-            Effect.promise(() =>
-              hook(
-                preToolUse(`mcp__docs__${tool}`, source ? { name: "docs", source } : undefined),
-                undefined,
-                { signal: new AbortController().signal },
-              ),
-            );
-          assert.notEqual(hookDecision(yield* call("read", "dynamic")), "deny");
-          assert.equal(hookDecision(yield* call("write", "dynamic")), "deny");
-          const result = yield* adapter.reloadMcpConfig!({
-            threadId: THREAD_ID,
-            mcpServers:
-              change === "removed"
-                ? {}
-                : {
-                    docs: {
-                      type: "stdio",
-                      command: "node",
-                      enabled: false,
-                      enabledTools: ["read"],
-                    },
-                  },
-          });
-          assert.equal(result.restartRequired, true);
-          for (const tool of ["read", "write"]) {
-            assert.equal(hookDecision(yield* call(tool, "dynamic")), "deny");
-            assert.equal(hookDecision(yield* call(tool)), "deny");
-          }
-          assert.notEqual(hookDecision(yield* call("write", "sdk")), "deny");
-        }).pipe(Effect.provide(harness.layer));
-      });
-    }
-  }
-
-  for (const rejectSet of [false, true]) {
-    it.effect(
-      `enforces narrowed and new MCP filters throughout provider I/O (reject set: ${rejectSet})`,
-      () => {
-        const harness = makeHarness();
-        const listEntered = Promise.withResolvers<void>();
-        const releaseList = Promise.withResolvers<void>();
-        const setEntered = Promise.withResolvers<void>();
-        const releaseSet = Promise.withResolvers<void>();
-        const external = { name: "external", status: "connected" as const, source: "plugin" };
-        harness.query.mcpServerStatusValue = [
-          { name: "docs", status: "connected", source: "dynamic" },
-          external,
-        ];
-        let reads = 0;
-        let watcherReads = 0;
-        let blockReads = false;
-        Object.assign(harness.query, {
-          mcpServerStatus: async () => {
-            watcherReads++;
-            if (blockReads && reads++ === 0) {
-              listEntered.resolve();
-              await releaseList.promise;
-            }
-            return harness.query.mcpServerStatusValue;
-          },
-          setMcpServers: async (servers: Record<string, unknown>) => {
-            assert.deepEqual(Object.keys(servers).sort(), ["docs", "new"]);
-            harness.query.mcpServerStatusValue = [
-              external,
-              ...Object.keys(servers).map((name) => ({
-                name,
-                status: "connected" as const,
-                source: "dynamic",
-              })),
-            ];
-            setEntered.resolve();
-            await releaseSet.promise;
-            if (rejectSet) throw new Error("reply failed after partial installation");
-            return { added: ["new"], removed: [], errors: {} };
-          },
-        });
-        return Effect.gen(function* () {
-          const adapter = yield* ClaudeAdapter;
-          yield* adapter.startSession({
-            threadId: THREAD_ID,
-            runtimeMode: "full-access",
-            providerOptions: { mcpServers: { docs: { type: "stdio", command: "node" } } },
-          });
-          yield* Effect.promise(() => vi.waitFor(() => assert.ok(watcherReads > 0)));
-          blockReads = true;
-          const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!
-            .hooks[0]!;
-          const call = (name: string, tool: string, source?: string) =>
-            Effect.promise(() =>
-              hook(
-                preToolUse(`mcp__${name}__${tool}`, source ? { name, source } : undefined),
-                undefined,
-                { signal: new AbortController().signal },
-              ),
-            );
-          const reload = yield* adapter.reloadMcpConfig!({
-            threadId: THREAD_ID,
-            mcpServers: {
-              docs: { type: "stdio", command: "node", enabledTools: ["read"] },
-              new: { type: "stdio", command: "node", enabledTools: ["read"] },
-              external: { type: "stdio", command: "node", enabledTools: ["read"] },
-            },
-          }).pipe(Effect.forkChild);
-          yield* Effect.promise(() => listEntered.promise);
-          assert.equal(hookDecision(yield* call("docs", "write", "dynamic")), "deny");
-          releaseList.resolve();
-          yield* Effect.promise(() => setEntered.promise);
-          for (const name of ["docs", "new"]) {
-            assert.equal(hookDecision(yield* call(name, "write", "dynamic")), "deny");
-            assert.equal(hookDecision(yield* call(name, "write")), "deny");
-            assert.notEqual(hookDecision(yield* call(name, "read", "dynamic")), "deny");
-          }
-          assert.notEqual(hookDecision(yield* call("external", "write", "plugin")), "deny");
-          assert.notEqual(hookDecision(yield* call("external", "write")), "deny");
-          releaseSet.resolve();
-          const result = yield* Fiber.join(reload);
-          assert.equal(result.restartRequired, rejectSet);
-          assert.equal(result.converged, !rejectSet);
-          assert.equal(hookDecision(yield* call("new", "write", "dynamic")), "deny");
-        }).pipe(
-          Effect.provide(harness.layer),
-          Effect.ensuring(
-            Effect.sync(() => {
-              releaseList.resolve();
-              releaseSet.resolve();
-            }),
-          ),
-        );
-      },
-    );
-  }
-
-  it.effect("rechecks MCP filters if they change while a native approval is open", () => {
-    const harness = makeHarness();
-    Object.assign(harness.query, {
-      setMcpServers: async () => ({ added: [], removed: [], errors: {} }),
-    });
-    harness.query.mcpServerStatusValue = [{ name: "docs", status: "connected", source: "dynamic" }];
-    return Effect.gen(function* () {
-      const adapter = yield* ClaudeAdapter;
-      yield* adapter.startSession({
-        threadId: THREAD_ID,
-        runtimeMode: "approval-required",
-        providerOptions: { mcpServers: { docs: { type: "stdio", command: "node" } } },
-      });
-      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
-      const pending = canUseTool(
-        "mcp__docs__read",
-        {},
-        permissionOptions("pending-read", { name: "docs", source: "dynamic" }),
-      );
-      const approval = yield* Stream.runHead(
-        adapter.streamEvents.pipe(Stream.filter((event) => event.type === "request.opened")),
-      );
-      assert.equal(approval._tag, "Some");
-      if (approval._tag !== "Some") return;
-      yield* adapter.reloadMcpConfig!({
-        threadId: THREAD_ID,
-        mcpServers: { docs: { type: "stdio", command: "node", disabledTools: ["read"] } },
-      });
-      yield* adapter.respondToRequest(
-        THREAD_ID,
-        ApprovalRequestId.makeUnsafe(approval.value.requestId!),
-        "accept",
-      );
-      const result = yield* Effect.promise(() => pending);
-      assert.equal(result?.behavior, "deny");
-      if (result?.behavior === "deny") assert.include(result.message, "F5 MCP settings");
-    }).pipe(Effect.provide(harness.layer));
-  });
-
   for (const removeAll of [false, true]) {
     it.effect(
       `preserves preview and computer servers through reload and recovery (remove all: ${removeAll})`,
@@ -1023,8 +751,8 @@ describe("ClaudeAdapter agent browser", () => {
             threadId: THREAD_ID,
             mcpServers: servers,
           });
-          assert.equal(reload.restartRequired, true);
-          assert.equal(reload.converged, false);
+          // Tool lists live in the hub, so no deny list forces a restart.
+          assert.equal(reload.restartRequired, false);
           for (const [name, config] of Object.entries(internal))
             assert.strictEqual(setPayloads[0]?.[name], config);
           assert.deepEqual(
@@ -1061,9 +789,8 @@ describe("ClaudeAdapter agent browser", () => {
           assert.deepEqual(harness.getLastCreateQueryInput()!.options.disallowedTools, [
             "Agent",
             "Task",
-            ...(removeAll ? [] : ["mcp__old__delete"]),
           ]);
-          // Once recovery actually installs the new deny list, the same reload converges.
+          // After recovery the same reload converges.
           const query = harness.queries[1]!;
           query.mcpServerStatusValue = [
             ...Object.keys(internal).map((name) => ({
@@ -1261,12 +988,12 @@ describe("ClaudeAdapter agent browser", () => {
       assert.equal(servers.f5_preview_2?.type, "sdk");
       assert.equal(servers.f5_preview_2?.timeout, 70_000);
       assert.notEqual(servers.f5_preview?.type, "sdk");
+      // The user's `f5_preview` is a hub endpoint with its own session token; F5's
+      // preview server carries no credential.
       const serialized = JSON.stringify({
         env: options.env,
         extraArgs: options.extraArgs,
-        servers: Object.fromEntries(
-          Object.entries(servers).map(([name, server]) => [name, { ...server, instance: null }]),
-        ),
+        preview: { ...servers.f5_preview_2, instance: null },
       });
       assert.equal(serialized.includes("F5_PREVIEW_MCP_TOKEN"), false);
       assert.equal(serialized.toLowerCase().includes("bearer"), false);
@@ -1385,90 +1112,17 @@ describe("ClaudeAdapter agent browser", () => {
         });
         assert.equal(harness.getLastCreateQueryInput()!.options.mcpServersDelivery, "argv");
         assert.equal(setMcpServers.mock.calls.length, 1);
+        // The hub keeps the servers' own secrets; only its endpoint tokens reach Claude,
+        // over the control channel rather than the command line.
         const startup = JSON.stringify(harness.getLastCreateQueryInput()!.options);
-        assert.equal(startup.includes("private-header-fixture"), false);
-        assert.equal(startup.includes("private-env-fixture"), false);
-        assert.equal(
-          JSON.stringify(setMcpServers.mock.calls).includes("private-header-fixture"),
-          true,
-        );
-        assert.equal(
-          JSON.stringify(setMcpServers.mock.calls).includes("private-env-fixture"),
-          true,
-        );
-      }).pipe(
-        Effect.ensuring(Effect.sync(() => rmSync(directory, { recursive: true, force: true }))),
-        Effect.provide(harness.layer),
-      );
-    },
-  );
-
-  it.effect(
-    "sends bearer variables only over the control channel and never reserved variables",
-    () => {
-      const directory = mkdtempSync(path.join(os.tmpdir(), "f5-claude-bearer-"));
-      const binaryPath = writeCliScript(
-        path.join(directory, "claude"),
-        `process.stdout.write("2.1.317 (Claude Code)\\n");`,
-      );
-      const harness = makeHarness({
-        processEnvironment: {
-          ...process.env,
-          DOCS_TOKEN: "  docs-bearer-fixture  ",
-          ANTHROPIC_API_KEY: "anthropic-key-fixture",
-        },
-      });
-      const setMcpServers = vi.fn(async () => ({ added: [], removed: [], errors: {} }));
-      Object.assign(harness.query, { setMcpServers });
-      const servers = {
-        docs: {
-          type: "http" as const,
-          url: "https://docs.example.invalid/mcp",
-          bearerTokenEnvVar: "DOCS_TOKEN",
-        },
-        browser: {
-          type: "http" as const,
-          url: "https://browser.example.invalid/mcp",
-          bearerTokenEnvVar: "F5_BROWSER_OPEN_TOKEN",
-        },
-        anthropic: {
-          type: "http" as const,
-          url: "https://anthropic.example.invalid/mcp",
-          bearerTokenEnvVar: "ANTHROPIC_API_KEY",
-        },
-      };
-      const delivered = (call: number) =>
-        (setMcpServers.mock.calls as unknown as Array<[Record<string, { headers?: object }>]>)[
-          call
-        ]![0];
-      return Effect.gen(function* () {
-        const adapter = yield* ClaudeAdapter;
-        yield* adapter.startSession({
-          threadId: THREAD_ID,
-          runtimeMode: "full-access",
-          providerOptions: { claudeAgent: { binaryPath }, mcpServers: servers },
-        });
-        assert.equal(harness.getLastCreateQueryInput()!.options.mcpServersDelivery, "argv");
-        // Launch MCP config becomes --mcp-config argv; the token must not be in it.
-        assert.equal(
-          JSON.stringify(harness.getLastCreateQueryInput()!.options.mcpServers ?? {}).includes(
-            "docs-bearer-fixture",
-          ),
-          false,
-        );
-        assert.deepEqual(delivered(0).docs?.headers, {
-          Authorization: "Bearer docs-bearer-fixture",
-        });
-        assert.equal(delivered(0).browser?.headers, undefined);
-        assert.equal(delivered(0).anthropic?.headers, undefined);
-        yield* adapter.reloadMcpConfig!({ threadId: THREAD_ID, mcpServers: servers });
-        const reloaded = delivered(setMcpServers.mock.calls.length - 1);
-        assert.deepEqual(reloaded.docs?.headers, { Authorization: "Bearer docs-bearer-fixture" });
-        assert.equal(reloaded.browser?.headers, undefined);
-        assert.equal(
-          JSON.stringify(setMcpServers.mock.calls).includes("anthropic-key-fixture"),
-          false,
-        );
+        const delivered = JSON.stringify(setMcpServers.mock.calls);
+        for (const text of [startup, delivered]) {
+          assert.equal(text.includes("private-header-fixture"), false);
+          assert.equal(text.includes("private-env-fixture"), false);
+        }
+        assert.equal(startup.includes("token-privateHttp"), false);
+        assert.equal(delivered.includes("token-privateHttp"), true);
+        assert.equal(delivered.includes("token-privateStdio"), true);
       }).pipe(
         Effect.ensuring(Effect.sync(() => rmSync(directory, { recursive: true, force: true }))),
         Effect.provide(harness.layer),
@@ -1634,14 +1288,16 @@ describe("ClaudeAdapter agent browser", () => {
       const hook = options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
       const canUseTool = options.canUseTool!;
       const sdk = { name: "f5_preview", source: "sdk" };
-      // Read-only stages run in plan mode: the hook leaves non-edit tools to native
-      // evaluation, which escalates them to canUseTool and its workflow policy.
-      const hookResponse = yield* Effect.promise(() =>
-        hook(preToolUse("mcp__f5_preview__preview_click", sdk), undefined, {
-          signal: new AbortController().signal,
-        }),
-      );
-      assert.equal("hookSpecificOutput" in hookResponse, false);
+      // The hook decides MCP tools itself: an allow rule for one would otherwise run it
+      // before canUseTool is asked.
+      const hookDecision = (tool: string) =>
+        Effect.promise(() =>
+          hook(preToolUse(`mcp__f5_preview__${tool}`, sdk), undefined, {
+            signal: new AbortController().signal,
+          }),
+        );
+      assert.equal("hookSpecificOutput" in (yield* hookDecision("preview_click")), true);
+      assert.equal("hookSpecificOutput" in (yield* hookDecision("preview_snapshot")), false);
       const decide = (toolName: string, input: Record<string, unknown> = {}, mcpServer = sdk) =>
         Effect.promise(() =>
           canUseTool(
@@ -3011,6 +2667,182 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("turns off hooks and project MCP servers only in read-only stages", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const readOnly = harness.getLastCreateQueryInput()!.options;
+      assert.equal(
+        (readOnly.settings as { disableAllHooks?: boolean } | undefined)?.disableAllHooks,
+        true,
+      );
+      assert.equal(readOnly.strictMcpConfig, hasClaudeManagedMcpConfig() ? undefined : true);
+      // A skill's inline shell commands run with no tool call for F5's hook to refuse.
+      assert.equal(
+        (readOnly.settings as { disableSkillShellExecution?: boolean } | undefined)
+          ?.disableSkillShellExecution,
+        true,
+      );
+      // The classifier approves `git status`, which must not refresh the index.
+      assert.equal(readOnly.env?.GIT_OPTIONAL_LOCKS, "0");
+      yield* adapter.stopSession(THREAD_ID);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const normal = harness.getLastCreateQueryInput()!.options;
+      assert.equal(
+        (normal.settings as { disableAllHooks?: boolean } | undefined)?.disableAllHooks,
+        undefined,
+      );
+      assert.equal(
+        (normal.settings as { disableSkillShellExecution?: boolean } | undefined)
+          ?.disableSkillShellExecution,
+        undefined,
+      );
+      assert.equal(normal.env?.GIT_OPTIONAL_LOCKS, undefined);
+      assert.equal(normal.strictMcpConfig, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "refuses a read-only stage on an executable that can't block a tool when the hook fails",
+    () => {
+      const directory = mkdtempSync(path.join(os.tmpdir(), "f5-claude-readonly-runtime-"));
+      const olderBinary = writeCliScript(
+        path.join(directory, "claude-older"),
+        `process.stdout.write("2.1.316 (Claude Code)\\n");`,
+      );
+      const currentBinary = writeCliScript(
+        path.join(directory, "claude-current"),
+        `process.stdout.write("2.1.317 (Claude Code)\\n");`,
+      );
+      const harness = makeHarness();
+      const start = (binaryPath: string, readOnly: boolean) =>
+        Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          return yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            providerOptions: { claudeAgent: { binaryPath } },
+            ...(readOnly ? { workflowExecutionProfile: "unattended-readonly" as const } : {}),
+          });
+        });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        // Without `onFailure: "block"` a hook that times out lets an allow rule decide.
+        const error = yield* start(olderBinary, true).pipe(Effect.flip);
+        assert.ok(Schema.is(ProviderAdapterValidationError)(error));
+        assert.include(error.message, "Claude can't run read-only workflow stages");
+        assert.include(error.message, "it reports version 2.1.316");
+        assert.include(error.message, "needs Claude Code 2.1.317 or later");
+        assert.equal(harness.getLastCreateQueryInput(), undefined);
+
+        // The same executable still runs sessions that are not read-only stages.
+        yield* start(olderBinary, false);
+        assert.equal(
+          harness.getLastCreateQueryInput()!.options.hooks?.PreToolUse?.at(-1)?.onFailure,
+          undefined,
+        );
+        yield* adapter.stopSession(THREAD_ID);
+
+        yield* start(currentBinary, true);
+        assert.equal(
+          harness.getLastCreateQueryInput()!.options.hooks?.PreToolUse?.at(-1)?.onFailure,
+          "block",
+        );
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(directory, { recursive: true, force: true }))),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect(
+    "starts read-only stages whatever a folder's allow rules say, but not past a command setting",
+    () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), "f5-claude-ro-config-"));
+      const repo = path.join(root, "repo");
+      const configDir = path.join(root, "claude-config");
+      mkdirSync(path.join(repo, ".claude"), { recursive: true });
+      mkdirSync(configDir, { recursive: true });
+      execFileSync("git", ["init", "-q", repo]);
+      writeFileSync(
+        path.join(configDir, ".claude.json"),
+        JSON.stringify({ projects: { [repo]: { hasTrustDialogAccepted: true } } }),
+      );
+      const settingsFile = path.join(repo, ".claude", "settings.json");
+      // The mandatory hook refuses these before an allow rule applies, so they block nothing.
+      const allowRules = { permissions: { allow: ["Write", "Bash(python3:*)", "Bash(touch:*)"] } };
+      writeFileSync(settingsFile, JSON.stringify(allowRules));
+      execFileSync("git", ["-C", repo, "add", ".claude/settings.json"]);
+      const harness = makeHarness({
+        processEnvironment: { ...process.env, CLAUDE_CONFIG_DIR: configDir, HOME: root },
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          cwd: repo,
+          workflowExecutionProfile: "unattended-readonly",
+        });
+        yield* adapter.sendTurn({ threadId: session.threadId, input: "Review", attachments: [] });
+
+        // A setting that runs a program outside tool calls never reaches the hook.
+        writeFileSync(
+          settingsFile,
+          JSON.stringify({
+            ...allowRules,
+            statusLine: { type: "command", command: "./status.sh" },
+          }),
+        );
+        const turnError = yield* adapter
+          .sendTurn({ threadId: session.threadId, input: "Review", attachments: [] })
+          .pipe(Effect.flip);
+        assert.ok(Schema.is(ProviderAdapterValidationError)(turnError));
+        assert.include(turnError.message, `${settingsFile} sets \`statusLine\``);
+        yield* adapter.stopSession(THREAD_ID);
+
+        const startError = yield* adapter
+          .startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+            cwd: repo,
+            workflowExecutionProfile: "unattended-readonly",
+          })
+          .pipe(Effect.flip);
+        assert.include(startError.message, "Claude can't run read-only workflow stages here");
+        // Normal sessions keep the folder's own settings.
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          cwd: repo,
+        });
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => rmSync(root, { recursive: true, force: true }))),
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("warns once per reported credential expiry in a session", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -3527,7 +3359,73 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("leaves Bash to native plan-mode evaluation in read-only workflows", () => {
+  it.effect("refuses a writing shell command in the mandatory hook and records why", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: ProviderRuntimeEvent[] = [];
+      const listener = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const hook = harness.getLastCreateQueryInput()!.options.hooks!.PreToolUse!.at(-1)!.hooks[0]!;
+      // An allow rule such as `Bash(touch:*)` would run this before canUseTool is asked.
+      const response = yield* Effect.promise(() =>
+        hook(
+          {
+            hook_event_name: "PreToolUse",
+            session_id: "native",
+            cwd: "/tmp",
+            transcript_path: "/tmp/transcript",
+            tool_name: "Bash",
+            tool_input: { command: "touch marker" },
+            tool_use_id: "workflow-bash-write-hook",
+          },
+          undefined,
+          { signal: new AbortController().signal },
+        ),
+      );
+      assert.ok("hookSpecificOutput" in response);
+      const output = response.hookSpecificOutput;
+      assert.equal(output?.hookEventName, "PreToolUse");
+      if (output?.hookEventName === "PreToolUse") {
+        assert.equal(output.permissionDecision, "deny");
+        assert.include(
+          output.permissionDecisionReason ?? "",
+          "`touch` is not on the read-only allowlist",
+        );
+      }
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.ok(
+            events.some(
+              (event) => event.type === "request.resolved" && event.payload.decision === "decline",
+            ),
+          ),
+        ),
+      );
+      const opened = events.filter((event) => event.type === "request.opened");
+      assert.equal(opened.length, 1);
+      const payload = opened[0]?.type === "request.opened" ? opened[0].payload : undefined;
+      // Counted toward the stage's refusal limit, with the reason the timeline shows.
+      assert.equal(payload?.autoDeclined, true);
+      assert.include(payload?.detail ?? "", "touch marker");
+      assert.include(payload?.detail ?? "", "(`touch` is not on the read-only allowlist)");
+      yield* Fiber.interrupt(listener);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("passes a reading shell command through the mandatory hook", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -4914,9 +4812,15 @@ describe("ClaudeAdapterLive", () => {
       const read = yield* Effect.promise(() =>
         canUseTool("Read", { file_path: "src/a.ts" }, options),
       );
+      const shellReads = yield* Effect.all(
+        ["rg -n workflow src", "git show HEAD:README.md | nl -ba"].map((command) =>
+          Effect.promise(() => canUseTool("Bash", { command }, options)),
+        ),
+      );
       const shellProbes = yield* Effect.all(
         [
-          "rg -n workflow src",
+          "touch pwned",
+          "python3 -c 'print(1)'",
           "cat README.md & touch pwned",
           "git status & rm -rf ./src",
           "cat `touch pwned`",
@@ -4932,10 +4836,20 @@ describe("ClaudeAdapterLive", () => {
         canUseTool("AskUserQuestion", { questions: [] }, options),
       );
       assert.equal(read?.behavior, "allow");
+      assert.deepEqual(
+        shellReads.map((result) => result?.behavior),
+        ["allow", "allow"],
+      );
       assert.equal(
         shellProbes.every((result) => result?.behavior === "deny"),
         true,
       );
+      const refused = shellProbes[0];
+      assert.equal(refused?.behavior, "deny");
+      if (refused?.behavior === "deny") {
+        assert.include(refused.message, "`touch` is not on the read-only allowlist");
+        assert.include(refused.message, "Do not retry it");
+      }
       assert.equal(misleadingMcp?.behavior, "deny");
       assert.equal(webSearch?.behavior, "deny");
       assert.equal(question?.behavior, "deny");
@@ -17534,4 +17448,204 @@ it.effect("settles the exact persisted native task run when its session stops", 
     if (completed.type === "task.completed") assert.equal(completed.payload.runId, "run-2");
     yield* Fiber.interrupt(listener);
   }).pipe(Effect.provide(h.layer));
+});
+
+describe("F5 MCP hub", () => {
+  const hubServers = {
+    docs: {
+      type: "stdio" as const,
+      command: "node",
+      args: ["docs.js"],
+      env: { DOCS_TOKEN: "secret-value" },
+      toolTimeoutSec: 120,
+    },
+  };
+
+  it.effect("hands Claude loopback hub endpoints instead of the servers themselves", () => {
+    const fakeHub = makeFakeMcpHub();
+    const harness = makeHarness({ mcpHub: fakeHub.hub, cwd: "/tmp/claude-hub-cwd" });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const threadId = ThreadId.makeUnsafe("claude-hub");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        cwd: "/tmp/claude-hub-cwd",
+        providerOptions: { mcpServers: hubServers },
+      });
+      const attach = fakeHub.attaches.at(-1)!;
+      assert.equal(attach.provider, "claudeAgent");
+      assert.equal(attach.cwd, "/tmp/claude-hub-cwd");
+      assert.deepEqual(Object.keys(attach.servers ?? {}), ["docs"]);
+      const launched = harness.getLastCreateQueryInput()!.options.mcpServers ?? {};
+      assert.deepEqual(launched["docs"], {
+        type: "http",
+        url: "http://127.0.0.1:9/mcp/user/docs",
+        headers: { Authorization: "Bearer token-docs" },
+        // The provider waits for the hub's own tool timeout plus F5's approval wait.
+        timeout: 1_205_000,
+      });
+      assert.notInclude(JSON.stringify(launched), "secret-value");
+      yield* adapter.stopSession(threadId);
+      assert.equal(fakeHub.disposed, 1);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("applies edits, removals and new servers through the hub without a restart", () => {
+    const fakeHub = makeFakeMcpHub();
+    const harness = makeHarness({ mcpHub: fakeHub.hub });
+    const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => ({
+      added: Object.keys(servers),
+      removed: [],
+      errors: {},
+    }));
+    Object.assign(harness.query, { setMcpServers });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const threadId = ThreadId.makeUnsafe("claude-hub-reload");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: hubServers },
+      });
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "dynamic" },
+      ];
+      yield* adapter.reloadMcpConfig!({
+        threadId,
+        mcpServers: {
+          docs: { ...hubServers.docs, args: ["docs.js", "--v2"] },
+          search: { type: "http", url: "https://search.example/mcp" },
+        },
+      });
+      assert.equal(fakeHub.updates.length, 1);
+      const payload = setMcpServers.mock.calls.at(-1)![0] as Record<string, { url?: string }>;
+      assert.deepEqual(Object.keys(payload).toSorted(), ["docs", "search"]);
+      assert.equal(payload["docs"]?.url, "http://127.0.0.1:9/mcp/user/docs");
+      assert.equal(payload["search"]?.url, "http://127.0.0.1:9/mcp/user/search");
+
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "dynamic" },
+        { name: "search", status: "connected", source: "dynamic" },
+      ];
+      yield* adapter.reloadMcpConfig!({
+        threadId,
+        mcpServers: { search: { type: "http", url: "https://search.example/mcp" } },
+      });
+      const afterRemoval = setMcpServers.mock.calls.at(-1)![0];
+      assert.deepEqual(Object.keys(afterRemoval), ["search"]);
+      assert.equal(fakeHub.attaches.length, 1);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("leaves tool filters to the hub and unbinds a server Claude kept for its own", () => {
+    const fakeHub = makeFakeMcpHub({
+      omitted: [{ serverName: "later", reason: "needs ${env:LATER_TOKEN}, which is not set" }],
+    });
+    const harness = makeHarness({ mcpHub: fakeHub.hub });
+    const setMcpServers = vi.fn(async (servers: Record<string, unknown>) => ({
+      added: Object.keys(servers),
+      removed: [],
+      errors: {},
+    }));
+    Object.assign(harness.query, { setMcpServers });
+    const filtered = { docs: { ...hubServers.docs, disabledTools: ["write"] } };
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const threadId = ThreadId.makeUnsafe("claude-hub-filters");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: filtered },
+      });
+      // The hub hides turned-off tools; a launch deny list would outlive a re-enable.
+      const launchedDenied = harness.getLastCreateQueryInput()!.options.disallowedTools ?? [];
+      assert.isFalse(launchedDenied.some((name) => name.startsWith("mcp__docs__")));
+
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "dynamic" },
+      ];
+      const reEnabled = yield* adapter.reloadMcpConfig!({
+        threadId,
+        mcpServers: { docs: hubServers.docs },
+      });
+      assert.isFalse(reEnabled.restartRequired);
+      // Left-out servers are named in the Apply result.
+      assert.isTrue(reEnabled.errors.some((error) => error.server === "later"));
+      assert.deepEqual(fakeHub.declined, []);
+
+      // A plugin server now holds the name: Claude keeps it, and F5's endpoint is unbound.
+      harness.query.mcpServerStatusValue = [
+        { name: "docs", status: "connected", source: "plugin" },
+      ];
+      yield* adapter.reloadMcpConfig!({ threadId, mcpServers: { docs: hubServers.docs } });
+      assert.deepEqual(fakeHub.declined, ["docs"]);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  for (const workflowExecutionProfile of ["attended-readonly", "unattended-readonly"] as const)
+    it.effect(
+      `denies a mutating Ask-policy hub tool in a ${workflowExecutionProfile} stage`,
+      () => {
+        const fakeHub = makeFakeMcpHub({ asksBeforeCall: () => true });
+        const harness = makeHarness({ mcpHub: fakeHub.hub });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: ThreadId.makeUnsafe(`claude-hub-${workflowExecutionProfile}`),
+            runtimeMode: "full-access",
+            workflowExecutionProfile,
+            providerOptions: { mcpServers: hubServers },
+          });
+          const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+          const response = yield* Effect.promise(() =>
+            canUseTool("mcp__docs__write", {}, {
+              signal: new AbortController().signal,
+              toolUseID: "hub-write",
+              requestId: "request-hub-write",
+              mcpServer: { name: "docs", source: "dynamic" },
+            } as Parameters<typeof canUseTool>[2]),
+          );
+          // F5's own approval card would otherwise stand in for the read-only stage's denial.
+          assert.equal(response?.behavior, "deny");
+        }).pipe(Effect.provide(harness.layer));
+      },
+    );
+
+  it.effect("lets F5's hub ask instead of Claude for an Ask-policy tool", () => {
+    const fakeHub = makeFakeMcpHub({ asksBeforeCall: (_server, tool) => tool === "write" });
+    const harness = makeHarness({ mcpHub: fakeHub.hub });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: ThreadId.makeUnsafe("claude-hub-ask"),
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: hubServers },
+      });
+      const canUseTool = harness.getLastCreateQueryInput()!.options.canUseTool!;
+      const response = yield* Effect.promise(() =>
+        canUseTool("mcp__docs__write", {}, {
+          signal: new AbortController().signal,
+          toolUseID: "hub-ask",
+          requestId: "request-hub-ask",
+          mcpServer: { name: "docs", source: "dynamic" },
+        } as Parameters<typeof canUseTool>[2]),
+      );
+      assert.equal(response?.behavior, "allow");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("never gives Claude configured servers without F5's hub", () => {
+    const harness = makeHarness({ mcpHub: null });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: ThreadId.makeUnsafe("claude-no-hub"),
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: hubServers },
+      });
+      const launched = harness.getLastCreateQueryInput()!.options.mcpServers ?? {};
+      assert.equal(launched["docs"], undefined);
+    }).pipe(Effect.provide(harness.layer));
+  });
 });

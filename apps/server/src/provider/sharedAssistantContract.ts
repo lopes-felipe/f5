@@ -8,9 +8,11 @@ import {
 } from "@t3tools/contracts";
 import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
-export const SHARED_ASSISTANT_CONTRACT_VERSION = "v7";
+import { READ_ONLY_SHELL_GUIDE, READ_ONLY_SHELL_GUIDE_WITH_REASONS } from "./readOnlyShellGuide.ts";
+
+export const SHARED_ASSISTANT_CONTRACT_VERSION = "v8";
 export const CODEX_SUPPLEMENT_VERSION = "v4";
-export const CLAUDE_SUPPLEMENT_VERSION = "v14";
+export const CLAUDE_SUPPLEMENT_VERSION = "v15";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
 const PROJECT_MEMORY_MAX_LINES = 200;
 const PROJECT_MEMORY_MAX_BYTES = 25_000;
@@ -24,8 +26,16 @@ export interface InstructionProfile {
 export type SharedInstructionInput = {
   readonly interactionMode?: ProviderInteractionMode;
   readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
-  /** Recorded on the binding for read-only stages: how the stage is kept read-only. */
+  /**
+   * Recorded on the binding for read-only stages: the enforcement F5 requested, which a recovered
+   * session requests again. What Codex actually applies can differ (`codexReadOnlyEscalation`).
+   */
   readonly readOnlyEnforcement?: ReadOnlyEnforcement;
+  /**
+   * Set by the Codex manager for a read-only stage that ended up in "ask on escalation" mode, the
+   * only mode where the model must escalate commands the sandbox can't run.
+   */
+  readonly codexReadOnlyEscalation?: boolean;
   readonly runtimeMode?: RuntimeMode;
   readonly projectTitle?: string;
   readonly threadTitle?: string;
@@ -752,6 +762,20 @@ function buildWorkflowHostContract(
 }
 
 /**
+ * The shell rules for a read-only stage that F5's command classifier enforces (`policy`), or
+ * undefined: a sandboxed Codex stage runs whatever its sandbox lets through. Only Codex uses
+ * this, as a context entry. Cursor and Antigravity classify every command in either mode and
+ * have no instruction channel, so their gate is `acpReadOnlyShellGuide`.
+ */
+export function buildReadOnlyShellGuide(
+  input: Pick<SharedInstructionInput, "workflowExecutionProfile" | "readOnlyEnforcement">,
+): string | undefined {
+  return input.workflowExecutionProfile && input.readOnlyEnforcement === "policy"
+    ? READ_ONLY_SHELL_GUIDE
+    : undefined;
+}
+
+/**
  * Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`.
  *
  * Only the mode prompt belongs here: when the model catalog ships its own text
@@ -827,10 +851,10 @@ export function splitUtf8Chunks(text: string, maxBytes: number, level = 0): stri
  * into zero-padded `_01`, `_02`, ... keys so they keep their order.
  */
 /**
- * Sent to a policy-enforced Codex read-only stage. Where Codex's sandbox can't start, Codex asks
- * to rerun only its own safe commands outside it; any other command fails unless the model
- * escalates it (docs/reviews/cursor-live-gates.md, gate G3b). Harmless when Codex asks before
- * every command anyway.
+ * Sent to a Codex read-only stage in "ask on escalation" mode. Where Codex's sandbox can't start,
+ * Codex asks to rerun only its own safe commands outside it; any other command fails unless the
+ * model escalates it (docs/reviews/read-only-live-gates.md, gate G3b). Not sent in the sandbox
+ * fallback, which refuses every escalation, nor when Codex asks before every command.
  */
 export const CODEX_READ_ONLY_ESCALATION_HINT =
   'If a shell command fails because the sandbox can\'t start, rerun it with `sandbox_permissions: "require_escalated"` and a short justification; F5 approves read-only commands and refuses the rest.';
@@ -847,10 +871,11 @@ export function buildCodexAdditionalContext(
     ["f5_workflow_contract", buildWorkflowHostContract(input.workflowExecutionProfile)],
     [
       "f5_workflow_escalation",
-      input.workflowExecutionProfile && input.readOnlyEnforcement === "policy"
+      input.workflowExecutionProfile && input.codexReadOnlyEscalation
         ? CODEX_READ_ONLY_ESCALATION_HINT
         : undefined,
     ],
+    ["f5_workflow_shell", buildReadOnlyShellGuide(input)],
   ];
   const context: Record<string, CodexAdditionalContextEntry> = {};
   for (const [key, value] of sections) {
@@ -904,6 +929,8 @@ export function buildClaudeAssistantInstructions(input: SharedInstructionInput):
     CLAUDE_SUPPLEMENT,
     CLAUDE_DEFAULT_MODE_INSTRUCTIONS,
     buildWorkflowHostContract(input.workflowExecutionProfile),
+    // Claude has no sandbox for a read-only stage: F5's classifier decides every shell command.
+    input.workflowExecutionProfile ? READ_ONLY_SHELL_GUIDE_WITH_REASONS : undefined,
   ]
     .filter((section): section is string => section !== undefined)
     .join("\n\n");

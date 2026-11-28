@@ -25,8 +25,31 @@ submodules, running the project setup script and starting the agent. The message
 checkout and submodules are ready. Setup scripts run in the background unless you enable **Agent
 waits**; a failed script is reported on the card and the agent still starts.
 
-From the card you can **Cancel**, **Retry** after a failure, **Work locally** to send the message
-in the project root instead, or **Discard** a failed setup to get your message back as a draft.
+While setup runs, the card offers **Cancel**. If setup fails, it offers **Retry**, **Continue in
+Local** to send the message in the project folder instead, and **Discard message** to get your
+message back as a draft.
+
+Setup carries on by itself where it can:
+
+- If F5 restarts before the agent started, setup resumes from where it stopped. Checkout and
+  submodules that already finished are not repeated; submodules that were cut off are
+  initialized again.
+- A background setup script that a restart cut off is not run again, because F5 cannot tell how
+  far it got. The card marks it "interrupted by a restart", the agent starts regardless, and
+  **Rerun setup script** runs it again when you want. With **Agent waits** on, F5 reruns the
+  script once by itself; a second interruption fails the setup and waits for **Retry**.
+- A setup that resumes by itself never runs a setup command you edited in the meantime. It
+  stops and waits for **Retry**, which is what accepts the new command.
+- In a project made of several repositories, a setup script that a restart cut off is never
+  run again unasked: a background script is left alone, and with **Agent waits** on the setup
+  waits for **Retry**. **Rerun setup script** is not available there; run the script in a
+  terminal.
+- **Rerun setup script** also appears after a setup script fails. It runs the script in the
+  worktree the agent is already using, without holding the thread.
+- **Stop script** stops a setup script that is still running after the agent started, including
+  one you asked to run again. The agent keeps the worktree.
+- If another F5 window is using the repository, checkout waits and tries again up to three
+  times before the setup fails.
 
 ## Automatic cleanup
 
@@ -39,35 +62,64 @@ the action F5 would take or why it would skip it. **Recent activity** shows what
 
 ## Removing worktrees and missing checkouts
 
-Deleting conversations opens one removal dialog for their worktrees. Unsafe rows are disabled, and
-**Keep all** leaves every checkout in place. Branch deletion is optional and preselected only for
-merged branches.
+When you delete threads, F5 removes their worktrees without asking when that loses nothing, and
+a toast says "Removed N worktrees · branches kept". A worktree is removed this way only when all
+of this holds:
 
-Manual removal lists every ignored file and folder, including build outputs and local configuration.
-This deliberately includes `node_modules/`: manual removal requires confirmation even when that is
-the only ignored folder. Confirm each checkout separately, including in bulk conversation deletion.
-Check **Also delete the ignored files and folders listed above** to include them in removal.
-Deleting a listed folder deletes everything inside it. If a removal recheck finds another ignored
-path, the dialog refreshes the list and requires confirmation again. An incomplete list blocks removal.
+- Its tree is clean: no uncommitted or untracked files.
+- No thread that still exists uses it, archived ones included, and nothing else blocks removal
+  (a running turn, an open terminal, initialized submodules, a detached HEAD, a worktree group).
+- Its only ignored files are build and cache output that a build brings back, such as
+  `node_modules/`, `dist/` or `.turbo/`. This is the same list automatic cleanup uses. F5 looks
+  inside those folders first: a `dist/` that holds a `.env` file, a database, a key or a
+  credentials file is not build output, and neither is a folder too large to check.
 
-If a thread's worktree goes missing, F5 never quietly moves the thread into the project checkout.
-Use **Recreate now** (the branch still exists), **Recreate from the default branch** (it doesn't),
-or **Continue in Local** (the project folder). The thread header offers the same choices:
-**Recreate worktree**, with **Recreate from `<default branch>`** and **Continue in Local** in its
-menu. An archived thread's header shows **Worktree removed** instead; unarchive the thread to
-recreate it. A checkout found on a different branch is kept untouched and blocked until you
-restore the branch or choose a recovery action.
+The server checks all of it again under its locks immediately before removing, including that
+no thread started using the worktree in the meantime, and it never deletes the branch, so
+nothing committed is lost.
 
-When the thread's own worktree only switched branches (for example, the agent ran `git checkout`),
-the banner names both branches. **Use `<branch>`** points the thread at the branch the worktree is
-on now, and works while a turn is running. **Switch back to `<branch>`** checks out the recorded
-branch again, like any in-place branch switch. It needs a clean worktree on a branch (not a
-detached HEAD), no Git operation in progress, no running or pending turn, and no other
-conversation, terminal, or profile using the checkout. If the agent switched to a regular branch
-during a turn, the thread follows that branch automatically when the turn ends. Recreate and
-project checkout move under **More options**. Messages steered into the
-running turn, including answers to its questions, are still delivered because that turn keeps
-working in the same folder. New turns wait until the branch is resolved.
+Every other worktree is shown in one removal dialog. Unsafe rows are disabled, and **Keep all**
+leaves every worktree in place. Branch deletion is optional and preselected only for merged
+branches. The dialog lists every ignored file and folder. Build and cache output goes with the
+worktree. Anything else, such as `.env` or a local database, needs **Also delete the ignored files
+and folders listed above**, per worktree; deleting a listed folder deletes everything inside it.
+If a removal recheck finds another ignored path, the dialog refreshes the list and asks again. An
+incomplete list blocks removal. **Remove worktree…** in the picker and **Remove…** on the
+Worktrees page always open this dialog.
+
+If a thread's worktree is not on disk, your next message restores it. Nothing asks first, and the
+thread's timeline says what was done. Until then the thread header shows **Worktree restores on
+send** (**Worktree removed** on an archived thread: unarchive it and send a message). When F5
+has to ask first, the header says **Worktree not on disk** and the card above the composer asks.
+
+| What F5 finds                                                           | What it does                                                                                 | Timeline note                                              |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| The folder is gone, the branch exists                                   | Recreates the worktree in the same folder, on that branch                                    | "Worktree restored on `<branch>`"                          |
+| The folder and the local branch are gone, a remote still has the branch | Recreates the worktree in the same folder from the remote copy, following it                 | "Worktree restored on `<branch>` from `origin/<branch>`"   |
+| The folder and the branch are gone everywhere                           | Recreates the worktree in the same folder from the default branch, reusing the branch's name | "`<branch>` no longer existed; recreated from `main` at …" |
+| The folder now holds something else                                     | Puts the branch in a new folder; the old folder and its files are left untouched             | "Worktree moved to `<folder>`"                             |
+| Another checkout has the branch                                         | Asks: **Continue there** or **New worktree** (which starts from that branch)                 |                                                            |
+| Nothing to restore from, or Git fails twice in a row                    | Asks: **Try again** or **Continue in Local**, with Git's reason                              |                                                            |
+
+The remote copy is the one your repository already knows; nothing is fetched. **Continue there**
+is offered only when the other checkout is the project folder or a worktree F5 manages, and the
+card says how many other threads already use it. Cancelling a restore leaves your message
+waiting; it does not start again until you choose **Try again** or send again. A message that
+was already waiting on a missing worktree when F5 started stays waiting until you choose.
+
+F5 never moves a thread into the project folder on its own. When it has to ask, it asks in one
+place: a single card above the composer with the message and its actions. The same card shows
+one line while a worktree is being created, restored or switched (with **Cancel** where that is
+possible) and the setup stages of a first send. It is the only workspace notice there; the queue
+below it does not repeat it.
+
+A thread follows its folder, not a branch. When the agent runs `git checkout`, a rebase leaves a
+detached HEAD, or you switch branches in a terminal, nothing is blocked and nothing asks: the next
+message is sent, the workspace picker shows the branch the folder is on now (or
+`<branch> · detached`), and the timeline notes "Now on `<branch>` (was `<branch>`)". A switch made
+during a turn is recorded once, when the turn ends. Local threads follow the project folder the
+same way when their own turn starts or ends. To go back, use **Switch branch here…** in the
+picker. The branch a thread last saw is what a removed worktree is recreated from.
 
 ## Auto-pull and backups
 
@@ -81,11 +133,13 @@ Restoring a backup takes effect on restart.
 > [!NOTE]
 > F5 never removes a worktree that has uncommitted or untracked files, initialized submodules,
 > an open terminal or provider session, queued turns,
-> or an active turn in another conversation using it. Automatic cleanup always keeps the branch,
-> so the next message recreates the worktree. Automatic cleanup removes ignored files only when
-> they are well-known build or cache output such as `node_modules/`, `dist/` or `.turbo/`. Any
-> other ignored file, such as `.env`, `.envrc`, a private key or a local database, keeps the
-> worktree; deleting it requires confirmation through manual removal.
+> or an active turn in another conversation using it. Automatic cleanup, and the silent removal
+> after deleting a thread, always keep the branch, so the next message recreates the worktree.
+> (In the removal dialog you can choose to delete the branch too.) Both remove ignored files only
+> when they are well-known build or cache output such as `node_modules/`, `dist/` or `.turbo/`,
+> and only after looking inside those folders. Any other ignored file, such as `.env`, `.envrc`,
+> a private key or a local database, keeps the worktree, also when it sits inside a build folder;
+> deleting it requires confirmation in the removal dialog.
 
 - Cleanup and auto-pull can be set per project, but never from a checked-in `f5.json`.
 - If F5 restarts mid-setup, the setup shows as failed and nothing is removed.
@@ -133,9 +187,10 @@ Each model in a multi-model send gets its own allocation.
 checkout, so a repeated request reuses its receipt and completed preparation never runs twice.
 Recreating a missing checkout initializes submodules and runs the opted-in setup script unless
 setup was explicitly skipped; checkouts older than receipts are never prepared again
-automatically. A restart during a setup script leaves preparation indeterminate, and **Retry**
-asks you to confirm rerunning the script. A changed checkout, repository identity or conflicting
-request is kept for inspection.
+automatically. A restart during a setup script does not hold the thread: a background script is
+reported as interrupted and left for **Rerun setup script**, and a script the agent waits for is
+run again once (see [Worktree setup](#worktree-setup)). A changed checkout, repository identity or
+conflicting request is kept for inspection.
 
 **Kept on disk.** Cancel and rollback keep checkouts with ignored files created by setup (such as
 `.env` or a local database) and report them as retained artifacts. Legacy worktrees with
@@ -148,9 +203,10 @@ never deleted recursively. Paths are preserved exactly, including whitespace.
 
 Changing an established conversation's workspace stops its idle provider session before
 switching. Active or pending turns, queued work, native operations, and setup owners block
-switching. A paused missing-worktree message can still use recovery. Switching has its own
-durable barrier: queue resume, promotion, setup retry, and reconnect cannot bypass it.
-Manual pauses remain paused after switching.
+switching. A message waiting on a worktree that could not be restored can still use the
+actions on its card. While a switch is
+running, queue resume, promotion, setup retry, and reconnect cannot bypass it; once it ends,
+nothing is held. Manual pauses remain paused after switching.
 
 A project's workspace root cannot be changed while it has any non-deleted conversations,
 including archived ones. That root is the effective workspace of local conversations; changing
@@ -167,24 +223,27 @@ conversations already use it, and picking the row is the confirmation.
 
 Changing a branch in place is blocked only by live use: another conversation's running or
 pending turn, queued work, worktree setup or workspace transition, an agent session that is
-starting or running, an open terminal (yours included), or another profile's reference. In the
-project folder, idle and archived local conversations do not block it; they show whatever branch
-the folder is on. A new turn waits for a switch that is already under way and then starts on the
-new branch. A managed worktree keeps the stricter rule, because its conversations record a
-branch: any other conversation using it, or an open agent session, also blocks the switch. The
-same applies to a conversation that records a worktree at a path that is also a project's folder.
-A refused switch names the conversations and what they are doing; use a separate worktree
-instead.
+starting or running, an open terminal (yours included), or another profile's reference. Idle and
+archived conversations never block it, in the project folder or in a worktree: they follow
+whatever branch their folder is on. A new turn waits for a switch that is already under way and
+then starts on the new branch. A refused switch names the conversations and what they are doing;
+use a separate worktree instead.
 
-Interrupted switches keep their checkout and block sending until resolved. Choose
-**Inspect workspace** to see the actual branch, commit, and path. **Accept inspected
-workspace** adopts that verified checkout; **Keep original workspace** works only when
-the original checkout still matches its recorded identity. Neither action restores or
-discards files. **Continue in Local** adopts the inspected project root and retains the old checkout,
-including when recreation failed before creating any directory. **Retry** is available only when
-no Git mutation could have occurred.
-If the checkout changes after inspection, inspect again before accepting it.
-Archiving or deleting the conversation cancels its switch and keeps checkout files.
+A switch that fails, is cancelled, or is cut off by a restart settles itself: there is nothing
+to inspect or resolve, and sending is never blocked afterwards. The conversation is always in
+either its old workspace or the new one, and no files are restored or discarded.
+
+| Switch                                    | How it settles                                                                                                                                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| To another worktree or the project folder | The conversation moved only if the switch was recorded; otherwise it stays where it was                                                                                                          |
+| To another branch in place                | The folder is the same either way. If Git reached the branch, the conversation records it; if not, it keeps following whatever branch the folder is on                                           |
+| Restoring a missing worktree              | If the worktree is back, the conversation uses it, even when a later step such as setup failed. If it is not, the next message restores it                                                       |
+| Moving to a new worktree                  | Rolled back as described under [Move a local conversation to a worktree](#move-a-local-conversation-to-a-worktree); a copy that cannot be proven disposable is kept and named, and holds nothing |
+
+When a switch ends unfinished, the action that started it reports the reason, and a switch
+that was cut off, or that had to keep a folder, leaves a note in the conversation's timeline.
+Start the switch again whenever you like. Archiving or deleting the conversation cancels its
+switch and keeps checkout files.
 
 ## Manage worktrees
 
@@ -212,10 +271,18 @@ so a list entry never grants permission to mutate a checkout.
 
 ## The workspace picker
 
-One picker under the composer chooses where a conversation works. Its label says where that is:
-**Local · main** for the project folder, **New worktree · from main** for a worktree created at
-send, the branch name inside an existing worktree, and **· missing** when that worktree's
-directory is gone. The workspace and branch keyboard commands both open it.
+One picker under the composer chooses where a thread works. Its label says where that is:
+
+| Label                         | Meaning                                                                |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| **Local · main**              | The project folder, on the branch it has checked out                   |
+| **feat-x**                    | A worktree, on the branch its folder has checked out now               |
+| **feat-x · detached**         | A worktree on a detached HEAD; `feat-x` is the last branch it was on   |
+| **feat-x · restores on send** | The worktree's folder is not on disk; your next message brings it back |
+| **New worktree · from main**  | A new thread whose worktree is created from `main` when you send       |
+| **Creating worktree…**        | The first message was sent and the worktree is being set up            |
+
+The workspace and branch keyboard commands both open it.
 
 The top of the picker shows the current path, with buttons to copy it, open it in an editor,
 reveal it, or open a terminal there. The list below has these groups:
@@ -227,8 +294,10 @@ reveal it, or open a terminal there. The list below has these groups:
   worktree and its branch are created when you send.
 - **Open worktrees**: join a worktree that already exists. The row shows how many conversations
   already use it.
-- **Manage**: **Switch branch here…**, **Move to a new worktree…**, **Manage worktrees…**,
-  **Discard originals from move…** and **Remove worktree…**, where they apply.
+- **Manage**: **Switch branch here…**, **Restore worktree now**, **Move to a new worktree…**,
+  **Manage worktrees…**, **Discard originals from move…** and **Remove worktree…**, where they
+  apply. **Restore worktree now** appears while the label reads **· restores on send**, for when
+  you want the files back before sending anything.
 
 Type to filter. A pull request reference offers **Checkout Pull Request**. In a new
 conversation, a name with no matching branch offers **New worktree on new branch "name"**,
@@ -344,9 +413,9 @@ ignored secrets, changed commits, or new references retain the checkout and bran
 an explanation. The temporary private `refs/f5/moves/<operationId>` ref is removed after
 completion, rollback, or cancellation; it never uses `refs/stash`. Archiving or deleting
 a conversation cancels the worker, waits for filesystem writes to settle, releases the
-private ref, and records any retained checkout and branch for manual review. Recovery can
-accept a verified complete copy, or keep the original workspace and clean up only proven
-copies. Untracked nested repositories must be committed, ignored, or removed before moving.
+private ref, and records any retained checkout and branch. A retained checkout is named in the
+conversation's timeline and listed on the Worktrees page; it never blocks sending or another
+move. Untracked nested repositories must be committed, ignored, or removed before moving.
 
 ## Settlement scripts and cleanup
 

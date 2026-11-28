@@ -192,13 +192,12 @@ export const WS_METHODS = {
   worktreesRecover: "worktrees.recover",
   worktreesSwitchWorkspace: "worktrees.switchWorkspace",
   worktreesGetTransition: "worktrees.getTransition",
-  worktreesPreviewTransitionRecovery: "worktrees.previewTransitionRecovery",
-  worktreesResolveTransition: "worktrees.resolveTransition",
 
   worktreeSetupSubscribe: "worktreeSetup.subscribe",
   worktreeSetupCancel: "worktreeSetup.cancel",
   worktreeSetupRetry: "worktreeSetup.retry",
   worktreeSetupWorkLocally: "worktreeSetup.workLocally",
+  worktreeSetupRerunScript: "worktreeSetup.rerunScript",
 
   // Cross-project full-text search
   globalSearchQuery: "globalSearch.query",
@@ -229,6 +228,19 @@ export const WS_METHODS = {
   mcpStartHubSignIn: "mcp.startHubSignIn",
   mcpCompleteHubSignIn: "mcp.completeHubSignIn",
   mcpSignOutHubServer: "mcp.signOutHubServer",
+  mcpListToolPins: "mcp.listToolPins",
+  mcpAcceptToolChanges: "mcp.acceptToolChanges",
+  mcpListActivity: "mcp.listActivity",
+  mcpGetThreadServers: "mcp.getThreadServers",
+  mcpSetThreadServerEnabled: "mcp.setThreadServerEnabled",
+  mcpListComposerPrompts: "mcp.listComposerPrompts",
+  mcpGetComposerPrompt: "mcp.getComposerPrompt",
+  mcpCompleteComposerPrompt: "mcp.completeComposerPrompt",
+  mcpListComposerResources: "mcp.listComposerResources",
+  mcpReadComposerResource: "mcp.readComposerResource",
+  mcpSearchCatalog: "mcp.searchCatalog",
+  mcpGetRepositoryServers: "mcp.getRepositoryServers",
+  mcpSetRepositoryServerTrust: "mcp.setRepositoryServerTrust",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────

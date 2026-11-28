@@ -31,12 +31,19 @@ import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionT
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { withWorktreeLifecycleLock } from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
-import { NextTurnQueueDispatcher } from "../Services/NextTurnQueueDispatcher.ts";
+import {
+  NextTurnQueueDispatcher,
+  WorkspaceRestoreCancelledError,
+} from "../Services/NextTurnQueueDispatcher.ts";
 import { NextTurnQueueStore } from "../Services/NextTurnQueueStore.ts";
 import { NextTurnQueueDispatcherLive } from "./NextTurnQueueDispatcher.ts";
 import { NextTurnQueueStoreLive } from "./NextTurnQueueStore.ts";
 
 const dispatched: CommandId[] = [];
+const notes: string[] = [];
+// The branch observer follows only a thread whose project is known to be live.
+// Most tests here leave it out of the read model, so they see no branch writes.
+let liveProject = false;
 // Provider delivery rows keyed by command id, and the unresolved delivery that
 // the repository's supersession rule reports per thread.
 const deliveryRows = new Map<string, ReturnType<typeof deliveryRow>>();
@@ -105,16 +112,26 @@ const makeDependencies = (
         Effect.sync(() => unresolvedDeliveries.get(threadId) ?? null),
     } as never),
     Layer.succeed(OrchestrationEngineService, {
-      dispatch: (command: { readonly commandId: CommandId }) =>
+      dispatch: (command: {
+        readonly commandId: CommandId;
+        readonly type?: string;
+        readonly activity?: { readonly summary: string };
+      }) =>
         Effect.sync(() => {
-          dispatched.push(command.commandId);
+          // A timeline note is not a turn; `dispatched` lists what was sent.
+          if (command.type === "thread.activity.append") notes.push(command.activity!.summary);
+          else dispatched.push(command.commandId);
           return { sequence: dispatched.length };
         }),
       getReadModel: () =>
         Effect.succeed({
           threads: resumeThread ? [resumeThread] : [],
           projects: [
-            { id: ProjectId.makeUnsafe("queue-dispatcher-project"), workspaceRoot: process.cwd() },
+            {
+              id: ProjectId.makeUnsafe("queue-dispatcher-project"),
+              workspaceRoot: process.cwd(),
+              ...(liveProject ? { deletedAt: null } : {}),
+            },
           ],
         }),
       streamDomainEvents: domainEvents,
@@ -719,6 +736,10 @@ for (const scenario of [
   "recoverable",
   "preparing",
   "missing-ref",
+  "restored",
+  "restore-fails",
+  "restore-cancelled",
+  "message-removed",
   "checked-out-elsewhere",
   "repository-busy",
   "inspection-error",
@@ -743,6 +764,8 @@ for (const scenario of [
         ? {
             startup: Effect.void,
             needsPreparation: () => Effect.succeed(true),
+            scriptRunning: () => Effect.succeed(false),
+            stopScript: () => Effect.succeed(false),
             prepare: () =>
               Effect.die("Preparation scripts must never run on the dispatcher shard."),
             startBackground: () =>
@@ -753,6 +776,14 @@ for (const scenario of [
         : undefined;
     let busy = scenario === "repository-busy";
     let unreadable = scenario === "inspection-error";
+    let branchGone =
+      scenario === "missing-ref" ||
+      scenario === "restored" ||
+      scenario === "restore-fails" ||
+      scenario === "restore-cancelled" ||
+      scenario === "message-removed";
+    // Runs once while the send inspects the worktree, as another client would.
+    let duringInspection: Effect.Effect<void> | null = null;
     const git = makeFakeGitCore({
       listWorktrees: () =>
         unreadable
@@ -764,7 +795,14 @@ for (const scenario of [
                 detail: "unreadable metadata",
               }),
             )
-          : registration().pipe(Effect.map((entry) => [entry])),
+          : Effect.suspend(() => {
+              const interfere = duringInspection ?? Effect.void;
+              duringInspection = null;
+              return interfere;
+            }).pipe(
+              Effect.andThen(registration()),
+              Effect.map((entry) => [entry]),
+            ),
       inspectCheckout: () =>
         Effect.gen(function* () {
           const entry = yield* registration();
@@ -786,7 +824,7 @@ for (const scenario of [
             behindCount: null,
           };
         }),
-      branchExists: () => Effect.succeed(scenario !== "missing-ref"),
+      branchExists: () => Effect.sync(() => !branchGone),
       ensureWorktree: () =>
         busy
           ? Effect.fail(
@@ -813,19 +851,111 @@ for (const scenario of [
     });
     return Effect.gen(function* () {
       dispatched.length = 0;
+      notes.length = 0;
       const dispatcher = yield* NextTurnQueueDispatcher;
       const threadId = ThreadId.makeUnsafe(`queue-worktree-${scenario}`);
+      const store = yield* NextTurnQueueStore;
+      // What brings the worktree back when the send cannot do it alone: it
+      // recreates the branch and releases the queue, fails, or reports that
+      // only the user can decide (the branch is checked out somewhere else).
+      const restores: ThreadId[] = [];
+      yield* dispatcher.setWorkspaceRestorer((id) =>
+        Effect.gen(function* () {
+          restores.push(id);
+          if (scenario === "restore-fails") return yield* Effect.fail(new Error("Git said no"));
+          if (scenario === "restore-cancelled")
+            return yield* Effect.fail(new WorkspaceRestoreCancelledError());
+          if (scenario !== "restored") return false;
+          branchGone = false;
+          const { state } = yield* store.listByThread(id);
+          yield* store
+            .setPaused({ threadId: id, paused: false, expectedRevision: state.revision })
+            .pipe(Effect.orDie);
+          return true;
+        }),
+      );
       yield* seedThread(threadId);
       yield* insert(1, threadId);
       const before = yield* dispatcher.getSnapshot(threadId);
       assert.equal(git.calls.ensureWorktree.length, 0);
       if (scenario === "recoverable") assert.equal(before.reasonCode, null);
+      if (scenario === "message-removed")
+        // Another client removes the message while the send looks at the worktree.
+        duringInspection = store
+          .softDelete({ itemId: CommandId.makeUnsafe("dispatcher-item-1") })
+          .pipe(Effect.orDie, Effect.asVoid);
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
-      const queue = yield* (yield* NextTurnQueueStore).listByThread(threadId);
+      // Only a send that stopped on the worktree asks for it to be restored.
+      // A failure is tried once more; "the user decides" and a cancel are not.
+      const asked =
+        scenario === "restore-fails"
+          ? [threadId, threadId]
+          : scenario === "missing-ref" ||
+              scenario === "restored" ||
+              scenario === "restore-cancelled" ||
+              scenario === "checked-out-elsewhere"
+            ? [threadId]
+            : [];
+      // The restore runs beside the queue worker, so wait for it to land.
+      yield* Effect.promise(() => vi.waitFor(() => assert.deepEqual(restores, asked)));
+      if (scenario === "message-removed") {
+        // The pause lost to the removal, so nothing is restored for a message
+        // that is gone, and nothing holds the queue.
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        // A restore would run beside the worker: give it real time to show up.
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 50)));
+        assert.deepEqual(restores, []);
+        assert.equal(git.calls.ensureWorktree.length, 0);
+        assert.equal(dispatched.length, 0);
+        const left = yield* store.listByThread(threadId);
+        assert.equal(left.items.length, 0);
+        assert.equal(left.state.paused, false);
+        return;
+      }
+      if (scenario === "restore-cancelled") {
+        // Cancelling is a decision: the message stays held and nothing starts again.
+        yield* Effect.promise(() =>
+          vi.waitFor(async () => {
+            const { state } = await Effect.runPromise(store.listByThread(threadId));
+            assert.equal(state.pauseDetail, "Restoring the worktree was cancelled.");
+          }),
+        );
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.equal(restores.length, 1);
+        assert.equal(dispatched.length, 0);
+        assert.equal((yield* store.listByThread(threadId)).state.paused, true);
+        return;
+      }
+      if (scenario === "restored") {
+        yield* Effect.promise(() => vi.waitFor(() => assert.equal(dispatched.length, 1)));
+        assert.equal(git.calls.ensureWorktree.length, 1);
+        assert.equal((yield* store.listByThread(threadId)).state.paused, false);
+        return;
+      }
+      if (scenario === "restore-fails") {
+        // The queue stays held, now with the reason the status card shows.
+        yield* Effect.promise(() =>
+          vi.waitFor(async () => {
+            const { state } = await Effect.runPromise(store.listByThread(threadId));
+            assert.equal(state.pauseDetail, "Git said no");
+          }),
+        );
+        assert.equal(dispatched.length, 0);
+        // The same message never asks again on its own.
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.equal(restores.length, 2);
+        return;
+      }
+      const queue = yield* store.listByThread(threadId);
       if (scenario === "recoverable") {
         assert.equal(dispatched.length, 1);
         assert.equal(git.calls.ensureWorktree.length, 1);
+        // Nobody asked for the worktree to come back, so the timeline says it did.
+        assert.deepEqual(notes, ["Worktree restored on feature"]);
       } else if (scenario === "preparing") {
         assert.equal(backgroundPreparations, 1);
         assert.equal(dispatched.length, 0);
@@ -840,7 +970,6 @@ for (const scenario of [
           yield* dispatcher.notify(threadId);
           yield* dispatcher.drain;
         }
-        const store = yield* NextTurnQueueStore;
         const paused = yield* store.listByThread(threadId);
         assert.equal(paused.state.pauseReasonCode, "worktree_missing");
         assert.equal(paused.state.paused, true);
@@ -877,7 +1006,7 @@ for (const scenario of [
 }
 
 for (const steering of [true, false]) {
-  it.effect(`lets only steers into the live turn through branch drift: ${steering}`, () => {
+  it.effect(`sends on a worktree whose branch the agent switched, steering: ${steering}`, () => {
     const target = path.join(os.tmpdir(), `f5-drift-${crypto.randomUUID()}`);
     const threadId = ThreadId.makeUnsafe(`queue-drift-${steering}`);
     const liveTurn = TurnId.makeUnsafe("live-turn");
@@ -937,17 +1066,103 @@ for (const steering of [true, false]) {
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
       const queue = yield* store.listByThread(threadId);
-      if (steering) {
-        assert.equal(dispatched.length, 1);
-        assert.equal(queue.state.paused, false);
-      } else {
-        assert.equal(dispatched.length, 0);
-        assert.equal(queue.state.paused, true);
-        assert.equal(queue.state.pauseReasonCode, "worktree_missing");
-      }
+      assert.equal(dispatched.length, 1);
+      assert.equal(queue.state.paused, false);
     }).pipe(
       Effect.provide(makeTestLayer(git.service, target, thread)),
       Effect.ensuring(Effect.promise(() => fs.rm(target, { recursive: true, force: true }))),
+    );
+  });
+}
+
+// The engine reads the recorded branch when the turn starts, so the turn, its
+// checkpoint and the picker agree only if the record is written first.
+for (const scenario of [
+  "a new turn in a worktree",
+  "a steer in a worktree",
+  "a new turn in the project folder",
+] as const) {
+  it.effect(`records the branch the folder is on before the turn starts: ${scenario}`, () => {
+    const steering = scenario === "a steer in a worktree";
+    const local = scenario === "a new turn in the project folder";
+    const target = path.join(os.tmpdir(), `f5-follow-${crypto.randomUUID()}`);
+    const threadId = ThreadId.makeUnsafe(`queue-follow-${scenario.replaceAll(" ", "-")}`);
+    const liveTurn = TurnId.makeUnsafe("live-turn");
+    const thread = {
+      id: threadId,
+      projectId: ProjectId.makeUnsafe("queue-dispatcher-project"),
+      deletedAt: null,
+      archivedAt: null,
+      // The record says `feature`; the folder is on `agent-branch`.
+      branch: "feature",
+      worktreePath: local ? null : target,
+      latestTurn: null,
+      pendingUserInputs: [],
+      session: {
+        threadId,
+        providerInstanceId: "codex",
+        status: steering ? "running" : "ready",
+        activeTurnId: steering ? liveTurn : null,
+        lastError: null,
+        updatedAt: new Date().toISOString(),
+      },
+    } as unknown as OrchestrationThread;
+    const git = makeFakeGitCore({
+      listWorktrees: () =>
+        Effect.promise(async () => [
+          {
+            path: target,
+            canonicalPath: await canonicalWorktreePath(target),
+            branch: "agent-branch",
+            headSha: "abc123",
+            bare: false,
+            detached: false,
+            locked: null,
+            prunable: null,
+            isMain: false,
+          },
+        ]),
+      inspectCheckout: () =>
+        Effect.promise(async () => ({
+          canonicalRoot: await canonicalWorktreePath(target),
+          commonDir: await canonicalWorktreePath(`${process.cwd()}/.git`),
+          branch: "agent-branch",
+        })) as never,
+    });
+    return Effect.gen(function* () {
+      dispatched.length = 0;
+      notes.length = 0;
+      liveProject = true;
+      yield* Effect.promise(() => fs.mkdir(target, { recursive: true }));
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const store = yield* NextTurnQueueStore;
+      yield* seedThread(threadId);
+      yield* insert(71, threadId);
+      if (steering) {
+        const sql = yield* SqlClient.SqlClient;
+        const item = (yield* store.listByThread(threadId)).items[0]!;
+        yield* sql`UPDATE next_turn_queue SET command_json = ${JSON.stringify({
+          ...item.command,
+          expectedTurnId: liveTurn,
+        })} WHERE item_id = ${item.itemId}`;
+      }
+      yield* dispatcher.notify(threadId);
+      yield* dispatcher.drain;
+      const written = dispatched.map((commandId) =>
+        commandId.startsWith("server:workspace-branch:") ? "branch" : "turn",
+      );
+      // A steer joins a turn that is already running there; that turn's end
+      // records the branch.
+      assert.deepEqual(written, steering ? ["turn"] : ["branch", "turn"]);
+      assert.deepEqual(notes, steering ? [] : ["Now on agent-branch (was feature)"]);
+    }).pipe(
+      Effect.provide(makeTestLayer(git.service, local ? null : target, thread)),
+      Effect.ensuring(
+        Effect.promise(() => {
+          liveProject = false;
+          return fs.rm(target, { recursive: true, force: true });
+        }),
+      ),
     );
   });
 }
@@ -1167,15 +1382,34 @@ it.layer(
     Layer.provideMerge(WorkspaceTransitionsLive.pipe(Layer.provide(persistence))),
   ),
 )("workspace transition queue barrier", (it) => {
-  it.effect("promotion and Resume cannot clear a durable transition or admit later work", () =>
+  // Only a switch that is running holds the queue. A row an older version parked
+  // for manual recovery holds nothing: it is settled on its own.
+  for (const [phase, item] of [
+    ["applying", 90],
+    ["needs_recovery", 92],
+  ] as const) {
+    const running = phase === "applying";
+    it.effect(
+      running
+        ? "promotion and Resume cannot clear a running switch or admit later work"
+        : "a switch parked by an older version does not hold the queue",
+      () => transitionBarrier(phase, item, running),
+    );
+  }
+  const transitionBarrier = (
+    phase: "applying" | "needs_recovery",
+    item: number,
+    running: boolean,
+  ) =>
     Effect.gen(function* () {
       const dispatcher = yield* NextTurnQueueDispatcher;
       const store = yield* NextTurnQueueStore;
       const sql = yield* SqlClient.SqlClient;
-      const threadId = ThreadId.makeUnsafe("transition-barrier-queue");
+      const operationId = `transition-barrier-${phase}`;
+      const threadId = ThreadId.makeUnsafe(`${operationId}-queue`);
       dispatched.length = 0;
       yield* seedThread(threadId);
-      yield* insert(90, threadId);
+      yield* insert(item, threadId);
       const checkout = {
         path: process.cwd(),
         repository: path.join(process.cwd(), ".git"),
@@ -1183,18 +1417,18 @@ it.layer(
         headSha: "head",
       };
       const record = {
-        operationId: "transition-barrier",
+        operationId,
         threadId,
         version: 3,
         intent: "checkout_branch",
-        phase: "needs_recovery",
+        phase,
         source: checkout,
         target: { ...checkout, branch: "topic" },
         observed: null,
         result: null,
-        error: "Inspect the interrupted switch.",
+        error: running ? null : "Inspect the interrupted switch.",
         request: {
-          operationId: "transition-barrier",
+          operationId,
           threadId,
           intent: "checkout_branch",
           branch: "topic",
@@ -1208,14 +1442,22 @@ it.layer(
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      yield* sql`INSERT INTO workspace_transitions(operation_id,thread_id,request_hash,phase,version,record_json,created_at,updated_at) VALUES ('transition-barrier',${threadId},'hash','needs_recovery',3,${JSON.stringify(record)},${record.createdAt},${record.updatedAt})`;
-      yield* dispatcher.start;
+      yield* sql`INSERT INTO workspace_transitions(operation_id,thread_id,request_hash,phase,version,record_json,created_at,updated_at) VALUES (${operationId},${threadId},'hash',${phase},3,${JSON.stringify(record)},${record.createdAt},${record.updatedAt})`;
+      // Not `dispatcher.start`: it stops the shared dispatcher when this test's scope closes.
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
+      if (!running) {
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.deepEqual(dispatched, [CommandId.makeUnsafe(`dispatcher-command-${item}`)]);
+        assert.notEqual((yield* dispatcher.getSnapshot(threadId)).reasonCode, "workspace_switch");
+        assert.equal((yield* insert(item + 1, threadId).pipe(Effect.exit))._tag, "Success");
+        return;
+      }
       assert.deepEqual(dispatched, []);
       const before = yield* store.listByThread(threadId);
       yield* dispatcher.promote({
-        itemId: CommandId.makeUnsafe("dispatcher-item-90"),
+        itemId: CommandId.makeUnsafe(`dispatcher-item-${item}`),
         interruptActive: false,
         expectedRevision: before.state.revision,
       });
@@ -1223,17 +1465,16 @@ it.layer(
       yield* dispatcher.notify(threadId);
       yield* dispatcher.drain;
       const snapshot = yield* dispatcher.getSnapshot(threadId);
-      assert.equal(snapshot.reasonCode, "workspace_switch_failed");
-      assert.equal(snapshot.workspaceTransition?.operationId, "transition-barrier");
+      assert.equal(snapshot.reasonCode, "workspace_switch");
+      assert.equal(snapshot.blockedKind, "waiting");
       assert.deepEqual(dispatched, []);
-      assert.equal((yield* insert(91, threadId).pipe(Effect.exit))._tag, "Failure");
+      assert.equal((yield* insert(item + 1, threadId).pipe(Effect.exit))._tag, "Failure");
       assert.equal(
         (yield* store.setWorktreeBlockToken({ threadId, token: "setup-retry" }).pipe(Effect.exit))
           ._tag,
         "Failure",
       );
-    }),
-  );
+    });
 });
 
 it.effect("starts every actionable page before the first safety-sweep interval", () =>

@@ -2,6 +2,11 @@ import { backgroundWorkSessionIdentity } from "../../provider/backgroundWorkIden
 import { withProviderThreadAccess } from "../../provider/providerThreadAccess.ts";
 import { makeOrphanedSessionExitedEvent } from "../../provider/orphanedTurnRecovery.ts";
 import { acpFileChanges } from "../../provider/acp/AcpFileChanges.ts";
+import {
+  ACP_HIDDEN_TOOL_INPUTS_DETAIL,
+  acpReadOnlyRefusalDetail,
+  acpRequestWithoutToolCallId,
+} from "../../provider/acp/AcpReadOnlyWorkflowPolicy.ts";
 import { CodexMcpEventBus } from "../../codex/CodexMcpEventBus.ts";
 import { CodexAppServerManager } from "../../codexAppServerManager.ts";
 import { makeCodexAdapter } from "../../provider/Layers/CodexAdapter.ts";
@@ -18,7 +23,6 @@ import { createHash } from "node:crypto";
 import { createAttachmentId } from "../../attachmentStore.ts";
 import { automationEventSanitizer } from "@t3tools/shared/automationActivitySanitizer";
 import { makeAutomationRuntimeEventPreparer } from "../../provider/prepareAutomationRuntimeEvent";
-import { GitCommandError } from "../../git/Errors.ts";
 import { cleanupStaleWorktrees } from "./WorktreeStartupCleanup.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { makeFakeGitCore } from "../../git/testDoubles.ts";
@@ -2187,14 +2191,9 @@ describe("ProviderRuntimeIngestion", () => {
     },
   );
 
-  it.each([
-    { branchExists: true, paused: false },
-    { branchExists: false, paused: false },
-    { branchExists: "probe-error", paused: false },
-    { branchExists: false, paused: true },
-  ] as const)(
-    "retains a missing worktree without replacing an existing pause: %o",
-    async ({ branchExists, paused }) => {
+  it.each([{ pause: null }, { pause: "worktree_missing" }, { pause: "manual_pause" }] as const)(
+    "retains a missing worktree, and neither pauses its queue nor releases it: %o",
+    async ({ pause }) => {
       const harness = await createHarness({ startIngestion: false });
       const threadId = asThreadId("thread-1");
       const missingPath = path.join(os.tmpdir(), `missing-worktree-${crypto.randomUUID()}`);
@@ -2207,26 +2206,16 @@ describe("ProviderRuntimeIngestion", () => {
           worktreePath: missingPath,
         }),
       );
-      const git = makeFakeGitCore({
-        branchExists: () =>
-          branchExists === "probe-error"
-            ? Effect.fail(
-                new GitCommandError({
-                  operation: "test",
-                  command: "git show-ref",
-                  cwd: "/unavailable",
-                  detail: "Repository unavailable",
-                }),
-              )
-            : Effect.succeed(branchExists),
-      });
+      const git = makeFakeGitCore({});
       const setPaused = vi.fn(() => Effect.void);
       await Effect.runPromise(
         cleanupStaleWorktrees(harness.engine).pipe(
           Effect.provideService(NextTurnQueueStore, {
             setPaused,
             listByThread: () =>
-              Effect.succeed({ state: { paused, revision: 7, pauseReasonCode: "manual_pause" } }),
+              Effect.succeed({
+                state: { paused: pause !== null, revision: 7, pauseReasonCode: pause },
+              }),
           } as never),
           Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
         ),
@@ -2235,10 +2224,64 @@ describe("ProviderRuntimeIngestion", () => {
       expect(model.threads.find((thread) => thread.id === threadId)?.worktreePath).toBe(
         missingPath,
       );
-      expect(git.calls.branchExists).toHaveLength(1);
-      expect(setPaused).toHaveBeenCalledTimes(branchExists === false && !paused ? 1 : 0);
-      if (branchExists === false && !paused)
-        expect(setPaused).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 7 }));
+      // Startup never asks Git whether the worktree can come back: the next
+      // message restores it, so no queue is paused for it. A message that is
+      // already waiting behind a pause stays there: releasing it would recreate
+      // the folder and send it without anyone asking.
+      expect(git.calls.branchExists).toHaveLength(0);
+      expect(setPaused).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { reason: "worktree_missing", released: true },
+    { reason: "manual_pause", released: false },
+  ] as const)(
+    "releases the pause an older version left on a worktree that is on another branch: %o",
+    async ({ reason, released }) => {
+      const harness = await createHarness({ startIngestion: false });
+      const threadId = asThreadId("thread-1");
+      // Canonical as Git lists it: the native realpath also expands a Windows short name.
+      const worktree = fs.realpathSync.native(
+        fs.mkdtempSync(path.join(os.tmpdir(), "drifted-worktree-")),
+      );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("drifted-worktree"),
+          threadId,
+          branch: "feature",
+          worktreePath: worktree,
+        }),
+      );
+      // The folder is this repository's worktree, on a branch the thread does not record.
+      const git = makeFakeGitCore({
+        listWorktrees: () =>
+          Effect.succeed([
+            { path: worktree, canonicalPath: worktree, branch: "agent-branch", isMain: false },
+          ] as never),
+        inspectCheckoutIdentity: () =>
+          Effect.succeed({
+            canonicalRoot: worktree,
+            commonDir: worktree,
+            branch: "agent-branch",
+          } as never),
+        resolveCommonDir: () => Effect.succeed(worktree),
+      });
+      const setPaused = vi.fn(() => Effect.void);
+      await Effect.runPromise(
+        cleanupStaleWorktrees(harness.engine).pipe(
+          Effect.provideService(NextTurnQueueStore, {
+            setPaused,
+            listByThread: () =>
+              Effect.succeed({ state: { paused: true, revision: 7, pauseReasonCode: reason } }),
+          } as never),
+          Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
+        ),
+      );
+      expect(setPaused.mock.calls).toEqual(
+        released ? [[{ threadId, paused: false, expectedRevision: 7 }]] : [],
+      );
     },
   );
 
@@ -6554,18 +6597,126 @@ describe("ProviderRuntimeIngestion", () => {
       ]);
       expect(refusals[0]?.summary).toBe("Command refused in a read-only stage");
 
-      emitRequest(harness, turnId, "req-soft-3", "git push origin main", true);
+      // A model that tries something else after each refusal keeps going: 14 different refused
+      // operations leave the turn running, and the 15th fails it.
+      for (let index = 3; index <= 14; index += 1)
+        emitRequest(harness, turnId, `req-soft-${index}`, `touch file-${index}`, true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+      expect(harness.interruptedTurns).toEqual([]);
+
+      emitRequest(harness, turnId, "req-soft-15", "git push origin main", true);
       const failed = await waitForThread(
         harness.engine,
         (thread) => thread.session?.status === "error",
       );
-      expect(failed.session?.lastError).toContain("attempted 3 operations");
+      expect(failed.session?.lastError).toContain("attempted 15 operations");
       expect(failed.session?.lastError).toContain("git push origin main");
       expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
       expect(harness.requestResponses).toEqual([]);
       expect(harness.interruptedTurns).toEqual([
         expect.objectContaining({ threadId: "thread-1", turnId }),
       ]);
+    });
+
+    it("fails a turn that asks for the same refused operation three times", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-stuck");
+      await startProfiledTurn(harness, turnId);
+      const refused = "touch marker (`touch` is not on the read-only allowlist)";
+
+      emitRequest(harness, turnId, "req-stuck-1", refused, true);
+      emitRequest(harness, turnId, "req-other", "rm -rf build", true);
+      emitRequest(harness, turnId, "req-stuck-2", refused, true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+
+      emitRequest(harness, turnId, "req-stuck-3", refused, true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("asked 3 times for the same operation");
+      expect(failed.session?.lastError).toContain(refused);
+      expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
+      expect(harness.interruptedTurns).toEqual([
+        expect.objectContaining({ threadId: "thread-1", turnId }),
+      ]);
+    });
+
+    it("does not take refusals with hidden inputs for the same operation", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-hidden-inputs");
+      await startProfiledTurn(harness, turnId);
+
+      // Every refused computer-control request carries this one text, whatever it asked for.
+      for (const id of ["a", "b", "c", "d"])
+        emitRequest(harness, turnId, `req-hidden-${id}`, ACP_HIDDEN_TOOL_INPUTS_DETAIL, true);
+      await harness.drain();
+      const running = await readThread(harness);
+      expect(running?.session?.status).toBe("running");
+      expect(running?.session?.lastError ?? null).toBeNull();
+      expect(harness.interruptedTurns).toEqual([]);
+
+      // They still count toward the turn's limit.
+      for (let index = 5; index <= 14; index += 1)
+        emitRequest(harness, turnId, `req-hidden-${index}`, ACP_HIDDEN_TOOL_INPUTS_DETAIL, true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+      emitRequest(harness, turnId, "req-hidden-15", ACP_HIDDEN_TOOL_INPUTS_DETAIL, true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("attempted 15 operations");
+    });
+
+    it("recognises a repeated request that names no command by its parameters", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-params-detail");
+      await startProfiledTurn(harness, turnId);
+      // What the ACP adapters record for such a request: its parameters without the tool
+      // call's id, which is new on every request.
+      const detailOf = (toolCallId: string) =>
+        acpReadOnlyRefusalDetail(
+          JSON.stringify(
+            acpRequestWithoutToolCallId({
+              sessionId: "session-1",
+              toolCall: { toolCallId, kind: "other", title: "Do something" },
+            }),
+          ),
+          "other operations are not allowed in a read-only stage",
+        );
+      expect(detailOf("call-1")).toBe(detailOf("call-2"));
+      expect(detailOf("call-1")).not.toContain("call-1");
+
+      emitRequest(harness, turnId, "req-params-1", detailOf("call-1"), true);
+      emitRequest(harness, turnId, "req-params-2", detailOf("call-2"), true);
+      await harness.drain();
+      expect((await readThread(harness))?.session?.status).toBe("running");
+
+      emitRequest(harness, turnId, "req-params-3", detailOf("call-3"), true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("asked 3 times for the same operation");
+    });
+
+    it("keeps the reason when the refused command is long", async () => {
+      const harness = await createHarness();
+      const turnId = asTurnId("turn-long-command");
+      await startProfiledTurn(harness, turnId);
+      const refused = `cat ${"very/long/path/".repeat(40)}x > out (output may only be redirected to /dev/null)`;
+
+      for (const id of ["a", "b", "c"])
+        emitRequest(harness, turnId, `req-long-${id}`, refused, true);
+      const failed = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(failed.session?.lastError).toContain("cat very/long/path/");
+      expect(failed.session?.lastError).toContain("(output may only be redirected to /dev/null)");
     });
 
     it("keeps the first violation instead of overwriting it with later ones", async () => {

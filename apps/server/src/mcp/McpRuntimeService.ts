@@ -9,11 +9,7 @@ import {
 import { makeMcpAccountExecutionResolver } from "./accountExecution.ts";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import { makeClaudeProcessEnvironment } from "../provider/Drivers/ClaudeHome";
-import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
-import { ProviderInstanceId } from "@t3tools/contracts";
-import { ServerConfig } from "../config";
-import { instanceLock, ProfileBusyError } from "../profiles/InstanceLock";
-import * as NodePath from "node:path";
+import { ProviderInstanceId, type ProviderKind } from "@t3tools/contracts";
 import {
   type McpGetLoginStatusRequest as McpGetLoginStatusWireRequest,
   type McpInspectServerRequest as McpInspectServerWireRequest,
@@ -28,7 +24,8 @@ import {
   type McpServerStatusesResult,
   type McpStartLoginRequest as McpStartLoginWireRequest,
   type McpStatusUpdatedReason,
-  type McpServerDefinition,
+  type McpProjectServersConfig,
+  type ProjectId,
   type ProviderStartOptions,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -67,8 +64,8 @@ import { CodexMcpSyncService } from "../codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "../codex/CodexOAuthManager.ts";
 import { readCodexServerStatusPages } from "../codex/codexMcpServerStatus.ts";
 import { ProjectMcpConfigService } from "./ProjectMcpConfigService.ts";
-import { combineStatusMessage } from "./combineStatusMessage.ts";
-import { reloadCodexMcpConfigAfterLogin } from "./reloadCodexMcpConfigAfterLogin.ts";
+import { McpHub } from "./hub/McpHub.ts";
+import { CODEX_ADMIN_MCP_CONFIG } from "./hub/nativeHubOptions.ts";
 import { McpRuntimeDiagnostics } from "./McpRuntimeDiagnostics.ts";
 import {
   checkClaudeProviderPreflight,
@@ -76,15 +73,8 @@ import {
 } from "../provider/Layers/ProviderHealth.ts";
 import { toClaudeProviderStartOptions } from "../provider/claudeProviderOptions.ts";
 import { toCodexProviderStartOptions } from "../provider/codexProviderOptions.ts";
-import { buildCodexCliEnvOverrides, runCodexCliCommand } from "../provider/providerCli.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
-import {
-  filterEnabledMcpServers,
-  isMcpServerServedTo,
-  mcpBearerRedactionValues,
-  readCodexMcpOAuthCallbackConfig,
-  translateMcpForCodex,
-} from "@t3tools/shared/mcpTranslation";
+import { filterEnabledMcpServers, mcpBearerRedactionValues } from "@t3tools/shared/mcpTranslation";
 
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
 const LOGIN_STATUS_RETENTION_MS = 10 * 60_000;
@@ -93,9 +83,6 @@ const CLAUDE_LOGIN_POLL_MS = 2_000;
 /** claude.ai connectors authorize on claude.ai without a callback, so F5 retries the connection. */
 const CLAUDE_CONNECTOR_RECONNECT_MS = 5_000;
 const CLAUDE_CONNECTOR_RECONNECT_MAX_MS = 30_000;
-const WINDOWS_SHELL_META_PATTERN = /[&|><^%!`"'\r\n]/u;
-const WINDOWS_SAFE_SERVER_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/u;
-const WINDOWS_SAFE_SCOPE_PATTERN = /^[A-Za-z0-9_./:-]+$/u;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -124,22 +111,6 @@ function readProviderOptions(input: {
       });
 }
 
-function readCliMessage(output: {
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly code: number;
-}) {
-  const stderr = output.stderr.trim();
-  if (stderr.length > 0) {
-    return stderr;
-  }
-  const stdout = output.stdout.trim();
-  if (stdout.length > 0) {
-    return stdout;
-  }
-  return output.code === 0 ? undefined : `Command exited with code ${output.code}.`;
-}
-
 function loginStatusKey(input: McpGetLoginStatusRequest): string {
   return [input.provider, input.instanceId ?? "", input.projectId, input.serverName ?? ""].join(
     "\u0000",
@@ -161,53 +132,29 @@ function readIdleLoginStatus(
   };
 }
 
-function supportsCodexOauthLogin(server: McpServerDefinition): boolean {
-  return (
-    server.type === "http" ||
-    typeof server.oauthClientId === "string" ||
-    typeof server.oauthCallbackPort === "number" ||
-    typeof server.oauthCallbackUrl === "string" ||
-    typeof server.oauthResource === "string"
-  );
+/**
+ * The saved name of the server the hub serves to `provider` under `name` (Claude may
+ * report a normalized spelling), or undefined when the hub does not serve it: unknown,
+ * disabled, or turned off for that provider (a same-named provider server then stays
+ * the provider's own).
+ */
+function hubServedName(
+  servers: McpProjectServersConfig,
+  provider: ProviderKind,
+  name: string,
+): string | undefined {
+  const key = mcpServerNameKey(name);
+  return Object.entries(filterEnabledMcpServers(servers, provider)).find(
+    ([candidate, definition]) =>
+      definition.enabled !== false && mcpServerNameKey(candidate) === key,
+  )?.[0];
 }
 
-function isWindowsShellSafePath(value: string): boolean {
-  return !WINDOWS_SHELL_META_PATTERN.test(value);
-}
-
-function validateWindowsCliLoginInput(input: {
-  readonly serverName: string;
-  readonly scopes?: ReadonlyArray<string>;
-  readonly binaryPath?: string;
-}): McpRuntimeServiceError | null {
-  if (process.platform !== "win32") {
-    return null;
-  }
-
-  if (!WINDOWS_SAFE_SERVER_NAME_PATTERN.test(input.serverName)) {
-    return new McpRuntimeServiceError({
-      message:
-        "MCP server names used for CLI login must only contain letters, numbers, dots, underscores, or dashes on Windows.",
-    });
-  }
-
-  for (const scope of input.scopes ?? []) {
-    if (!WINDOWS_SAFE_SCOPE_PATTERN.test(scope)) {
-      return new McpRuntimeServiceError({
-        message:
-          "MCP login scopes contain unsupported characters for Windows shell execution. Remove shell metacharacters and try again.",
-      });
-    }
-  }
-
-  if (input.binaryPath && !isWindowsShellSafePath(input.binaryPath)) {
-    return new McpRuntimeServiceError({
-      message:
-        "The configured CLI binary path contains unsupported shell metacharacters on Windows. Use a plain executable path and try again.",
-    });
-  }
-
-  return null;
+/** Provider sign-in is only for the provider's own servers; F5's sign in through the hub. */
+function configuredServerSignInError(serverName: string) {
+  return new McpRuntimeServiceError({
+    message: `Codex and Claude reach '${serverName}' through F5. Sign in from the server's Sign-in tab in MCP settings; earlier Codex or Claude sign-ins are not carried over.`,
+  });
 }
 
 export class McpRuntimeServiceError extends Schema.TaggedErrorClass<McpRuntimeServiceError>()(
@@ -216,27 +163,6 @@ export class McpRuntimeServiceError extends Schema.TaggedErrorClass<McpRuntimeSe
     message: Schema.String,
   },
 ) {}
-
-function readCodexMcpOAuthCallbackConfigOrError(
-  servers: Parameters<typeof readCodexMcpOAuthCallbackConfig>[0],
-): Effect.Effect<
-  {
-    readonly port?: number;
-    readonly url?: string;
-  },
-  McpRuntimeServiceError
-> {
-  return Effect.try({
-    try: () => readCodexMcpOAuthCallbackConfig(servers),
-    catch: (cause) =>
-      new McpRuntimeServiceError({
-        message:
-          cause instanceof Error
-            ? cause.message
-            : "Invalid Codex MCP OAuth callback configuration.",
-      }),
-  });
-}
 
 export interface McpRuntimeServiceShape {
   readonly getProviderStatus: (
@@ -269,7 +195,6 @@ export class McpRuntimeService extends ServiceMap.Service<
 >()("t3/mcp/McpRuntimeService") {}
 
 const makeMcpRuntimeService = Effect.gen(function* () {
-  const accountConfig = yield* Effect.serviceOption(ServerConfig);
   const resolveExecution = yield* makeMcpAccountExecutionResolver;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const codexMcpSyncService = yield* CodexMcpSyncService;
@@ -281,6 +206,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const hub = Option.getOrUndefined(yield* Effect.serviceOption(McpHub));
   const runLoginTask = yield* FiberSet.makeRuntime<never>();
   const loginStatuses = new Map<string, McpLoginStatusResult>();
   const loginStatusTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -349,51 +275,6 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       ...(input.configVersion ? { configVersion: input.configVersion } : {}),
     });
 
-  const runBackgroundCodexReloadAfterLogin = (input: {
-    readonly projectId: McpStartLoginRequest["projectId"];
-    readonly instanceId?: ProviderInstanceId;
-    readonly serverName?: string;
-    readonly providerOptions?: ProviderStartOptions;
-    readonly configVersion: string;
-  }) =>
-    runLoginTask(
-      reloadCodexMcpConfigAfterLogin({
-        providerService,
-        projectId: input.projectId,
-        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-        ...(input.serverName ? { serverName: input.serverName } : {}),
-        ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
-      }).pipe(
-        Effect.flatMap((reloadMessage) =>
-          Effect.gen(function* () {
-            if (reloadMessage) {
-              const statusInput = {
-                provider: "codex" as const,
-                projectId: input.projectId,
-                ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-                ...(input.serverName ? { serverName: input.serverName } : {}),
-              };
-              const current = loginStatuses.get(loginStatusKey(statusInput));
-              if (current?.status === "completed") {
-                setLoginStatus(statusInput, {
-                  ...current,
-                  message: combineStatusMessage(current.message, reloadMessage),
-                });
-              }
-            }
-
-            yield* publishLoginCompletion({
-              provider: "codex",
-              projectId: input.projectId,
-              ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-              configVersion: input.configVersion,
-            });
-          }),
-        ),
-        Effect.asVoid,
-      ),
-    );
-
   const setLoginStatus = (
     input: McpGetLoginStatusRequest,
     status: McpLoginStatusResult,
@@ -423,44 +304,6 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       );
     }
   };
-
-  const readStoredServer = (input: McpGetLoginStatusRequest) =>
-    Effect.gen(function* () {
-      const stored = yield* projectMcpConfigService
-        .readEffectiveRuntimeConfig(input.projectId)
-        .pipe(
-          Effect.mapError(
-            (error) =>
-              new McpRuntimeServiceError({
-                message: error.message,
-              }),
-          ),
-        );
-      const serverName = input.serverName;
-      if (!serverName) {
-        return { stored, server: undefined };
-      }
-      const server = stored.servers[serverName];
-      if (!server) {
-        return yield* new McpRuntimeServiceError({
-          message: `MCP server '${serverName}' is not defined in the shared effective config.`,
-        });
-      }
-      return { stored, server };
-    });
-
-  const readRequiredStoredServer = (
-    input: McpGetLoginStatusRequest & { readonly serverName: string },
-  ) =>
-    Effect.gen(function* () {
-      const { stored, server } = yield* readStoredServer(input);
-      if (!server) {
-        return yield* new McpRuntimeServiceError({
-          message: `MCP server '${input.serverName}' is not defined in the shared effective config.`,
-        });
-      }
-      return { stored, server };
-    });
 
   const getProviderStatus: McpRuntimeServiceShape["getProviderStatus"] = (input) =>
     Effect.gen(function* () {
@@ -512,6 +355,15 @@ const makeMcpRuntimeService = Effect.gen(function* () {
     new McpRuntimeServiceError({
       message: cause instanceof Error ? cause.message : "MCP observation failed.",
     });
+  /**
+   * Codex's admin app-server, for status, reconnect and sign-in outside a conversation.
+   * F5's servers reach Codex through the hub, so it carries none of them, starts none
+   * of them, and one pooled client outlives saves.
+   */
+  const codexAdminClient = (instanceId: ProviderInstanceId, projectId: ProjectId) =>
+    codexControlClientRegistry
+      .getAdminClient({ projectId, instanceId, ...CODEX_ADMIN_MCP_CONFIG })
+      .pipe(Effect.mapError(runtimeError));
   const readRedactionContext = (input: McpGetServerStatusesRequest) =>
     Effect.gen(function* () {
       const effective = yield* projectMcpConfigService
@@ -563,19 +415,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         support = providerStatus.support;
         supportMessage = providerStatus.supportMessage;
         if (support === "supported") {
-          const callback = yield* readCodexMcpOAuthCallbackConfigOrError(effective.servers);
-          const client = yield* codexControlClientRegistry
-            .getAdminClient({
-              projectId: input.projectId,
-              instanceId: identity.instanceId,
-              mcpEffectiveConfigVersion: effective.effectiveVersion,
-              mcpServers:
-                // Pooled admin clients resolve `${env:…}` like `readCodexServers`.
-                translateMcpForCodex(effective.servers, { environment: process.env }) ?? {},
-              ...(callback.port ? { mcpOAuthCallbackPort: callback.port } : {}),
-              ...(callback.url ? { mcpOAuthCallbackUrl: callback.url } : {}),
-            })
-            .pipe(Effect.mapError(runtimeError));
+          const client = yield* codexAdminClient(identity.instanceId, input.projectId);
           const pages = yield* Effect.tryPromise({
             try: () =>
               mcpProviderReads.read(
@@ -594,7 +434,8 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           observation = {
             servers: observeCodexMcpServers(
               pages.entries,
-              new Set(Object.keys(filterEnabledMcpServers(effective.servers, "codex"))),
+              // This client lists only Codex's own servers.
+              new Set<string>(),
             ),
             complete: pages.complete,
             capabilities: { tools: true, inputSchemas: true, resources: true },
@@ -720,6 +561,18 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       const effective = yield* projectMcpConfigService
         .readEffectiveRuntimeConfig(input.projectId)
         .pipe(Effect.mapError(runtimeError));
+      const servedName = hubServedName(effective.servers, input.provider, input.serverName);
+      if (servedName) {
+        // The provider's connection is to F5's endpoint; the server's own is the hub's.
+        if (!hub) return yield* runtimeError(new Error("F5's MCP hub is unavailable."));
+        const reconnected = yield* Effect.promise(() => hub.reconnect(servedName, input.projectId));
+        return {
+          settingsConnectionReloaded: false,
+          sessionsMatched: reconnected,
+          sessionsReconnected: reconnected,
+          failures: [],
+        };
+      }
       if (input.provider === "claudeAgent") {
         if (!providerService.reconnectMcpServerForProject)
           return yield* runtimeError(new Error("This provider does not support reconnect."));
@@ -729,19 +582,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         return result;
       }
 
-      const callback = yield* readCodexMcpOAuthCallbackConfigOrError(effective.servers);
-      const client = yield* codexControlClientRegistry
-        .getAdminClient({
-          projectId: input.projectId,
-          instanceId: identity.instanceId,
-          mcpEffectiveConfigVersion: effective.effectiveVersion,
-          mcpServers:
-            // Pooled admin clients resolve `${env:…}` like `readCodexServers`.
-            translateMcpForCodex(effective.servers, { environment: process.env }) ?? {},
-          ...(callback.port ? { mcpOAuthCallbackPort: callback.port } : {}),
-          ...(callback.url ? { mcpOAuthCallbackUrl: callback.url } : {}),
-        })
-        .pipe(Effect.mapError(runtimeError));
+      const client = yield* codexAdminClient(identity.instanceId, input.projectId);
       const reloaded = yield* Effect.tryPromise({
         try: () => client.reloadMcpServer(),
         catch: runtimeError,
@@ -759,29 +600,6 @@ const makeMcpRuntimeService = Effect.gen(function* () {
               ]
             : [],
       };
-    });
-
-  const startCliLogin = (
-    input: McpStartLoginRequest,
-    details: {
-      readonly mode: McpLoginStatusResult["mode"];
-      readonly effect: Effect.Effect<void, never, never>;
-    },
-  ) =>
-    Effect.sync(() => {
-      const pendingStatus: McpLoginStatusResult = {
-        target: input.serverName ? "server" : "provider",
-        mode: details.mode,
-        provider: input.provider,
-        projectId: input.projectId,
-        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-        ...(input.serverName ? { serverName: input.serverName } : {}),
-        status: "pending",
-        startedAt: nowIso(),
-      };
-      setLoginStatus(input, pendingStatus);
-      runLoginTask(details.effect);
-      return pendingStatus;
     });
 
   const sanitizeLoginMessage = (input: McpStartLoginRequest, message: string) =>
@@ -1004,18 +822,10 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           Effect.mapError(runtimeError),
           Effect.tapError(() => release),
         );
-      const effectiveServer = effective.servers[input.serverName];
-      if (effectiveServer?.enabled === false) {
+      // Provider sign-in covers only Claude's own servers; F5's sign in through the hub.
+      if (hubServedName(effective.servers, input.provider, input.serverName)) {
         yield* release;
-        return yield* new McpRuntimeServiceError({
-          message: `MCP server '${input.serverName}' is disabled in the shared effective config.`,
-        });
-      }
-      if (effectiveServer && !isMcpServerServedTo(effectiveServer, "claudeAgent")) {
-        yield* release;
-        return yield* new McpRuntimeServiceError({
-          message: `MCP server '${input.serverName}' is turned off for Claude in MCP settings.`,
-        });
+        return yield* configuredServerSignInError(input.serverName);
       }
       const started = yield* providerService
         .authenticateMcpServerForProject({
@@ -1174,240 +984,13 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         });
       }
 
+      // Only Codex's own servers (its config.toml) sign in here; F5's sign in through the hub.
       const configured = yield* projectMcpConfigService
         .readEffectiveRuntimeConfig(input.projectId)
-        .pipe(Effect.mapError((error) => new McpRuntimeServiceError({ message: error.message })));
-      if (!configured.servers[input.serverName!]) {
-        return yield* startCodexExternalLogin({ ...input, serverName: input.serverName! });
-      }
-
-      const { stored, server } = yield* readRequiredStoredServer({
-        ...input,
-        serverName: input.serverName!,
-      });
-      if (server.enabled === false) {
-        return yield* new McpRuntimeServiceError({
-          message: `MCP server '${input.serverName}' is disabled in the shared effective config.`,
-        });
-      }
-      if (!isMcpServerServedTo(server, "codex")) {
-        return yield* new McpRuntimeServiceError({
-          message: `MCP server '${input.serverName}' is turned off for Codex in MCP settings.`,
-        });
-      }
-
-      if (supportsCodexOauthLogin(server)) {
-        const loginInput = { ...input, serverName: input.serverName! };
-        return yield* codexOAuthManager.startLogin(codexOauthManagerInput(loginInput)).pipe(
-          Effect.map((status) => toCodexOauthLoginResult(loginInput, status)),
-          Effect.mapError(
-            (error) =>
-              new McpRuntimeServiceError({
-                message: error.message,
-              }),
-          ),
-        );
-      }
-
-      const execution = yield* resolveExecution({
-        ...input,
-        providerOptions: readProviderOptions(input),
-      }).pipe(Effect.mapError((cause) => new McpRuntimeServiceError({ message: cause.message })));
-      const providerOptions = execution.providerOptions;
-      const binaryPath = providerOptions?.codex?.binaryPath;
-      const homePath = providerOptions?.codex?.homePath;
-      const windowsValidationError = validateWindowsCliLoginInput({
-        serverName: input.serverName!,
-        ...(server.scopes ? { scopes: server.scopes } : {}),
-        ...(binaryPath ? { binaryPath } : {}),
-      });
-      if (windowsValidationError) {
-        return yield* windowsValidationError;
-      }
-      const translatedServers =
-        translateMcpForCodex(stored.servers, { environment: execution.environment }) ?? {};
-      const oauthCallbackConfig = yield* readCodexMcpOAuthCallbackConfigOrError(stored.servers);
-      const resolvedAccountEnvironment = execution.environment;
-      const execute = runCodexCliCommand(
-        [
-          "mcp",
-          "login",
-          ...(server.scopes && server.scopes.length > 0
-            ? ["--scopes", server.scopes.join(",")]
-            : []),
-          input.serverName!,
-        ],
-        {
-          baseEnvironment: resolvedAccountEnvironment,
-          cwd: execution.cwd,
-          ...(providerOptions?.codex?.launchArgs
-            ? { launchArgs: providerOptions.codex.launchArgs }
-            : {}),
-          ...(binaryPath ? { binaryPath } : {}),
-          ...(homePath ? { envOverrides: buildCodexCliEnvOverrides({ homePath }) } : {}),
-          mcpServers: translatedServers,
-          ...(oauthCallbackConfig.port ? { mcpOAuthCallbackPort: oauthCallbackConfig.port } : {}),
-          ...(oauthCallbackConfig.url ? { mcpOAuthCallbackUrl: oauthCallbackConfig.url } : {}),
-        },
-      ).pipe(
-        Effect.raceFirst(
-          Effect.gen(function* () {
-            while (true) {
-              yield* Effect.sleep("1 second");
-              const current = yield* resolveExecution.readIdentity(input);
-              if (current.identity !== execution.identity)
-                return yield* new McpRuntimeServiceError({
-                  message:
-                    "MCP login cancelled because the account execution settings or project directory changed.",
-                });
-            }
-          }),
-        ),
-        Effect.timeoutOption(LOGIN_TIMEOUT_MS),
-        Effect.flatMap((result) =>
-          Effect.gen(function* () {
-            if (Option.isNone(result)) {
-              setLoginStatus(input, {
-                target: "server",
-                mode: "cli",
-                provider: input.provider,
-                projectId: input.projectId,
-                ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-                serverName: input.serverName!,
-                status: "failed",
-                startedAt: loginStatuses.get(loginStatusKey(input))?.startedAt ?? nowIso(),
-                completedAt: nowIso(),
-                error: "Codex MCP login timed out before completion.",
-              });
-              return;
-            }
-
-            const message = readCliMessage(result.value);
-            if (result.value.code === 0) {
-              setLoginStatus(input, {
-                target: "server",
-                mode: "cli",
-                provider: input.provider,
-                projectId: input.projectId,
-                ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-                serverName: input.serverName!,
-                status: "completed",
-                startedAt: loginStatuses.get(loginStatusKey(input))?.startedAt ?? nowIso(),
-                completedAt: nowIso(),
-                ...(message ? { message } : {}),
-              });
-              yield* publishLoginCompletion({
-                provider: input.provider,
-                projectId: input.projectId,
-                ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-                configVersion: stored.effectiveVersion,
-              });
-              runBackgroundCodexReloadAfterLogin({
-                projectId: input.projectId,
-                ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-                serverName: input.serverName!,
-                ...(providerOptions ? { providerOptions } : {}),
-                configVersion: stored.effectiveVersion,
-              });
-              return;
-            }
-
-            setLoginStatus(input, {
-              target: "server",
-              mode: "cli",
-              provider: input.provider,
-              projectId: input.projectId,
-              ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-              serverName: input.serverName!,
-              status: "failed",
-              startedAt: loginStatuses.get(loginStatusKey(input))?.startedAt ?? nowIso(),
-              completedAt: nowIso(),
-              error: message ?? "Codex MCP login failed.",
-            });
-          }),
-        ),
-        Effect.catch((cause) =>
-          Effect.logError("Failed to start Codex MCP login.", {
-            cause,
-            projectId: input.projectId,
-            ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-            serverName: input.serverName!,
-          }).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                setLoginStatus(input, {
-                  target: "server",
-                  mode: "cli",
-                  provider: input.provider,
-                  projectId: input.projectId,
-                  ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-                  serverName: input.serverName!,
-                  status: "failed",
-                  startedAt: loginStatuses.get(loginStatusKey(input))?.startedAt ?? nowIso(),
-                  completedAt: nowIso(),
-                  error:
-                    cause instanceof Error ? cause.message : "Failed to start Codex MCP login.",
-                });
-              }),
-            ),
-          ),
-        ),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-      );
-
-      return yield* startCliLogin(input, {
-        mode: "cli",
-        effect: Option.isSome(accountConfig)
-          ? Effect.scoped(
-              Effect.gen(function* () {
-                const config = accountConfig.value;
-                yield* instanceLock(
-                  NodePath.join(
-                    config.profilesRoot ??
-                      (() => {
-                        throw new Error("MCP login requires the installation profilesRoot.");
-                      })(),
-                    "locks",
-                    "provider-oauth.lock.sqlite",
-                  ),
-                ).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new McpRuntimeServiceError({
-                        message:
-                          cause instanceof ProfileBusyError
-                            ? "Another profile is signing in right now."
-                            : `Cannot acquire the OAuth lease: ${String(cause)}`,
-                      }),
-                  ),
-                );
-                if (server.oauthCallbackPort)
-                  yield* Effect.tryPromise({
-                    try: () => assertOAuthPortAvailable(server.oauthCallbackPort!),
-                    catch: (cause) => new McpRuntimeServiceError({ message: String(cause) }),
-                  });
-                yield* execute;
-              }).pipe(
-                Effect.catch((cause) =>
-                  Effect.sync(() =>
-                    setLoginStatus(input, {
-                      target: "server",
-                      mode: "cli",
-                      provider: input.provider,
-                      projectId: input.projectId,
-                      ...(input.instanceId ? { instanceId: input.instanceId } : {}),
-                      serverName: input.serverName!,
-                      status: "failed",
-                      error: `MCP login failed: ${cause.message}`,
-                      startedAt: loginStatuses.get(loginStatusKey(input))?.startedAt ?? nowIso(),
-                      completedAt: nowIso(),
-                    }),
-                  ),
-                ),
-              ),
-            )
-          : execute,
-      });
+        .pipe(Effect.mapError(runtimeError));
+      if (hubServedName(configured.servers, input.provider, input.serverName!))
+        return yield* configuredServerSignInError(input.serverName!);
+      return yield* startCodexExternalLogin({ ...input, serverName: input.serverName! });
     });
 
   const getLoginStatus: McpRuntimeServiceShape["getLoginStatus"] = (input) =>
@@ -1426,11 +1009,12 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         const effective = yield* projectMcpConfigService
           .readEffectiveRuntimeConfig(input.projectId)
           .pipe(Effect.option);
-        const server = Option.isSome(effective)
-          ? effective.value.servers[input.serverName]
-          : undefined;
-        // Unstored names are external (profile config.toml) servers, which only use app-server OAuth.
-        if (Option.isSome(effective) && (!server || supportsCodexOauthLogin(server))) {
+        // Unstored names are Codex's own (profile config.toml) servers, which use
+        // app-server OAuth. F5's servers sign in through the hub.
+        if (
+          Option.isSome(effective) &&
+          !hubServedName(effective.value.servers, input.provider, input.serverName)
+        ) {
           const loginInput = { ...input, serverName: input.serverName };
           const status = yield* codexOAuthManager.getStatus(codexOauthManagerInput(loginInput));
           return toCodexOauthLoginResult(loginInput, status);

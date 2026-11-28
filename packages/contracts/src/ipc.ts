@@ -31,10 +31,7 @@ import type {
   WorktreesDiscardMovedChangesResult,
   WorktreesSwitchWorkspaceInput,
   WorktreesGetTransitionInput,
-  WorktreesPreviewTransitionRecoveryInput,
-  WorktreesResolveTransitionInput,
   WorkspaceTransitionSnapshot,
-  WorkspaceTransitionRecoveryPreview,
   WorktreesListInput,
   WorktreesListResult,
   WorktreesInspectInput,
@@ -280,6 +277,30 @@ import type {
   McpStartHubSignInResult,
   McpCompleteHubSignInResult,
   McpSignOutHubServerResult,
+  McpListToolPinsRequest,
+  McpListToolPinsResult,
+  McpAcceptToolChangesRequest,
+  McpAcceptToolChangesResult,
+  McpListActivityRequest,
+  McpListActivityResult,
+  McpGetThreadServersRequest,
+  McpSetThreadServerEnabledRequest,
+  McpThreadServersResult,
+  McpListComposerPromptsRequest,
+  McpListComposerPromptsResult,
+  McpGetComposerPromptRequest,
+  McpGetComposerPromptResult,
+  McpCompleteComposerPromptRequest,
+  McpCompleteComposerPromptResult,
+  McpListComposerResourcesRequest,
+  McpListComposerResourcesResult,
+  McpReadComposerResourceRequest,
+  McpReadComposerResourceResult,
+  McpSearchCatalogRequest,
+  McpSearchCatalogResult,
+  McpGetRepositoryServersRequest,
+  McpSetRepositoryServerTrustRequest,
+  McpRepositoryServersResult,
   McpGetProviderStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
@@ -1363,6 +1384,43 @@ export interface NativeApi {
     startHubSignIn: (input: McpStartHubSignInRequest) => Promise<McpStartHubSignInResult>;
     completeHubSignIn: (input: McpCompleteHubSignInRequest) => Promise<McpCompleteHubSignInResult>;
     signOutHubServer: (input: McpSignOutHubServerRequest) => Promise<McpSignOutHubServerResult>;
+    listToolPins: (input: McpListToolPinsRequest) => Promise<McpListToolPinsResult>;
+    acceptToolChanges: (input: McpAcceptToolChangesRequest) => Promise<McpAcceptToolChangesResult>;
+    listActivity: (
+      input: McpListActivityRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListActivityResult>;
+    getThreadServers: (input: McpGetThreadServersRequest) => Promise<McpThreadServersResult>;
+    setThreadServerEnabled: (
+      input: McpSetThreadServerEnabledRequest,
+    ) => Promise<McpThreadServersResult>;
+    listComposerPrompts: (
+      input: McpListComposerPromptsRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListComposerPromptsResult>;
+    getComposerPrompt: (input: McpGetComposerPromptRequest) => Promise<McpGetComposerPromptResult>;
+    completeComposerPrompt: (
+      input: McpCompleteComposerPromptRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpCompleteComposerPromptResult>;
+    listComposerResources: (
+      input: McpListComposerResourcesRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpListComposerResourcesResult>;
+    readComposerResource: (
+      input: McpReadComposerResourceRequest,
+    ) => Promise<McpReadComposerResourceResult>;
+    searchCatalog: (
+      input: McpSearchCatalogRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpSearchCatalogResult>;
+    getRepositoryServers: (
+      input: McpGetRepositoryServersRequest,
+      context?: NativeRequestContext,
+    ) => Promise<McpRepositoryServersResult>;
+    setRepositoryServerTrust: (
+      input: McpSetRepositoryServerTrustRequest,
+    ) => Promise<McpRepositoryServersResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
   };
   storage: {
@@ -1435,12 +1493,6 @@ export interface NativeApi {
     getTransition: (
       input: WorktreesGetTransitionInput,
     ) => Promise<WorkspaceTransitionSnapshot | null>;
-    previewTransitionRecovery: (
-      input: WorktreesPreviewTransitionRecoveryInput,
-    ) => Promise<WorkspaceTransitionRecoveryPreview>;
-    resolveTransition: (
-      input: WorktreesResolveTransitionInput,
-    ) => Promise<WorkspaceTransitionSnapshot>;
 
     inspect: (input: WorktreesInspectInput) => Promise<WorktreesInspectResult>;
     remove: (input: WorktreesRemoveInput) => Promise<WorktreesRemoveResult>;
@@ -1457,6 +1509,8 @@ export interface NativeApi {
     cancel: (input: WorktreeSetupActionInput) => Promise<WorktreeSetupActionResult>;
     retry: (input: WorktreeSetupActionInput) => Promise<WorktreeSetupActionResult>;
     workLocally: (input: WorktreeSetupActionInput) => Promise<WorktreeSetupActionResult>;
+    /** Runs the setup script again after it failed or a restart cut it off. */
+    rerunScript: (input: WorktreeSetupActionInput) => Promise<WorktreeSetupActionResult>;
     onUpdated: (callback: (payload: WorktreeSetupUpdatedPayload) => void) => () => void;
   };
   globalSearch: {

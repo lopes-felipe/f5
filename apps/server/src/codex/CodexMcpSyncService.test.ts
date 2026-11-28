@@ -2,6 +2,9 @@ import { ProjectId } from "@t3tools/contracts";
 import { Effect, Layer } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
+import { McpHub } from "../mcp/hub/McpHub.ts";
+import { CODEX_ADMIN_HUB_CONFIG_VERSION } from "../mcp/hub/nativeHubOptions.ts";
+import { makeFakeMcpHub } from "../mcp/hub/testing/fakeMcpHub.ts";
 import { ProjectMcpConfigService } from "../mcp/ProjectMcpConfigService.ts";
 import {
   CodexControlClientRegistry,
@@ -10,10 +13,8 @@ import {
 import { CodexMcpSyncService, CodexMcpSyncServiceLive } from "./CodexMcpSyncService.ts";
 
 describe("CodexMcpSyncService", () => {
-  it("reads project-scoped MCP config and passes it into the control registry", async () => {
-    const projectId = ProjectId.makeUnsafe("project-sync-service");
-    const registryInputs: CodexControlClientAccessInput[] = [];
-    const dependencies = Layer.mergeAll(
+  const makeDependencies = (registryInputs: CodexControlClientAccessInput[]) =>
+    Layer.mergeAll(
       Layer.succeed(ProjectMcpConfigService, {
         readCommonStoredConfig: () => Effect.die(new Error("unused in CodexMcpSyncService tests")),
         readProjectStoredConfig: (_projectId: ProjectId) =>
@@ -62,7 +63,33 @@ describe("CodexMcpSyncService", () => {
           Effect.die(new Error("unused in CodexMcpSyncService tests")),
       }),
     );
-    const layer = CodexMcpSyncServiceLive.pipe(Layer.provideMerge(dependencies));
+
+  it("starts none of F5's servers in the admin client", async () => {
+    const projectId = ProjectId.makeUnsafe("project-sync-hub");
+    const registryInputs: CodexControlClientAccessInput[] = [];
+    const layer = CodexMcpSyncServiceLive.pipe(
+      Layer.provideMerge(makeDependencies(registryInputs)),
+      Layer.provide(Layer.succeed(McpHub, makeFakeMcpHub().hub)),
+    );
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const service = yield* CodexMcpSyncService;
+        return yield* service.getStatus({ projectId });
+      }).pipe(Effect.provide(layer)),
+    );
+    // The saved version is still reported; only the pooled client's key is fixed.
+    expect(result.configVersion).toBe("mcp-version-9");
+    expect(registryInputs).toEqual([
+      { projectId, mcpEffectiveConfigVersion: CODEX_ADMIN_HUB_CONFIG_VERSION, mcpServers: {} },
+    ]);
+  });
+
+  it("reports the saved config version and passes provider options, never F5's servers", async () => {
+    const projectId = ProjectId.makeUnsafe("project-sync-service");
+    const registryInputs: CodexControlClientAccessInput[] = [];
+    const layer = CodexMcpSyncServiceLive.pipe(
+      Layer.provideMerge(makeDependencies(registryInputs)),
+    );
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
@@ -91,15 +118,8 @@ describe("CodexMcpSyncService", () => {
             binaryPath: "/tmp/codex",
           },
         },
-        mcpEffectiveConfigVersion: "mcp-version-9",
-        mcpServers: {
-          filesystem: {
-            type: "stdio",
-            command: "npx",
-          },
-        },
-        mcpOAuthCallbackPort: 3118,
-        mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback",
+        mcpEffectiveConfigVersion: CODEX_ADMIN_HUB_CONFIG_VERSION,
+        mcpServers: {},
       },
     ]);
   });

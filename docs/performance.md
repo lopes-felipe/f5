@@ -585,3 +585,21 @@ three repetitions:
 4. If stalls remain after 2 and 3, take fewer snapshots or take them only while no turn is
    running. Moving reads off the main thread (the gated SQLite worker track) removes the
    event-loop stall for every cause, including this one.
+
+## Incremental typecheck and Turborepo caching
+
+All TypeScript workspaces inherit `"incremental": true` from `tsconfig.base.json`, writing
+gitignored `tsconfig.tsbuildinfo` files (cleaned by `bun clean`). `turbo.json` enables task
+caching for `typecheck` with `outputs: ["*.tsbuildinfo"]` and tracks cross-workspace
+`tsconfig.json` `extends` and `include` paths via `$TURBO_ROOT$` inputs.
+`scripts/typecheck-cache-policy.test.ts` enforces that every external path referenced from any
+workspace `tsconfig.json` is listed in `turbo.json` so edits to shared files always invalidate
+downstream typecheck caches.
+
+Measured locally across all 8 workspaces (`@t3tools/contracts`, `@t3tools/shared`, `effect-acp`,
+`t3`, `@t3tools/web`, `@t3tools/desktop`, `@t3tools/marketing`, `@t3tools/scripts`):
+
+| Scenario                                        | Before (`cache: false`) | After (`incremental` + Turbo cache) |
+| ----------------------------------------------- | ----------------------- | ----------------------------------- |
+| Cold typecheck (all `.tsbuildinfo` deleted)     | ~2m 30s                 | 2m 33s (populates all 7 buildinfos) |
+| Warm repeat `bun typecheck` (no source changes) | 18.25s (`0/8` cached)   | 136ms (`8/8` cached, `FULL TURBO`)  |

@@ -465,9 +465,21 @@ describe("CheckpointReactor", () => {
                         cwd: target,
                         args: ["symbolic-ref", "HEAD"],
                       })).stdout
-                    : execFileSync("git", ["symbolic-ref", "HEAD"], {
-                        cwd: target,
-                        encoding: "utf8",
+                    : yield* Effect.try({
+                        // A detached HEAD or a folder without Git has no branch.
+                        try: () =>
+                          execFileSync("git", ["symbolic-ref", "HEAD"], {
+                            cwd: target,
+                            encoding: "utf8",
+                            stdio: ["ignore", "pipe", "ignore"],
+                          }),
+                        catch: () =>
+                          new GitCommandError({
+                            cwd: target,
+                            operation: "checkpoint.verifyBranch",
+                            command: "symbolic-ref",
+                            detail: "HEAD is not on a branch",
+                          }),
                       }),
                 );
                 return { canonicalRoot: target, commonDir: path.join(target, ".git"), branch };
@@ -576,10 +588,11 @@ describe("CheckpointReactor", () => {
     { shared: false, checkout: "agent-selected", injected: true },
     // A tag that shares the branch's name must not make it read as heads/<name>.
     { shared: false, checkout: "agent-selected", tagged: true },
+    // The folder is the identity, so a thread sharing it follows it as well.
     { shared: true, checkout: "agent-selected" },
     { shared: false, checkout: "t3code/abcdef01" },
   ])(
-    "follows only an exclusive non-temporary checkout: %j",
+    "follows the folder's non-temporary branch at the end of a turn: %j",
     async ({ shared, checkout, injected, tagged }) => {
       const execute = vi.fn(() =>
         Effect.succeed({ code: 0, stdout: `refs/heads/${checkout}\n`, stderr: "" }),
@@ -667,15 +680,17 @@ describe("CheckpointReactor", () => {
         payload: { state: "completed" },
       });
       const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
-      expect(thread.branch).toBe(
-        !shared && checkout === "agent-selected" ? checkout : "t3code/1234abcd",
-      );
+      const followed = checkout === "agent-selected";
+      expect(thread.branch).toBe(followed ? checkout : "t3code/1234abcd");
       expect(thread.worktreePath).toBe(harness.cwd);
+      expect(
+        thread.activities
+          .filter((activity) => activity.kind === "workspace.branch-changed")
+          .map((activity) => activity.summary),
+      ).toEqual(followed ? ["Now on agent-selected (was t3code/1234abcd)"] : []);
       if (injected)
         expect(execute).toHaveBeenCalledWith(
-          expect.objectContaining({
-            operation: "checkpoint.syncBranch",
-          }),
+          expect.objectContaining({ operation: "checkpoint.verifyBranch" }),
         );
     },
   );

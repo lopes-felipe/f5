@@ -11,18 +11,24 @@ interface Request {
 }
 interface Store {
   readonly requests: ReadonlyArray<Request>;
+  /** Counts worktrees removed without the dialog, so open views know to refresh. */
+  readonly silentRemovals: number;
   request: (rows: ReadonlyArray<WorktreeRemovalRow>) => Promise<void>;
+  recordSilentRemovals: (count: number) => void;
   close: () => void;
 }
 let sequence = 0;
 export const useWorktreeRemovalDialogStore = create<Store>((set, get) => ({
   requests: [],
+  silentRemovals: 0,
   request: (rows) =>
     rows.length === 0
       ? Promise.resolve()
       : new Promise<void>((resolve) => {
           set((state) => ({ requests: [...state.requests, { id: ++sequence, rows, resolve }] }));
         }),
+  recordSilentRemovals: (count) =>
+    set((state) => ({ silentRemovals: state.silentRemovals + count })),
   close: () => {
     const [first, ...rest] = get().requests;
     set({ requests: rest });

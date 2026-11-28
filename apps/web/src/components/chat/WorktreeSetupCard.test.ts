@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import { isNewerWorktreeSetup, persistedWorktreeSetup } from "../../hooks/useWorktreeSetup";
 import {
+  canRerunWorktreeSetupScript,
+  canStopWorktreeSetupScript,
   isWorktreeSetupCollapsible,
   shouldShowWorktreeSetupCard,
   worktreeSetupHeadline,
@@ -29,6 +31,38 @@ describe("worktree setup card logic", () => {
     );
     expect(worktreeSetupHeadline(doneWithScriptFailure)).toBe(
       "Worktree ready; setup script failed",
+    );
+  });
+
+  it("offers to rerun only a finished setup's failed or interrupted script, and stays up while it runs", () => {
+    const done = makeWorktreeSetupSnapshot({ phase: "done" });
+    const withScript = (status: "done" | "failed" | "warning" | "running" | "skipped") =>
+      makeWorktreeSetupSnapshot({
+        phase: "done",
+        worktreePath: "/worktrees/feature",
+        stages: done.stages.map((stage) =>
+          stage.id === "setup-script" ? { ...stage, status } : stage,
+        ),
+      });
+    expect(canRerunWorktreeSetupScript(withScript("failed"))).toBe(true);
+    // A restart cut it off: a warning, since the agent is working regardless.
+    expect(canRerunWorktreeSetupScript(withScript("warning"))).toBe(true);
+    for (const status of ["done", "running", "skipped"] as const)
+      expect(canRerunWorktreeSetupScript(withScript(status))).toBe(false);
+    // While it runs it can be stopped; a first-send setup is cancelled as a whole instead.
+    expect(canStopWorktreeSetupScript(withScript("running"))).toBe(true);
+    expect(canStopWorktreeSetupScript(withScript("failed"))).toBe(false);
+    expect(canStopWorktreeSetupScript({ ...withScript("running"), phase: "running" })).toBe(false);
+    // A setup that has not finished is retried as a whole instead.
+    expect(
+      canRerunWorktreeSetupScript({ ...withScript("failed"), phase: "failed", error: "boom" }),
+    ).toBe(false);
+    expect(canRerunWorktreeSetupScript({ ...withScript("failed"), worktreePath: null })).toBe(
+      false,
+    );
+    // The card does not vanish between the click and the result.
+    expect(shouldShowWorktreeSetupCard(withScript("running"), { firstTurnQueued: false })).toBe(
+      true,
     );
   });
 

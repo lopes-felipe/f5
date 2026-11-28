@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import * as NodeFs from "node:fs";
+import * as NodeOs from "node:os";
+import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
   EventId,
@@ -46,6 +49,8 @@ import {
   type CodexAdapterLiveOptions,
 } from "./CodexAdapter.ts";
 import { CodexChromeSession } from "../codexChromeSession.ts";
+import { makeFakeMcpHub } from "../../mcp/hub/testing/fakeMcpHub.ts";
+import type { McpHubOmission } from "../../mcp/hub/McpHub.ts";
 import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
 import {
   NotificationAdmission,
@@ -417,7 +422,181 @@ const validationLayer = it.layer(
   ),
 );
 
+const hubManager = new FakeCodexManager();
+const hubOmitted: McpHubOmission[] = [];
+const fakeHub = makeFakeMcpHub({ omitted: hubOmitted });
+const hubLayer = it.layer(
+  makeCodexAdapterLive({
+    manager: hubManager,
+    mcpHub: fakeHub.hub,
+  }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+hubLayer("CodexAdapterLive with F5's MCP hub", (it) => {
+  const launched = () =>
+    hubManager.startSessionImpl.mock.calls.at(-1)![0] as {
+      mcpServers?: Record<string, Record<string, unknown>>;
+      mcpEnvironment?: Record<string, string>;
+    };
+
+  it.effect("launches with hub endpoints whose credentials are environment variables", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const secret = "configured-secret-value";
+      yield* adapter.startSession({
+        threadId: asThreadId("hub-start"),
+        runtimeMode: "approval-required",
+        providerOptions: {
+          mcpServers: {
+            docs: {
+              type: "stdio",
+              command: "docs-server",
+              env: { TOKEN: secret },
+              supportsParallelToolCalls: true,
+            },
+          },
+        },
+      });
+      const input = launched();
+      assert.deepEqual(Object.keys(input.mcpServers ?? {}), ["docs"]);
+      assert.equal(input.mcpServers?.docs?.url, "http://127.0.0.1:9/mcp/user/docs");
+      assert.equal(input.mcpServers?.docs?.bearer_token_env_var, "F5_MCP_HUB_TOKEN_0");
+      assert.equal(input.mcpServers?.docs?.supports_parallel_tool_calls, true);
+      assert.equal(input.mcpEnvironment?.F5_MCP_HUB_TOKEN_0, "token-docs");
+      assert.ok(!JSON.stringify(input.mcpServers).includes(secret));
+      assert.equal(fakeHub.attaches.at(-1)?.provider, "codex");
+    }),
+  );
+
+  it.effect("warns about left-out servers once configured and releases endpoints on exit", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("hub-exit");
+      hubOmitted.push({
+        serverName: "secret-docs",
+        reason: "needs ${env:DOCS_TOKEN}, which is not set",
+      });
+      try {
+        yield* adapter.startSession({
+          threadId,
+          runtimeMode: "approval-required",
+          providerOptions: { mcpServers: { docs: { type: "stdio", command: "docs" } } },
+        });
+      } finally {
+        hubOmitted.length = 0;
+      }
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      hubManager.emit("event", {
+        id: asEventId("evt-hub-configured"),
+        kind: "session",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "session/configured",
+        threadId,
+        payload: { config: { model: "gpt" } },
+      } satisfies ProviderEvent);
+      const collected = [...(yield* Fiber.join(events))];
+      assert.deepEqual(
+        collected.map((event) => event.type),
+        ["session.configured", "config.warning"],
+      );
+      const warning = collected[1]!;
+      if (warning.type === "config.warning") {
+        assert.equal(warning.payload.summary, "F5 did not pass MCP server secret-docs to Codex.");
+        assert.match(warning.payload.details ?? "", /DOCS_TOKEN/);
+      }
+
+      // The process exits on its own: its hub endpoints go with it.
+      const disposedBefore = fakeHub.disposed;
+      hubManager.emit("event", {
+        id: asEventId("evt-hub-exited"),
+        kind: "session",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "session/exited",
+        threadId,
+      } satisfies ProviderEvent);
+      for (let attempt = 0; attempt < 50 && fakeHub.disposed === disposedBefore; attempt++)
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      assert.equal(fakeHub.disposed, disposedBefore + 1);
+    }),
+  );
+
+  it.effect("applies edits on the hub and restarts only for added servers", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("hub-reload");
+      yield* adapter.startSession({
+        threadId,
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: { docs: { type: "stdio", command: "old" } } },
+      });
+      const reload = vi.spyOn(hubManager, "reloadMcpConfig").mockResolvedValue([]);
+      try {
+        const edited = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: { docs: { type: "stdio", command: "new" } },
+        });
+        assert.equal(edited.restartRequired, false);
+        assert.deepEqual(fakeHub.updates.at(-1), { docs: { type: "stdio", command: "new" } });
+        assert.equal(reload.mock.calls.length, 1);
+
+        const added = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: {
+            docs: { type: "stdio", command: "new" },
+            more: { type: "stdio", command: "more" },
+          },
+        });
+        // Edits in the same Apply still reach Codex before the restart.
+        assert.equal(added.restartRequired, true);
+        assert.equal(reload.mock.calls.length, 2);
+
+        // An Apply with no F5 change still reloads, so Codex's own servers pick up
+        // sign-ins and edits.
+        const unchanged = yield* adapter.reloadMcpConfig!({
+          threadId,
+          mcpServers: { docs: { type: "stdio", command: "new" } },
+        });
+        assert.equal(unchanged.restartRequired, false);
+        assert.equal(reload.mock.calls.length, 3);
+      } finally {
+        reload.mockRestore();
+      }
+    }),
+  );
+});
+
 validationLayer("CodexAdapterLive validation", (it) => {
+  it.effect("never gives Codex configured servers without F5's hub", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        threadId: asThreadId("no-hub"),
+        runtimeMode: "approval-required",
+        providerOptions: { mcpServers: { docs: { type: "stdio", command: "docs-server" } } },
+      });
+      const input = validationManager.startSessionImpl.mock.calls.at(-1)![0] as {
+        mcpServers?: Record<string, unknown>;
+      };
+      assert.equal(input.mcpServers?.docs, undefined);
+      const reloaded = yield* adapter.reloadMcpConfig!({
+        threadId: asThreadId("no-hub"),
+        mcpServers: { docs: { type: "stdio", command: "docs-server" } },
+      });
+      assert.equal(reloaded.restartRequired ?? false, false);
+    }),
+  );
+
   it.effect("rejects excessive MCP start and reload inputs before manager mutation", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -444,29 +623,6 @@ validationLayer("CodexAdapterLive validation", (it) => {
           mcpServers,
         }).pipe(Effect.result);
         assert.equal(reloaded._tag, "Failure");
-        assert.equal(reload.mock.calls.length, 0);
-      } finally {
-        reload.mockRestore();
-      }
-    }),
-  );
-
-  it.effect("requires a restart before sending a reload RPC when launch MCP config differs", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CodexAdapter;
-      const threadId = asThreadId("mcp-launch-key");
-      yield* adapter.startSession({
-        threadId,
-        runtimeMode: "approval-required",
-        providerOptions: { mcpServers: { docs: { type: "stdio", command: "old-command" } } },
-      });
-      const reload = vi.spyOn(validationManager, "reloadMcpConfig");
-      try {
-        const result = yield* adapter.reloadMcpConfig!({
-          threadId,
-          mcpServers: { docs: { type: "stdio", command: "new-command" } },
-        });
-        assert.equal(result.restartRequired, true);
         assert.equal(reload.mock.calls.length, 0);
       } finally {
         reload.mockRestore();
@@ -3033,31 +3189,6 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
-  it.effect("corrects the recorded enforcement when requirements leave a stage sandboxed", () =>
-    Effect.gen(function* () {
-      const adapter = yield* CodexAdapter;
-      const next = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
-      lifecycleManager.emit("event", {
-        id: asEventId("enforcement-changed"),
-        kind: "notification",
-        provider: "codex",
-        threadId: asThreadId("thread-1"),
-        createdAt: new Date().toISOString(),
-        method: "f5/readOnly/enforcementChanged",
-        payload: { enforcement: "sandbox" },
-      } satisfies ProviderEvent);
-      const event = yield* Fiber.join(next);
-      assert.equal(event._tag, "Some");
-      if (event._tag !== "Some" || event.value.type !== "session.configured") {
-        assert.fail(`expected session.configured, got ${JSON.stringify(event)}`);
-      }
-      assert.deepEqual(event.value.payload.config, {
-        f5ReadOnlyEnforcement: "sandbox",
-        f5ReadOnlyEnforcementSummary: "Read-only stage: sandboxed (Codex native sandbox)",
-      });
-    }),
-  );
-
   it.effect("lists at most twenty patch approval paths with an overflow count", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -5036,6 +5167,7 @@ it.effect(
       manager.startSessionImpl.mock.calls.at(-1)?.[0] as {
         mcpServers?: Record<string, unknown>;
         disablePlugins?: boolean;
+        readOnlyHomePath?: string;
       };
     // A server from the user's Codex settings and the project's provider options.
     const providerOptions = {
@@ -5051,18 +5183,75 @@ it.effect(
       });
       assert.deepEqual(Object.keys(lastStart().mcpServers ?? {}), ["f5_thread"]);
       assert.equal(lastStart().disablePlugins, true);
+      // The stage runs in the instance's rules-free home (CodexReadOnlyHome.ts).
+      assert.match(lastStart().readOnlyHomePath ?? "", /[\\/]codex-readonly[\\/]codex$/);
 
       yield* adapter.startSession({
         threadId: asThreadId("normal"),
         runtimeMode: "full-access",
         providerOptions,
       });
+      // Configured servers reach Codex only through F5's hub, which this layer lacks.
       assert.deepEqual(Object.keys(lastStart().mcpServers ?? {}).toSorted(), [
         "f5_preview",
         "f5_thread",
-        "github",
       ]);
       assert.equal(lastStart().disablePlugins, undefined);
+      assert.equal(lastStart().readOnlyHomePath, undefined);
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  },
+);
+
+it.effect(
+  "refuses a read-only stage whose workspace has its own Codex rules, at start and before a turn",
+  () => {
+    const manager = new FakeCodexManager();
+    const layer = makeCodexAdapterLive({ manager }).pipe(
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "codex-readonly-rules-" }),
+      ),
+      Layer.provideMerge(providerSessionDirectoryTestLayer),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      const workspace = NodeFs.mkdtempSync(NodePath.join(NodeOs.tmpdir(), "codex-rules-ws-"));
+      NodeFs.mkdirSync(NodePath.join(workspace, ".git"));
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        threadId: asThreadId("clean-stage"),
+        cwd: workspace,
+        runtimeMode: "full-access",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+
+      NodeFs.mkdirSync(NodePath.join(workspace, ".codex", "rules"), { recursive: true });
+      NodeFs.writeFileSync(
+        NodePath.join(workspace, ".codex", "rules", "default.rules"),
+        'prefix_rule(pattern=["touch"], decision="allow")\n',
+      );
+      const startFailure = yield* adapter
+        .startSession({
+          threadId: asThreadId("rules-stage"),
+          cwd: workspace,
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+        })
+        .pipe(Effect.flip);
+      assert.match(String(startFailure.message), /default\.rules has Codex rules/);
+      // A normal session is unaffected.
+      yield* adapter.startSession({
+        threadId: asThreadId("normal-session"),
+        cwd: workspace,
+        runtimeMode: "full-access",
+      });
+
+      manager.readOnlyStageCwd = () => workspace;
+      const sendsBefore = manager.sendTurnImpl.mock.calls.length;
+      const turnFailure = yield* adapter
+        .sendTurn({ threadId: asThreadId("clean-stage"), input: "review" })
+        .pipe(Effect.flip);
+      assert.match(String(turnFailure.message), /default\.rules has Codex rules/);
+      assert.equal(manager.sendTurnImpl.mock.calls.length, sendsBefore);
     }).pipe(Effect.provide(layer), Effect.scoped);
   },
 );
@@ -5137,7 +5326,9 @@ it.effect(
         runtimeMode: "full-access",
         providerOptions: { mcpServers: { node_repl: { type: "stdio", command: "mine" } } },
       });
-      assert.deepEqual(servers().node_repl, { type: "stdio", command: "mine" });
+      // F5 never substitutes its own node_repl; the user's reaches Codex only through
+      // the hub, which this adapter has none of.
+      assert.equal(servers().node_repl, undefined);
       assert.equal(broker.requestChromeSession.mock.calls.length, 2);
 
       // An automation's session never waits on a consent dialog nobody can answer.

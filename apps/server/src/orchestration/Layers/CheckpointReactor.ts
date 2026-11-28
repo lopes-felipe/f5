@@ -7,13 +7,11 @@ import {
   scopedCheckpointRef,
   checkpointWorkspaceRepositories,
 } from "../../checkpointing/checkpointRepositories.ts";
-import { dispatchVerifiedWorkspace } from "../../project/workspaceTransitionContext.ts";
+import { syncObservedBranch } from "../../project/observedBranch.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { makeConversationRewind } from "../rewind.ts";
-import { followsCheckoutBranchAtTurnEnd } from "../../project/worktreeReadiness.ts";
 import { GitService } from "../../git/Services/GitService.ts";
-import { branchNameFromHeadRef } from "../../git/headBranch.ts";
 import type { CaptureCheckpointInput } from "../../checkpointing/Services/CheckpointStore.ts";
 import {
   CommandId,
@@ -542,41 +540,12 @@ const make = Effect.gen(function* () {
       );
     }
 
-    if (input.thread.worktreePath === input.cwd && input.thread.branch !== null) {
-      yield* Effect.gen(function* () {
-        const result = yield* git.execute({
-          operation: "checkpoint.syncBranch",
-          cwd: input.cwd,
-          args: ["symbolic-ref", "--quiet", "HEAD"],
-          allowNonZeroExit: true,
-        });
-        const branch = branchNameFromHeadRef(result.stdout);
-        if (result.code !== 0 || !branch || branch === input.thread.branch) return;
-        if (
-          !(yield* followsCheckoutBranchAtTurnEnd(
-            yield* orchestrationEngine.getReadModel(),
-            input.threadId,
-            input.cwd,
-            branch,
-          ))
-        )
-          return;
-        if (Option.isNone(workspaceGit)) return;
-        yield* dispatchVerifiedWorkspace(
-          orchestrationEngine,
-          workspaceGit.value,
-          {
-            type: "thread.meta.update",
-            commandId: serverCommandId("checkpoint-branch"),
-            threadId: input.threadId,
-            branch,
-            expectedBranch: input.thread.branch,
-            expectedWorktreePath: input.thread.worktreePath,
-          },
-          { observation: true },
-        );
-      }).pipe(Effect.catch(() => Effect.void));
-    }
+    // The turn may have switched branches; the thread follows its folder.
+    if (Option.isSome(workspaceGit))
+      yield* syncObservedBranch(
+        { engine: orchestrationEngine, git: workspaceGit.value },
+        input.threadId,
+      );
 
     // Invalidate the workspace entry cache so the @-mention file picker
     // reflects files created or deleted during this turn.

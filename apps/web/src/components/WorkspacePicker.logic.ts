@@ -16,6 +16,7 @@ export type WorkspaceAction =
   | "switchBranch"
   | "moveToWorktree"
   | "manageWorktrees"
+  | "restoreWorktree"
   | "discardMove"
   | "removeWorktree";
 
@@ -269,6 +270,14 @@ function buildPickRows(input: WorkspaceRowsInput): ReadonlyArray<WorkspaceRow> {
       switchCheckoutPath(input.state, input.projectCwd) !== null
     )
       action("switchBranch", "Switch branch here…");
+    // The next message restores it anyway; this is for wanting the files now.
+    if (
+      !input.isDraft &&
+      !input.creatingWorktree &&
+      input.checkoutMissing &&
+      input.state.kind === "worktree"
+    )
+      action("restoreWorktree", "Restore worktree now");
     if (input.canMove)
       action("moveToWorktree", "Move to a new worktree…", { disabled: input.moveDisabled });
     action("manageWorktrees", "Manage worktrees…");
@@ -354,19 +363,26 @@ export function workspaceTriggerLabel(input: {
   readonly activeThreadBranch: string | null;
   readonly projectBranch: string | null;
   readonly checkoutMissing: boolean;
+  /**
+   * The branch the worktree's HEAD is on right now: null when detached,
+   * undefined while unknown. The thread follows it; its recorded branch is only
+   * the last one seen there.
+   */
+  readonly liveBranch?: string | null | undefined;
 }): string {
-  if (input.creatingWorktree)
-    return input.activeThreadBranch
-      ? `New worktree · from ${input.activeThreadBranch}`
-      : "New worktree";
+  if (input.creatingWorktree) return "Creating worktree…";
   switch (input.state.kind) {
     case "local":
       return input.projectBranch ? `Local · ${input.projectBranch}` : "Local";
     case "newWorktree":
       return input.state.base ? `New worktree · from ${input.state.base}` : "New worktree";
     case "worktree": {
-      const name = input.state.branch ?? input.state.path.split(/[\\/]/).filter(Boolean).at(-1);
-      return input.checkoutMissing ? `${name} · missing` : (name ?? "Worktree");
+      const recorded =
+        input.state.branch ?? input.state.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "Worktree";
+      // Nothing is wrong: the folder was cleaned up and the next message brings it back.
+      if (input.checkoutMissing) return `${recorded} · restores on send`;
+      if (input.liveBranch === null) return `${recorded} · detached`;
+      return input.liveBranch ?? recorded;
     }
   }
 }

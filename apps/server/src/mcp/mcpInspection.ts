@@ -3,7 +3,6 @@ import type { McpServerStatusEntry, McpProjectServersConfig } from "@t3tools/con
 import { createMcpDiagnosticsSanitizer, isMcpCredentialKey } from "@t3tools/shared/mcpDiagnostics";
 import { mcpServerNameKey } from "@t3tools/shared/mcpValidation";
 import type { McpAdapterObservation, ObservedMcpServer } from "../provider/mcpObservation.ts";
-import { CODEX_SSE_TRANSPORT_HINT } from "@t3tools/shared/mcpTranslation";
 
 export const CLAUDE_MCP_AUTH_MESSAGE =
   "Claude reports this server needs sign-in. Click Sign in to authenticate in your browser.";
@@ -95,8 +94,6 @@ export function projectMcpStatuses(
         ...result,
         message: `Disabled in saved configuration; ${result.state === "ready" ? "still connected" : result.state} in this conversation; apply pending.${result.message ? ` ${result.message}` : ""}`,
       };
-    if (provider === "codex" && config.type === "sse" && result.state !== "ready")
-      result = { ...result, message: `${result.message ?? ""} ${CODEX_SSE_TRANSPORT_HINT}`.trim() };
     return result;
   });
   return [

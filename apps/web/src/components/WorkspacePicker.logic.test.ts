@@ -164,6 +164,22 @@ describe("buildWorkspaceRows", () => {
     );
     expect(rows).not.toContain("action Switch branch here…");
     expect(rows).toContain("action Remove worktree…");
+    // The next message restores it; Manage offers to do it now.
+    expect(rows.filter((row) => row.startsWith("action")).at(0)).toBe(
+      "action Restore worktree now",
+    );
+  });
+
+  it("offers to restore only a started thread's worktree that is not on disk", () => {
+    const missing = { checkoutMissing: true, isDraft: false } as const;
+    const worktree = { kind: "worktree", path: "/wt/gone", branch: "gone" } as const;
+    const offered = (overrides: Parameters<typeof input>[0]) =>
+      outline(buildWorkspaceRows(input(overrides))).includes("action Restore worktree now");
+    expect(offered({ ...missing, state: worktree })).toBe(true);
+    expect(offered({ ...missing, state: worktree, checkoutMissing: false })).toBe(false);
+    expect(offered({ ...missing, state: worktree, isDraft: true })).toBe(false);
+    // A missing project folder is not something F5 can bring back.
+    expect(offered({ ...missing, state: { kind: "local" } })).toBe(false);
   });
 
   it("only explains setup while the worktree is being created", () => {
@@ -357,7 +373,22 @@ describe("workspaceTriggerLabel", () => {
         checkoutMissing: true,
         state: { kind: "worktree", path: "/wt/route", branch: "fix/route" },
       }),
-    ).toBe("fix/route · missing");
+    ).toBe("fix/route · restores on send");
+    // The thread follows the folder: the label is the branch HEAD is on now.
+    expect(
+      workspaceTriggerLabel({
+        ...base,
+        liveBranch: "agent/next",
+        state: { kind: "worktree", path: "/wt/route", branch: "fix/route" },
+      }),
+    ).toBe("agent/next");
+    expect(
+      workspaceTriggerLabel({
+        ...base,
+        liveBranch: null,
+        state: { kind: "worktree", path: "/wt/route", branch: "fix/route" },
+      }),
+    ).toBe("fix/route · detached");
     expect(
       workspaceTriggerLabel({
         ...base,
@@ -365,6 +396,6 @@ describe("workspaceTriggerLabel", () => {
         activeThreadBranch: "main",
         state: { kind: "newWorktree", base: "main" },
       }),
-    ).toBe("New worktree · from main");
+    ).toBe("Creating worktree…");
   });
 });

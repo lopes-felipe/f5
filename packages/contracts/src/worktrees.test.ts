@@ -4,13 +4,13 @@ import { Schema } from "effect";
 import { FilesystemPath } from "./baseSchemas";
 import { GitRemoveWorktreeInput } from "./git";
 import {
+  ThreadWorkspaceStatus,
   WorktreesListInput,
   WorktreesListResult,
   WorktreesInspectInput,
   WorktreesRemoveInput,
   WorktreesRecoverInput,
   WorktreesSwitchWorkspaceInput,
-  WorktreesResolveTransitionInput,
 } from "./worktrees";
 describe("worktree safety wire contracts", () => {
   it("bounds approval lists while preserving exact ignored paths", () => {
@@ -47,13 +47,36 @@ describe("worktree safety wire contracts", () => {
     for (const path of ["", "/tmp/\0bad"])
       expect(() => Schema.decodeUnknownSync(FilesystemPath)(path)).toThrow();
   });
-  it("does not expose force and requires a recovery revision", () => {
+  it("does not expose force, and recovery names what to do rather than how", () => {
     expect(Object.keys(GitRemoveWorktreeInput.fields)).toEqual(["cwd", "path"]);
-    expect(() =>
-      Schema.decodeUnknownSync(WorktreesRecoverInput)({
+    for (const action of ["restore", "attach", "newWorktree", "useProjectFolder", "cancel"])
+      expect(Schema.decodeUnknownSync(WorktreesRecoverInput)({ threadId: "t", action })).toEqual({
         threadId: "t",
-        action: "useProjectCheckout",
-      }),
+        action,
+      });
+    for (const action of ["recreate", "recreateFromBase", "useProjectCheckout"])
+      expect(() =>
+        Schema.decodeUnknownSync(WorktreesRecoverInput)({ threadId: "t", action }),
+      ).toThrow();
+  });
+  it("describes a thread's workspace as one of four states", () => {
+    const decode = Schema.decodeUnknownSync(ThreadWorkspaceStatus);
+    for (const status of [
+      { kind: "ready", location: "worktree", path: "/wt/topic", branch: "topic" },
+      { kind: "ready", location: "projectFolder", path: "/repo", branch: null },
+      { kind: "dormant", path: "/wt/topic", branch: "topic" },
+      { kind: "working", activity: "restoring", cancellable: true },
+      {
+        kind: "attention",
+        reason: "branch_in_use",
+        message: "topic is checked out in the project folder.",
+        actions: ["attach", "newWorktree"],
+      },
+    ])
+      expect(decode(status)).toEqual(status);
+    expect(() => decode({ kind: "working", activity: "inspecting", cancellable: false })).toThrow();
+    expect(() =>
+      decode({ kind: "attention", reason: "restore_failed", message: "x", actions: ["inspect"] }),
     ).toThrow();
   });
   it("requires operation identity, expected workspace context, and versioned recovery acceptance", () => {
@@ -69,13 +92,6 @@ describe("worktree safety wire contracts", () => {
     );
     expect(() =>
       Schema.decodeUnknownSync(WorktreesSwitchWorkspaceInput)({ ...request, expected: undefined }),
-    ).toThrow();
-    expect(() =>
-      Schema.decodeUnknownSync(WorktreesResolveTransitionInput)({
-        operationId: "switch",
-        version: 2,
-        action: "retry",
-      }),
     ).toThrow();
   });
 });

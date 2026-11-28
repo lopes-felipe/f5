@@ -79,7 +79,15 @@ import {
   ProviderAdapterValidationError,
 } from "../Errors.ts";
 import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
-import { acpReadOnlyWorkflowDecision } from "../acp/AcpReadOnlyWorkflowPolicy.ts";
+import {
+  ACP_HIDDEN_TOOL_INPUTS_DETAIL,
+  acpReadOnlyGitRefusal,
+  acpReadOnlyRefusalDetail,
+  acpReadOnlyWorkflowVerdict,
+  acpRequestWithoutToolCallId,
+} from "../acp/AcpReadOnlyWorkflowPolicy.ts";
+import { appendGitConfigPairs } from "../../git/gitConfigEnvironment.ts";
+import { acpReadOnlyShellGuide } from "../readOnlyShellGuide.ts";
 import { type AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
@@ -147,6 +155,7 @@ import {
 } from "./EventNdjsonLogger.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 import { READ_ONLY_WORKFLOW_ENVIRONMENT } from "../readOnlyWorkflowShell.ts";
+import { makeReadOnlyGitGuard, type ReadOnlyGitGuard } from "../readOnlyGitConfig.ts";
 import {
   cursorProjectConfigConflictMessage,
   findCursorProjectConfigConflict,
@@ -902,6 +911,7 @@ export function makeCursorAdapter(
           // and approval mode can't let commands past F5; a repository whose `.cursor/cli.json`
           // would do the same is refused (CursorReadOnlyConfig.ts).
           let readOnlyEnvironment: NodeJS.ProcessEnv | undefined;
+          let readOnlyGitGuard: ReadOnlyGitGuard | undefined;
           if (input.workflowExecutionProfile) {
             const processError = (error: unknown) =>
               new ProviderAdapterProcessError({
@@ -911,15 +921,25 @@ export function makeCursorAdapter(
                 cause: error,
               });
             yield* assertCursorReadOnlyWorkspace(cwd, "startSession");
-            readOnlyEnvironment = yield* Effect.tryPromise({
-              try: () =>
-                prepareCursorReadOnlyEnvironment({
-                  providerHomesDir: resolveProviderHomesDir(serverConfig),
-                  instanceId: boundInstanceId,
-                  environment: options?.environment ?? process.env,
-                }),
+            const prepared = yield* Effect.tryPromise({
+              try: async () => {
+                const environment = {
+                  ...(await prepareCursorReadOnlyEnvironment({
+                    providerHomesDir: resolveProviderHomesDir(serverConfig),
+                    instanceId: boundInstanceId,
+                    environment: options?.environment ?? process.env,
+                  })),
+                  ...READ_ONLY_WORKFLOW_ENVIRONMENT,
+                };
+                // Cursor has no sandbox: a repository's own Git helpers must not run for the
+                // commands F5 approves (readOnlyGitConfig.ts).
+                const guard = await makeReadOnlyGitGuard(cwd, environment);
+                return { environment: appendGitConfigPairs(environment, guard.pairs), guard };
+              },
               catch: processError,
             });
+            readOnlyEnvironment = prepared.environment;
+            readOnlyGitGuard = prepared.guard;
           }
           const cursorModelSelection = resolveCursorModelSelection({
             boundInstanceId,
@@ -1026,7 +1046,6 @@ export function makeCursorAdapter(
                 http: init.agentCapabilities?.mcpCapabilities?.http === true,
                 sse: init.agentCapabilities?.mcpCapabilities?.sse === true,
               },
-              environment: cursorEnvironment,
               ...(options?.mcpHub?.available
                 ? {
                     attachHub: (servers: McpProjectServersConfig) =>
@@ -1063,7 +1082,7 @@ export function makeCursorAdapter(
             cursorSettings: effectiveCursorSettings,
             runtimeMode: input.workflowExecutionProfile ? "approval-required" : input.runtimeMode,
             ...(readOnlyEnvironment
-              ? { environment: { ...readOnlyEnvironment, ...READ_ONLY_WORKFLOW_ENVIRONMENT } }
+              ? { environment: readOnlyEnvironment }
               : options?.environment
                 ? { environment: options.environment }
                 : {}),
@@ -1407,17 +1426,29 @@ export function makeCursorAdapter(
                   // and web fetch. Read-only operations run once; anything else is refused here
                   // and recorded, and the model is told no and keeps working.
                   const computerRequest = Boolean(catalogs.classify(params.toolCall));
-                  if (
-                    acpReadOnlyWorkflowDecision({
-                      toolCall: params.toolCall,
-                      computerRequest,
-                      f5ThreadServerName: catalogs.readOnlyThreadServerName(),
-                    }) === "allow"
-                  ) {
-                    const allowOnce = acpPermissionOutcome("accept", params.options);
+                  const verdict = acpReadOnlyWorkflowVerdict({
+                    toolCall: params.toolCall,
+                    computerRequest,
+                    f5ThreadServerName: catalogs.readOnlyThreadServerName(),
+                  });
+                  // A command the policy allows can still run a program a repository's Git
+                  // config names; that reason is recorded with the refusal like any other.
+                  let gitRefusal: string | undefined;
+                  if (verdict.decision === "allow") {
+                    gitRefusal = yield* Effect.promise(() =>
+                      acpReadOnlyGitRefusal(readOnlyGitGuard, params.toolCall),
+                    );
+                    const allowOnce =
+                      gitRefusal === undefined
+                        ? acpPermissionOutcome("accept", params.options)
+                        : undefined;
                     if (allowOnce !== undefined)
                       return { outcome: { outcome: "selected" as const, optionId: allowOnce } };
                   }
+                  const refusalReason =
+                    verdict.decision === "deny"
+                      ? verdict.reason
+                      : (gitRefusal ?? "Cursor offered no way to approve it once");
                   const permissionRequest = parsePermissionRequest(params);
                   const deniedRequestId = RuntimeRequestId.make(crypto.randomUUID());
                   yield* offerRuntimeEvent(
@@ -1428,9 +1459,14 @@ export function makeCursorAdapter(
                       turnId: ctx?.activeTurnId,
                       requestId: deniedRequestId,
                       permissionRequest,
+                      // What was asked, then why F5 refused it: the model is only told no.
                       detail: computerRequest
-                        ? "Tool inputs hidden while computer control is enabled"
-                        : (permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000)),
+                        ? ACP_HIDDEN_TOOL_INPUTS_DETAIL
+                        : acpReadOnlyRefusalDetail(
+                            permissionRequest.detail ??
+                              JSON.stringify(acpRequestWithoutToolCallId(params)).slice(0, 2000),
+                            refusalReason,
+                          ),
                       args: params,
                       source: "acp.jsonrpc",
                       method: "session/request_permission",
@@ -1986,6 +2022,14 @@ export function makeCursorAdapter(
             if (attachmentContext) {
               promptParts.push({ type: "text", text: attachmentContext });
             }
+            // F5 answers every command of a read-only stage with its classifier, and Cursor is
+            // only told "rejected". ACP has no instruction channel, so the rules go in the prompt.
+            const shellGuide = acpReadOnlyShellGuide({
+              workflowExecutionProfile: input.workflowExecutionProfile,
+              steering,
+              hasText: promptParts.length > 0,
+            });
+            if (shellGuide) promptParts.push({ type: "text", text: shellGuide });
             if (input.attachments && input.attachments.length > 0) {
               for (const attachment of input.attachments) {
                 switch (attachment.type) {

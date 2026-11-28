@@ -53,12 +53,12 @@ export function nativeOperationSqlRepository(sql: SqlClient.SqlClient): NativeOp
           Effect.gen(function* () {
             if (
               active(record.state) &&
-              (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${record.threadId} AND phase IN ('reserved','stopping','applying','applied','needs_recovery') LIMIT 1`)
+              (yield* sql`SELECT 1 FROM workspace_transitions WHERE thread_id=${record.threadId} AND phase IN ('reserved','stopping','applying','applied') LIMIT 1`)
                 .length
             )
               return yield* Effect.fail(
                 new NativeOperationError(
-                  "Resolve the workspace transition before a native operation.",
+                  "Wait for the workspace switch to finish before a native operation.",
                 ),
               );
             yield* sql`INSERT INTO native_operations(operation_id, thread_id, generation, state, record_json, created_at, updated_at)

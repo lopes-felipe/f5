@@ -142,13 +142,12 @@ describe("WebSocket Server", () => {
     });
 
     it.each([
-      { managed: true, follow: true, shared: false },
-      { managed: false, follow: true, shared: false },
-      { managed: false, follow: true, shared: true },
-      { managed: false, follow: false, shared: false },
+      { managed: true, shared: false },
+      { managed: false, shared: false },
+      { managed: false, shared: true },
     ])(
-      "observes worktree switches with managed=$managed follow=$follow shared=$shared",
-      async ({ managed, follow, shared }) => {
+      "follows a worktree's branch switch with managed=$managed shared=$shared",
+      async ({ managed, shared }) => {
         const { cwd, run } = repoWithTopic();
         const baseDir = fs.realpathSync(makeTempDir("f5-observed-branch-"));
         const stateDir = path.join(baseDir, "state");
@@ -208,14 +207,6 @@ describe("WebSocket Server", () => {
               }),
             );
           }
-          if (follow)
-            expect(
-              (
-                await sendRequest(ws, WS_METHODS.serverUpdateSettings, {
-                  followWorktreeBranchChanges: true,
-                })
-              ).error,
-            ).toBeUndefined();
           run("-C", worktree, "switch", "-qc", "next-topic");
           const statusPath = path.join(baseDir, "checkout-alias");
           fs.symlinkSync(worktree, statusPath, "junction");
@@ -225,37 +216,40 @@ describe("WebSocket Server", () => {
             includePullRequest: false,
           });
           expect(status.result).toMatchObject({ branch: "next-topic" });
-          const observedThread = async () => {
+          const threadById = (id: string) => async () => {
             const after = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
             return (after.result as OrchestrationReadModel).threads.find(
-              (thread) => thread.id === "observed-branch",
+              (thread) => thread.id === id,
             );
           };
-          if (follow && !shared) {
+          // Every thread in the folder follows it, and none is left in an error state.
+          for (const id of shared ? ["observed-branch", "sharing-branch"] : ["observed-branch"]) {
             await expect
-              .poll(observedThread)
+              .poll(threadById(id))
               .toMatchObject({ branch: "next-topic", worktreePath: worktree });
-            if (managed)
-              expect(
-                db
-                  .prepare(
-                    "SELECT json_extract(plan_json, '$.branch') AS branch FROM worktree_groups WHERE workspace_path = ?",
-                  )
-                  .get(worktree),
-              ).toMatchObject({ branch: "next-topic" });
-          } else {
-            const state = await sendRequest(ws, WS_METHODS.worktreesThreadState, {
-              threadId: "observed-branch",
-            });
-            expect(state.result).toMatchObject({
-              branchDriftOnly: true,
-              checkoutBranch: "next-topic",
-            });
-            expect(await observedThread()).toMatchObject({
-              branch: "topic",
-              worktreePath: worktree,
-            });
+            expect((await threadById(id)())?.activities).toContainEqual(
+              expect.objectContaining({
+                kind: "workspace.branch-changed",
+                summary: "Now on next-topic (was topic)",
+              }),
+            );
           }
+          const state = await sendRequest(ws, WS_METHODS.worktreesThreadState, {
+            threadId: "observed-branch",
+          });
+          expect(state.result).toMatchObject({
+            kind: "ready",
+            location: "worktree",
+            branch: "next-topic",
+          });
+          if (managed)
+            expect(
+              db
+                .prepare(
+                  "SELECT json_extract(plan_json, '$.branch') AS branch FROM worktree_groups WHERE workspace_path = ?",
+                )
+                .get(worktree),
+            ).toMatchObject({ branch: "next-topic" });
         } finally {
           db.close();
         }

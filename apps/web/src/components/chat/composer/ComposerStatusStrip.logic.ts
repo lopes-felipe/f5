@@ -2,6 +2,7 @@ import type { CommandId, NextTurnQueueSnapshot, WorktreeSetupSnapshot } from "@t
 
 import type { TaskItem } from "~/types";
 import { buildQueueRowDisplay, isFoldedUsageLimitItem } from "../NextTurnQueuePanel.logic";
+import { workspaceIsWorking } from "../WorkspaceStatusCard.logic";
 import { isWorktreeSetupCollapsible } from "../WorktreeSetupCard";
 
 /** Longest queued-turn preview a chip shows before truncating. */
@@ -56,8 +57,7 @@ export function summarizeQueueChip(input: {
   ) {
     return null;
   }
-  const transition = snapshot.workspaceTransition;
-  if (transition && !["completed", "cancelled"].includes(transition.phase)) return null;
+  if (workspaceIsWorking(snapshot.workspace)) return null;
   const items = snapshot.items.filter((item) => !isFoldedUsageLimitItem(item, input.foldedItemId));
   const count = items.length + input.optimistic.length;
   if (count === 0) return null;

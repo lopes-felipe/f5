@@ -1,10 +1,10 @@
 import { McpArgumentFields } from "./McpArgumentFields";
 import { readMcpKeyValueRows, mcpDuplicateKeys } from "./mcpEditorValues";
 import { McpKeyValueFields } from "./McpKeyValueFields";
+import { McpSecretReference } from "./McpSecretReference";
 import { McpTestConnection } from "./McpTestConnection";
 import { decodeDraftServer } from "./mcpDraft";
 import { MCP_SERVER_DESCRIPTION_MAX_LENGTH } from "@t3tools/contracts";
-import { CODEX_SSE_TRANSPORT_HINT } from "@t3tools/shared/mcpTranslation";
 import { Badge } from "../../ui/badge";
 import { Button } from "../../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../../ui/collapsible";
@@ -98,10 +98,6 @@ export function McpServerEditor({
         />
       </label>
 
-      {draft.type === "sse" ? (
-        <p className="text-xs text-muted-foreground">{CODEX_SSE_TRANSPORT_HINT}</p>
-      ) : null}
-
       <div className="flex items-center justify-between rounded-lg border border-border/70 bg-card/40 px-3 py-3">
         <div className="space-y-1">
           <p className="text-xs font-medium text-foreground">Enabled</p>
@@ -132,6 +128,7 @@ export function McpServerEditor({
             />
           </label>
           <McpArgumentFields draft={draft} onChange={onDraftChange} />
+          <McpSecretReference />
           <div className="grid gap-3 sm:grid-cols-2">
             <McpKeyValueFields
               key={`${editingServerName}:${draft.original?.name}:env`}
@@ -165,6 +162,7 @@ export function McpServerEditor({
               placeholder="https://example.com/mcp"
             />
           </label>
+          <McpSecretReference />
           <McpKeyValueFields
             key={`${editingServerName}:${draft.original?.name}:headers`}
             label="Headers"

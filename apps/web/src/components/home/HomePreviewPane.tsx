@@ -561,9 +561,7 @@ function LoadedThreadPreview(props: ThreadPreviewProps & { readonly thread: Thre
   const cwd = resolveThreadWorkspaceCwd({ thread, projects });
   const inline = useHomeInlineActions({
     thread,
-    project: props.project,
     decision,
-    cwd,
     focusQueue: props.actions.focusQueue,
     openThread: props.actions.openThread,
   });
@@ -719,7 +717,6 @@ function LoadedThreadPreview(props: ThreadPreviewProps & { readonly thread: Thre
         />
         <ThreadMeta thread={thread} peek={props.peek} />
       </footer>
-      {inline.dialog}
     </article>
   );
 }

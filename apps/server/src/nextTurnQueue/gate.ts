@@ -12,7 +12,7 @@ import { QUIESCENCE_WAIT_TIMEOUT_MS, STALE_PENDING_TURN_MS } from "./constants.t
 import type { WorktreeSetupGateState } from "../project/Services/WorktreeSetupGate.ts";
 
 export const WORKTREE_SETUP_INTERRUPTED_DETAIL =
-  "Worktree setup was interrupted before the agent started. Retry, work locally, or discard.";
+  "Worktree setup was interrupted before the agent started. Retry, continue in Local, or discard the message.";
 
 export function hasActiveThreadTurn(
   runningTurn: unknown | null,
@@ -90,8 +90,8 @@ export function resolveNextTurnQueueGate(input: {
       reasonCode: "worktree_missing",
       detail:
         input.thread.branch === null
-          ? "This thread's worktree is gone. Recreate it or continue in the project checkout."
-          : `Worktree '${input.thread.worktreePath}' is missing.`,
+          ? "This thread's worktree is gone and it recorded no branch to restore."
+          : "This thread's worktree is not on disk.",
     };
   }
   if (
