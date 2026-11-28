@@ -1560,6 +1560,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
+    const { history, historySequenceState } = session.history.snapshot();
     return {
       epoch: this.epoch,
       ...this.revision(session),
@@ -1568,7 +1569,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       cwd: session.cwd,
       status: session.status,
       pid: session.pid,
-      history: session.history.value(),
+      history,
+      ...(session.status === "running" && historySequenceState ? { historySequenceState } : {}),
       cols: session.cols,
       rows: session.rows,
       exitCode: session.exitCode,
