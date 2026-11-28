@@ -165,6 +165,7 @@ export interface GitSetBranchUpstreamInput {
 
 export interface GitRemote {
   readonly name: string;
+  /** Redacted fetch URL for repository identification and display. Use the remote name for Git I/O. */
   readonly url: string | null;
 }
 
