@@ -557,6 +557,26 @@ describe("GitManager unit", () => {
     expect(git.calls.pushCurrentBranch).toEqual([[cwd, "f5/feat/generated-commit-2"]]);
   });
 
+  it.each([
+    ["Fix crash in login", "f5/fix/fix-crash-in-login"],
+    ["refactor: extract the session store", "f5/refactor/extract-the-session-store"],
+  ])("types the feature branch for %j from the message", async (commitMessage, expected) => {
+    const { manager, git } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(dirtyStatus),
+        prepareCommitContext: () =>
+          Effect.succeed({ stagedSummary: "change", stagedPatch: "+change" }),
+      },
+    });
+
+    const result = await Effect.runPromise(
+      manager.runStackedAction({ cwd, action: "commit", featureBranch: true, commitMessage }),
+    );
+
+    expect(result.branch).toEqual({ status: "created", name: expected });
+    expect(git.calls.commitPrepared[0]?.[4]).toEqual({ newBranch: expected });
+  });
+
   it.each(["created", "context_changed"] as const)(
     "uses the workspace transition before a generated-branch commit (%s)",
     async (status) => {
