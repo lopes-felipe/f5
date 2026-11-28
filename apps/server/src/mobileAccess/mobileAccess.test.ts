@@ -4,6 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { get } from "node:http";
 import { ORCHESTRATION_WS_METHODS, OrchestrationCommand, WS_METHODS } from "@t3tools/contracts";
 import { MOBILE_CLOSE, MobileShell, type MobilePairingCode } from "@t3tools/contracts/mobile/v1";
+import { derivePendingApprovals } from "@t3tools/shared/pendingApprovals";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -13,6 +14,7 @@ import {
   sendRequest,
 } from "../wsServer.testHarness.ts";
 import { createServer } from "../wsServer.ts";
+import { pendingApprovalActivities } from "../orchestration/pendingApprovals.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import { signApnsToken } from "./apnsClient.ts";
 import { makeMobileAuth } from "./mobileAuth.ts";
@@ -161,11 +163,25 @@ describe("Phone access", () => {
     expect(code.error).toBeUndefined();
     const pairing = code.result as MobilePairingCode;
     const origin = new URL(pairing.url).searchParams.get("o")!;
-    return { desktop, mainPort, pairing, origin };
+    return { desktop, mainPort, pairing, origin, engine: engine! };
   }
 
   it("pairs and resolves a pre-existing decision over the isolated mobile listener", async () => {
-    const { desktop, mainPort, pairing, origin } = await fixture(true);
+    const { desktop, mainPort, pairing, origin, engine } = await fixture(true);
+    async function expectPendingApprovalIds(ids: readonly string[]) {
+      const model = await Effect.runPromise(engine.getReadModel());
+      const thread = model.threads.find((entry) => entry.id === threadId);
+      expect(thread).toBeDefined();
+      const serverIds = pendingApprovalActivities(thread!).map(
+        ({ payload }) => (payload as { requestId: string }).requestId,
+      );
+      // The web session logic re-exports this shared derivation.
+      expect(
+        derivePendingApprovals(thread!.activities).map((approval) => approval.requestId),
+      ).toEqual(serverIds);
+      expect(serverIds).toEqual(ids);
+    }
+    await expectPendingApprovalIds([requestId]);
     const request = (path: string, init?: RequestInit) => fetch(origin + path, init);
     expect((await request("/")).status).toBe(404);
     expect((await request("/api/assets")).status).toBe(404);
@@ -331,6 +347,7 @@ describe("Phone access", () => {
     expect(
       next.threads.find((thread) => thread.id === threadId)?.attention.pendingApprovalRequestIds,
     ).toEqual([]);
+    await expectPendingApprovalIds([]);
     const disabled = once(socket, "close");
     await sendRequest(desktop, WS_METHODS.mobileAccessSetEnabled, { enabled: false });
     expect((await disabled)[0]).toBe(MOBILE_CLOSE.disabled);

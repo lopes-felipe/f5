@@ -18,6 +18,7 @@ const workspaces: SuiteIdentity[] = [
   "@t3tools/scripts",
   "@t3tools/web",
   "@t3tools/desktop",
+  "@t3tools/mobile",
   "@t3tools/marketing",
 ].map((packageName) => ({ packageName, event: "test" }));
 const suite = (event: string): SuiteIdentity => ({ packageName: "suites", event });

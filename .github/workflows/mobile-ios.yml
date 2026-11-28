@@ -60,21 +60,26 @@ jobs:
           F5_MOBILE_FIXTURE_INFO: ${{ runner.temp }}/f5-phone-fixture.json
         run: |
           sudo ifconfig lo0 alias "$F5_MOBILE_FIXTURE_ADDRESS" netmask 255.255.255.255
-          bun run --cwd apps/server vitest run src/mobileAccess/mobileAccess.test.ts \
-            -t 'serves a paired approval fixture' > "$RUNNER_TEMP/f5-phone-fixture.log" 2>&1 &
+          fixture_log="$RUNNER_TEMP/f5-phone-fixture.log"
+          F5_TEST_LOGS=1 bun run --cwd apps/server test:file src/mobileAccess/mobileAccess.test.ts \
+            -t 'serves a paired approval fixture' > "$fixture_log" 2>&1 &
           fixture_pid=$!
           trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 45); do
+          for _ in $(seq 1 120); do
             [ -s "$F5_MOBILE_FIXTURE_INFO" ] && break
-            kill -0 "$fixture_pid" || { cat "$RUNNER_TEMP/f5-phone-fixture.log"; exit 1; }
+            kill -0 "$fixture_pid" || break
             sleep 1
           done
+          if [ ! -s "$F5_MOBILE_FIXTURE_INFO" ]; then
+            echo '::error::The mobile acceptance fixture did not publish its pairing information'
+            cat "$fixture_log"
+            exit 1
+          fi
           origin="$(jq -er .origin "$F5_MOBILE_FIXTURE_INFO")"
           code="$(jq -er .code "$F5_MOBILE_FIXTURE_INFO")"
           echo "::add-mask::$code"
-          maestro --device "$F5_SIM_UDID" test apps/mobile/.maestro/pair-and-approve.yml \
-            -e "F5_ORIGIN=$origin" -e "F5_CODE=$code"
-          if ! wait "$fixture_pid"; then
-            cat "$RUNNER_TEMP/f5-phone-fixture.log"
+          if ! maestro --device "$F5_SIM_UDID" test apps/mobile/.maestro/pair-and-approve.yml \
+            -e "F5_ORIGIN=$origin" -e "F5_CODE=$code" || ! wait "$fixture_pid"; then
+            cat "$fixture_log"
             exit 1
           fi
